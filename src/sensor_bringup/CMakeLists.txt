@@ -8,10 +8,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-# Plain (non --symlink-install) builds find this under lib/; the launch file also
-# looks next to its own source tree first, so a symlink-install needs no rebuild.
+# Keep the source-tree launch adapter and copied installs on the same supervisor.
 install(
-  PROGRAMS scripts/apply_color_exposure.py
+  PROGRAMS scripts/host_cameras.py scripts/check_cameras.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+install(
+  FILES scripts/camera_config.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -41,9 +41,9 @@ observation:
       resize: [224, 224]
       enabled: true
     - name: global_image
-      # 全局相机是独立的 RealSense D435（namespace=camera_global, name=d435），
-      # 与三路 Orbbec 臂相机 /camera_left|middle|right 区分。
-      topic: /camera_global/d435/color/image_raw
+      # 后置 GLOBAL CAM：Orbbec Gemini 335L，namespace=camera_global。
+      # 前置全局相机另在 /camera_global2/color/image_raw，按任务需要切换。
+      topic: /camera_global/color/image_raw
       encoding: rgb8
       resize: [224, 224]
       enabled: true

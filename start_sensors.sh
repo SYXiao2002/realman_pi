@@ -1,47 +1,51 @@
 #!/usr/bin/env bash
-# 以 ROS2 节点方式统一启动三路 Orbbec Gemini 305 + 全局 RealSense D435。
-# 这是相机出图的生产主线；src/camera_stream 的 RTSP 推流方案已弃用（[DEPRECATED]）。
-# 用法: bash start_sensors.sh [ros2 launch 参数, 例如 enable_depth:=true use_rviz:=true]
-# 说明: 推荐用 functions.zsh 里的 rm65_camera_ros2 [color|depth] [rviz]，本脚本是不依赖
-#       zsh 的等价 bash 入口。
-set -eu
-
+# Direct host binary-driver entry; ./rm65 up runs this in the background.
+set -e
 WS_MAIN="$(cd "$(dirname "$0")" && pwd)"
-WS_RS="$WS_MAIN/src/sensor/realsense/realsense_ws"
-WS_OB="$WS_MAIN/src/sensor/OrbbecSDK_ROS2"
-STOP_STREAMING="$WS_MAIN/src/camera_stream/scripts/stop_streaming.sh"
-
-# ROS2 相机节点与推流进程都独占 USB 设备，先停掉弃用的 RTSP 推流再启动，避免设备冲突。
-if [ -x "$STOP_STREAMING" ]; then
-  bash "$STOP_STREAMING" >/dev/null 2>&1 || true
+action=start
+if [[ "${1:-}" == stop ]]; then
+  [[ $# == 1 ]] || { echo 'usage: start_sensors.sh stop' >&2; exit 2; }
+  action=stop
+  shift
 fi
 
-# 依次 source：ROS → Orbbec overlay → RealSense overlay → 主工作区。
+# Share Compose's ROS domain without executing arbitrary .env shell content.
+if [[ -r "$WS_MAIN/.env" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]%$'\r'}"
+    [[ -n "${!key:-}" || -z "$value" ]] || export "$key=$value"
+  done < "$WS_MAIN/.env"
+fi
+
+unset AMENT_CURRENT_PREFIX AMENT_SHELL
 source /opt/ros/humble/setup.bash
-[ -r "$WS_OB/install/setup.bash" ] && source "$WS_OB/install/setup.bash"
-# realsense_ws 是 git 子模块；./rm65 up 要求全局 D435 通道必须可用，未初始化/未构建时直接失败。
-REALSENSE_SETUP="${REALMAN_REALSENSE_ROS2_SETUP:-$WS_RS/install/setup.bash}"
-if [ -r "$REALSENSE_SETUP" ]; then
-  source "$REALSENSE_SETUP"
-else
-  echo "[start_sensors] 缺少 realsense_ws overlay: $REALSENSE_SETUP" >&2
-  echo "[start_sensors] 请先构建 src/sensor/realsense/realsense_ws，或通过 REALMAN_REALSENSE_ROS2_SETUP 指定 install/setup.bash" >&2
+if [[ -n "${REALMAN_ORBBEC_ROS2_SETUP:-}" ]]; then
+  source "$REALMAN_ORBBEC_ROS2_SETUP"
+fi
+if [[ "$action" == start ]] && ! ros2 pkg prefix orbbec_camera >/dev/null 2>&1; then
+  echo 'start_sensors: install the host orbbec_camera binary ROS package first' >&2
   exit 1
 fi
-[ -r "$WS_MAIN/install/setup.bash" ] && source "$WS_MAIN/install/setup.bash"
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
-# Orbbec/RealSense overlay 在宿主机、标定在 Docker，Fast DDS 共享内存 ABI 可能不同，
-# 强制 UDP 保证 Image 数据互通。
 export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
+export RCUTILS_COLORIZED_OUTPUT=1
+export REALMAN_CONFIG_ROOT="$WS_MAIN/config"
+export ROS_LOG_DIR="${REALMAN_LOG_ROOT:-$WS_MAIN/logs}/$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$ROS_LOG_DIR"
 
-# 禁止降级为仅 Orbbec：全局 D435 通道缺失时直接失败，让 ./rm65 up 中止。
-if ! ros2 pkg prefix realsense2_camera >/dev/null 2>&1; then
-  echo "[start_sensors] realsense2_camera 未构建，拒绝跳过全局 D435 通道" >&2
-  echo "[start_sensors] 请先构建 src/sensor/realsense/realsense_ws，或通过 REALMAN_REALSENSE_ROS2_SETUP 指定 install/setup.bash" >&2
-  exit 1
-fi
-
-echo "=== 启动 ROS2 相机节点 (Orbbec x3 + RealSense D435) ==="
-exec ros2 launch sensor_bringup cameras_ros2.launch.py "$@"
+# Keep the shell helper's historical color/depth/rviz convenience arguments.
+mode=color
+extra=()
+for arg in "$@"; do
+  case "$arg" in
+    color|depth) mode="$arg" ;;
+    rviz|--rviz|use_rviz:=true) extra+=(--rviz) ;;
+    enable_color:=true|enable_depth:=false) ;;
+    *) echo "usage: start_sensors.sh [color|depth] [rviz]" >&2; exit 2 ;;
+  esac
+done
+exec python3 "$WS_MAIN/src/sensor_bringup/scripts/host_cameras.py" "$action" --mode "$mode" "${extra[@]}"

@@ -414,231 +414,49 @@ rm65_camera_logs() {
 
 _rm65_source_camera_ros2() {
   emulate -L zsh
-  local ros_setup
-  local orbbec_setup
-  local realsense_setup
-  local -a orbbec_candidates
-  local -a realsense_candidates
-
-  # A stale AMENT prefix makes the production Humble setup script fail early.
   unset AMENT_CURRENT_PREFIX AMENT_SHELL
-
-  for ros_setup in /opt/ros/humble/setup.zsh /opt/ros/humble/setup.sh /opt/ros/humble/setup.bash; do
-    if [[ -r "$ros_setup" ]]; then
-      source "$ros_setup"
-      break
-    fi
-  done
-  if [[ -z "${AMENT_PREFIX_PATH:-}" ]]; then
-    print -u2 -r -- "rm65: ROS 2 Humble setup not found under /opt/ros/humble"
-    return 1
-  fi
-
-  orbbec_candidates=(
-    "${REALMAN_ORBBEC_ROS2_SETUP:-}"
-    "$RM65_PROJECT_ROOT/src/sensor/OrbbecSDK_ROS2/install/setup.sh"
-    "/home/administrator/code/zip_download_grasp_ros_flow/Grasp_ROS_Flow-hybrid-grasp-fallback-v3.1-vertical-arm/backend/orbbec_sdk_ros2_ws/src/install/setup.sh"
-  )
-  for orbbec_setup in "${orbbec_candidates[@]}"; do
-    if [[ -n "$orbbec_setup" && -r "$orbbec_setup" ]]; then
-      source "$orbbec_setup"
-      break
-    fi
-  done
-
-  # The RealSense D435 driver lives in the src/sensor/realsense submodules and is
-  # mandatory for ./rm65 up; rm65_camera_ros2 aborts when the overlay is absent.
-  realsense_candidates=(
-    "${REALMAN_REALSENSE_ROS2_SETUP:-}"
-    "$RM65_PROJECT_ROOT/src/sensor/realsense/realsense_ws/install/setup.sh"
-  )
-  for realsense_setup in "${realsense_candidates[@]}"; do
-    if [[ -n "$realsense_setup" && -r "$realsense_setup" ]]; then
-      source "$realsense_setup"
-      break
-    fi
-  done
-
-  if [[ -r "$RM65_PROJECT_ROOT/install/setup.sh" ]]; then
-    source "$RM65_PROJECT_ROOT/install/setup.sh"
-  fi
-}
-
-_rm65_check_camera_usbfs_memory() {
-  emulate -L zsh
-  local usbfs_memory
-  local minimum="${REALMAN_USBFS_MEMORY_MB_MIN:-256}"
-
-  if [[ ! -r /sys/module/usbcore/parameters/usbfs_memory_mb ]]; then
-    return 0
-  fi
-  usbfs_memory="$(< /sys/module/usbcore/parameters/usbfs_memory_mb)"
-  if [[ "$usbfs_memory" == <-> && "$minimum" == <-> ]] && (( usbfs_memory < minimum )); then
-    print -u2 -r -- "rm65: USBFS buffer is ${usbfs_memory} MB; three USB2 cameras need at least ${minimum} MB"
-    print -u2 -r -- "rm65: temporary fix: sudo sh -c 'echo ${minimum} > /sys/module/usbcore/parameters/usbfs_memory_mb'"
-    print -u2 -r -- "rm65: persistent fix: add 'options usbcore usbfs_memory_mb=${minimum}' to /etc/modprobe.d/usbcore.conf and reboot"
+  source /opt/ros/humble/setup.zsh || return
+  if [[ -n "${REALMAN_ORBBEC_ROS2_SETUP:-}" ]]; then
+    source "$REALMAN_ORBBEC_ROS2_SETUP" || return
   fi
 }
 
 rm65_camera_ros2() {
   emulate -L zsh
-  local mode=color
-  local use_rviz=false
-  local launch_pattern='^([^ ]*python3 )?[^ ]*/ros2 launch sensor_bringup cameras_ros2.launch.py( |$)'
-  local log_root="${REALMAN_LOG_ROOT:-$RM65_PROJECT_ROOT/logs}"
-  local run_log_dir
-  local stop_script="$RM65_PROJECT_ROOT/src/camera_stream/scripts/stop_streaming.sh"
-
-  for arg in "$@"; do
-    case "$arg" in
-      color|depth) mode="$arg" ;;
-      rviz|--rviz) use_rviz=true ;;
-      *)
-        print -u2 -r -- "usage: rm65_camera_ros2 [color|depth] [rviz]"
-        return 2
-        ;;
-    esac
-  done
-
-  if command -v pgrep >/dev/null 2>&1 &&
-      command pgrep -f "$launch_pattern" >/dev/null 2>&1; then
-    print -u2 -r -- "rm65: ROS2 camera launch is already running; use rm65_camera_ros2_status"
-    return 1
-  fi
-
-  # The SDK streaming path owns the USB devices, so stop it before ROS2 opens them.
-  if [[ -x "$stop_script" ]]; then
-    command bash "$stop_script" >/dev/null 2>&1 || true
-  fi
-
-  _rm65_source_camera_ros2 || return
-  _rm65_check_camera_usbfs_memory
-  export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
-  export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
-  # The Orbbec overlay runs on the host while calibration runs in Docker. UDP
-  # keeps Image data interoperable when their Fast DDS shared-memory ABIs differ.
-  export FASTDDS_BUILTIN_TRANSPORTS="${FASTDDS_BUILTIN_TRANSPORTS:-UDPv4}"
-  _rm65_require_command ros2 || return
-  if ! command ros2 pkg prefix orbbec_camera >/dev/null 2>&1; then
-    print -u2 -r -- "rm65: orbbec_camera is not in the sourced ROS 2 environment"
-    print -u2 -r -- "rm65: set REALMAN_ORBBEC_ROS2_SETUP to its install/setup.sh"
-    return 1
-  fi
-  if ! command ros2 pkg prefix sensor_bringup >/dev/null 2>&1; then
-    print -u2 -r -- "rm65: sensor_bringup is not built; run rm65_ros_build sensor_bringup"
-    return 1
-  fi
-
-  run_log_dir="$log_root/$(date +%Y%m%d_%H%M%S)"
-  if ! command mkdir -p -- "$run_log_dir"; then
-    print -u2 -r -- "rm65: cannot create ROS log directory: ${run_log_dir}"
-    print -u2 -r -- "rm65: set REALMAN_LOG_ROOT to a writable directory or fix the project logs/ ownership"
-    return 1
-  fi
-  export ROS_LOG_DIR="$run_log_dir"
-  export RCUTILS_COLORIZED_OUTPUT=1
-  export REALMAN_CONFIG_ROOT="$RM65_PROJECT_ROOT/config"
-  if [[ "$use_rviz" == true && -z "${DISPLAY:-}" ]]; then
-    print -u2 -r -- "rm65: rviz requested but DISPLAY is empty; use rm65_camera_ros2 on the production host and remote RViz on the notebook"
-    return 1
-  fi
-
-  local -a launch_args
-  if [[ "$mode" == color ]]; then
-    launch_args+=("enable_color:=true" "enable_depth:=false")
-  else
-    launch_args+=("enable_color:=false" "enable_depth:=true")
-  fi
-  [[ "$use_rviz" == true ]] && launch_args+=("use_rviz:=true")
-  # ./rm65 up 要求全局 D435 通道必须可用；缺少 realsense2_camera 时直接失败，禁止降级为仅 Orbbec。
-  if ! command ros2 pkg prefix realsense2_camera >/dev/null 2>&1; then
-    print -u2 -r -- "rm65: realsense2_camera is not in the sourced ROS 2 environment; refusing to skip the global D435 channel"
-    print -u2 -r -- "rm65: build src/sensor/realsense/realsense_ws or set REALMAN_REALSENSE_ROS2_SETUP to its install/setup.sh"
-    return 1
-  fi
-  # Gemini 305 devices occasionally start with a live publisher but no frames
-  # (a hot-swap quirk the wrapper already double-starts around). Launch in the
-  # background, verify every color stream is actually producing frames, and
-  # restart the whole set until they all come up.
-  local max_attempts="${REALMAN_CAMERA_MAX_ATTEMPTS:-4}"
-  local settle_seconds="${REALMAN_CAMERA_SETTLE_SECONDS:-32}"
-  local check_timeout="${REALMAN_CAMERA_CHECK_TIMEOUT:-15}"
-  local check_script="$RM65_PROJECT_ROOT/src/sensor_bringup/scripts/check_cameras.py"
-  local attempt
-  local launch_pid=""
-  local check_output=""
-
-  if [[ ! -r "$check_script" ]]; then
-    print -u2 -r -- "rm65: camera health check missing: ${check_script}"
-    return 1
-  fi
-
-  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
-    print -r -- "rm65: camera bringup attempt ${attempt}/${max_attempts}"
-    if [[ -n "$launch_pid" ]]; then
-      kill "$launch_pid" 2>/dev/null || true
-      wait "$launch_pid" 2>/dev/null || true
-      rm65_camera_ros2_stop
-      sleep 3
-    fi
-    command ros2 launch sensor_bringup cameras_ros2.launch.py "${launch_args[@]}" \
-      > "${run_log_dir}/attempt_${attempt}.log" 2>&1 &
-    launch_pid=$!
-    print -r -- "rm65: launched (pid ${launch_pid}); settling ${settle_seconds}s"
-    sleep "$settle_seconds"
-    if check_output="$(command python3 "$check_script" "$check_timeout" 2>&1)"; then
-      print -r -- "$check_output"
-      print -r -- "rm65: all cameras publishing (attempt ${attempt})"
-      wait "$launch_pid"
-      return $?
-    fi
-    print -u2 -r -- "$check_output"
-    print -u2 -r -- "rm65: attempt ${attempt} left silent camera(s); retrying"
-  done
-
-  print -u2 -r -- "rm65: cameras did not all come up after ${max_attempts} attempts"
-  return 1
+  # Source initialization and direct official launch commands live in one host entry.
+  command bash "$RM65_PROJECT_ROOT/start_sensors.sh" "$@"
 }
 
 rm65_camera_ros2_stop() {
   emulate -L zsh
-  local launch_pattern='^([^ ]*python3 )?[^ ]*/ros2 launch sensor_bringup cameras_ros2.launch.py( |$)'
-  local component_pattern='^[^ ]*/component_container .*__ns:=/camera_(left|middle|right)( |$)'
-  local realsense_pattern='realsense2_camera_node'
   if (( $# > 0 )); then
     print -u2 -r -- "usage: rm65_camera_ros2_stop"
     return 2
   fi
-  if command -v pkill >/dev/null 2>&1; then
-    command pkill -TERM -f "$launch_pattern" 2>/dev/null || true
-    command pkill -TERM -f "$component_pattern" 2>/dev/null || true
-    command pkill -TERM -f "$realsense_pattern" 2>/dev/null || true
-  fi
-  print -r -- "rm65: ROS2 camera processes stopped"
+  local pattern="^([^ ]*/)?python3 $RM65_PROJECT_ROOT/src/sensor_bringup/scripts/host_cameras[.]py start( |$)"
+  command pkill -TERM -f "$pattern" 2>/dev/null || true
+  # Manual camera starts have no rm65 PID file. Wait for their supervisor to
+  # release every USB device before a following up opens the cameras again.
+  local attempt
+  for attempt in {1..240}; do
+    if ! command pgrep -f "$pattern" >/dev/null 2>&1; then
+      # A dead supervisor may leave its independently launched drivers behind.
+      command bash "$RM65_PROJECT_ROOT/start_sensors.sh" stop || return
+      print -r -- "rm65: ROS2 camera launch processes stopped"
+      return 0
+    fi
+    command sleep 0.25
+  done
+  print -u2 -r -- "rm65: ROS2 camera cleanup timed out; camera processes are still running"
+  return 1
 }
 
 rm65_camera_ros2_status() {
   emulate -L zsh
-  local process_pattern='^([^ ]*python3 )?[^ ]*/ros2 launch sensor_bringup cameras_ros2.launch.py( |$)|^[^ ]*/component_container .*__ns:=/camera_(left|middle|right)( |$)|realsense2_camera_node'
-  local process
-  local process_output=""
-
-  print -r -- "rm65 ROS2 camera bringup"
-  print -r -- "  launch: $RM65_PROJECT_ROOT/src/sensor_bringup/launch/cameras_ros2.launch.py"
+  print -r -- "rm65 host Orbbec cameras: camera_global, camera_global2, camera_right, camera_left"
   print -r -- "  config: $RM65_PROJECT_ROOT/config/ros/cameras_ros2.yaml"
-  print -r -- "  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}"
-  print -r -- "  logs: ${ROS_LOG_DIR:-${REALMAN_LOG_ROOT:-$RM65_PROJECT_ROOT/logs}}"
-  if command -v pgrep >/dev/null 2>&1; then
-    process_output="$(command pgrep -af "$process_pattern" || true)"
-  fi
-  if [[ -z "$process_output" ]]; then
-    print -r -- "  processes: stopped"
-  else
-    print -r -- "  processes:"
-    for process in "${(@f)process_output}"; do
-      print -r -- "    ${process}"
-    done
-  fi
+  local pattern="^([^ ]*/)?python3 $RM65_PROJECT_ROOT/src/sensor_bringup/scripts/host_cameras[.]py start( |$)"
+  command pgrep -af "$pattern" || print -r -- "  stopped"
 }
 
 rm65_camera_ros2_logs() {
@@ -924,7 +742,7 @@ rm65_project_help() {
   print -r -- "  rm65_camera_status                  查看相机进程和 8554/8100-8103 端口"
   print -r -- "  rm65_camera_logs [-f] [component]   查看或跟踪相机日志"
   print -r -- "ROS2 camera topics and RViz:"
-  print -r -- "  rm65_camera_ros2 [color|depth] [rviz] 按串号启动三台 Orbbec 单一流 ROS2 节点，可选启动 RViz2"
+  print -r -- "  rm65_camera_ros2 [color|depth] [rviz] 按串号启动四台 Orbbec 二进制驱动，默认 RGB，可选 RViz2"
   print -r -- "  rm65_camera_ros2_stop               停止 ROS2 Orbbec 节点并释放相机设备"
   print -r -- "  rm65_camera_ros2_status             查看 ROS2 相机 launch 和节点进程"
   print -r -- "  rm65_camera_ros2_logs               查看最近的 ROS2 相机日志"
@@ -942,8 +760,8 @@ rm65_project_help() {
   print -r -- "  rm65_docker_remote_rviz_status      查看后台远程 RViz 状态"
   print -r -- "  rm65_docker_remote_rviz_logs [-f]   查看或跟踪远程 RViz 日志"
   print -r -- "Camera RViz (notebook):"
-  print -r -- "  rm65_docker_camera_rviz [domain]   前台显示三路相机图像，默认读取 .env 的 ROS_DOMAIN_ID"
-  print -r -- "  rm65_docker_camera_rviz_start [domain] 后台启动三路相机 RViz"
+  print -r -- "  rm65_docker_camera_rviz [domain]   前台显示四路相机图像，默认读取 .env 的 ROS_DOMAIN_ID"
+  print -r -- "  rm65_docker_camera_rviz_start [domain] 后台启动四路相机 RViz"
   print -r -- "  rm65_docker_camera_rviz_stop        停止后台相机 RViz"
   print -r -- "  rm65_docker_camera_rviz_status      查看后台相机 RViz 状态"
   print -r -- "  rm65_docker_camera_rviz_logs [-f]   查看或跟踪相机 RViz 日志"

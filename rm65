@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_ROOT="${REALMAN_LOG_ROOT:-$ROOT/logs}"
 STATE_FILE="$LOG_ROOT/.rm65-camera.pid"
+READY_FILE="$LOG_ROOT/.rm65-camera.ready"
 DRY_RUN="${RM65_DRY_RUN:-0}"
 
 run() {
@@ -16,28 +17,58 @@ run() {
   "$@"
 }
 
+camera_supervisor_alive() {
+  local pid="${1:-}" stat="" cmdline=""
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/stat" && -r "/proc/$pid/cmdline" ]] || return 1
+  stat="$(<"/proc/$pid/stat")"
+  [[ "${stat#*) }" != Z\ * ]] || return 1
+  cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline")"
+  [[ "$cmdline" == *"$ROOT/start_sensors.sh color "* ||
+      "$cmdline" == *"$ROOT/src/sensor_bringup/scripts/host_cameras.py start "* ]]
+}
+
 camera_start() {
   mkdir -p "$LOG_ROOT"
   if [[ "$DRY_RUN" == "1" ]]; then
     printf '+ camera_ros2 color (background)\n'
     return 0
   fi
-  if [[ -s "$STATE_FILE" ]] && kill -0 "$(<"$STATE_FILE")" 2>/dev/null; then
-    printf 'rm65: ROS 2 camera stream already running (pid %s)\n' "$(<"$STATE_FILE")" >&2
-    return 0
+  local pid=""
+  if [[ -s "$STATE_FILE" ]]; then
+    pid="$(<"$STATE_FILE")"
+    if camera_supervisor_alive "$pid"; then
+      if [[ -s "$READY_FILE" ]] && [[ "$(<"$READY_FILE")" == "$pid" ]]; then
+        printf 'rm65: ROS 2 camera stream already running (pid %s)\n' "$pid" >&2
+        return 0
+      fi
+      printf 'rm65: waiting for camera startup (pid %s)\n' "$pid"
+    else
+      pid=""
+    fi
   fi
-  rm -f "$STATE_FILE"
   local camera_log="$LOG_ROOT/rm65-camera.log"
-  zsh -lc 'source "$1/functions.zsh" && rm65_camera_ros2 color' _ "$ROOT" >"$camera_log" 2>&1 &
-  local pid=$!
-  printf '%s\n' "$pid" >"$STATE_FILE"
-  sleep 1
-  if ! kill -0 "$pid" 2>/dev/null; then
-    printf 'rm65: camera startup failed; see %s\n' "$camera_log" >&2
-    rm -f "$STATE_FILE"
-    return 1
+  if [[ -z "$pid" ]]; then
+    # A previous supervisor may have died while its launches still own USB.
+    camera_stop
+    # Keep the supervisor alive after the calling terminal/session ends.
+    nohup setsid env REALMAN_CAMERA_READY_FILE="$READY_FILE" \
+      bash "$ROOT/start_sensors.sh" color >"$camera_log" 2>&1 </dev/null &
+    pid=$!
+    printf '%s\n' "$pid" >"$STATE_FILE"
   fi
-  printf 'rm65: ROS 2 color cameras started (pid %s)\n' "$pid"
+  local timeout="${CAMERA_START_TIMEOUT:-90}" elapsed=0
+  # The new child briefly runs Bash while ROS setup is sourced before exec.
+  while kill -0 "$pid" 2>/dev/null && (( elapsed < timeout )); do
+    if [[ -s "$READY_FILE" ]] && [[ "$(<"$READY_FILE")" == "$pid" ]]; then
+      printf 'rm65: four Orbbec RGB streams ready (pid %s)\n' "$pid"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  printf 'rm65: camera startup failed; see %s\n' "$camera_log" >&2
+  camera_stop
+  return 1
 }
 
 camera_stop() {
@@ -48,16 +79,17 @@ camera_stop() {
   if [[ -s "$STATE_FILE" ]]; then
     local pid
     pid="$(<"$STATE_FILE")"
-    if kill -0 "$pid" 2>/dev/null; then
+    if camera_supervisor_alive "$pid"; then
       kill "$pid" 2>/dev/null || true
-      for _ in {1..20}; do
-        kill -0 "$pid" 2>/dev/null || break
+      # Four independent launch processes release their USB devices in order.
+      for _ in {1..240}; do
+        camera_supervisor_alive "$pid" || break
         sleep 0.25
       done
     fi
-    rm -f "$STATE_FILE"
   fi
-  zsh -lc 'source "$1/functions.zsh" && rm65_camera_ros2_stop' _ "$ROOT" >/dev/null 2>&1 || true
+  zsh -lc 'source "$1/functions.zsh" && rm65_camera_ros2_stop' _ "$ROOT"
+  rm -f "$STATE_FILE" "$READY_FILE"
 }
 
 compose() {
@@ -102,7 +134,7 @@ up() {
       # Recording joins the production graph so `./rm65 up` exposes the
       # read-only replay dashboard directly on port 8770.
       if ! compose up -d realman_bringup_remote realman_web_control realman_recording; then
-        camera_stop
+        printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
       ;;
@@ -110,7 +142,7 @@ up() {
       check_driver_rviz_conflict
       camera_start
       if ! compose up -d realman_bringup_remote realman_web_control realman_recording realman_remote_rviz; then
-        camera_stop
+        printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
       ;;
@@ -121,7 +153,7 @@ up() {
       check_driver_rviz_conflict
       camera_start
       if ! compose up -d realman_bringup_remote realman_web_control realman_recording policy_bridge; then
-        camera_stop
+        printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
       ;;
@@ -156,8 +188,12 @@ status() {
     printf '+ status camera + realman_bringup_remote + realman_web_control\n'
     return 0
   fi
-  if [[ -s "$STATE_FILE" ]] && kill -0 "$(<"$STATE_FILE")" 2>/dev/null; then
-    printf 'camera: running (pid %s)\n' "$(<"$STATE_FILE")"
+  if [[ -s "$STATE_FILE" ]] && camera_supervisor_alive "$(<"$STATE_FILE")"; then
+    if [[ -s "$READY_FILE" ]] && [[ "$(<"$READY_FILE")" == "$(<"$STATE_FILE")" ]]; then
+      printf 'camera: RGB ready (pid %s)\n' "$(<"$STATE_FILE")"
+    else
+      printf 'camera: starting (pid %s)\n' "$(<"$STATE_FILE")"
+    fi
   else
     printf 'camera: stopped\n'
   fi

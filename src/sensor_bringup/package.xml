@@ -3,22 +3,23 @@
 <package format="3">
   <name>sensor_bringup</name>
   <version>1.0.0</version>
-  <description>Unified launch files to bring up the RealSense and Orbbec cameras together.</description>
+  <description>Host camera supervision using the installed binary Orbbec ROS 2 package.</description>
 
   <maintainer email="maintainer@example.com">sensor_maintainer</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>orbbec_camera</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>
 
-  <!-- 注意: realsense2_camera 和 orbbec_camera 位于独立工作区/子模块
-       (src/sensor/realsense/realsense_ws 和 src/sensor/OrbbecSDK_ROS2)，
-       不在此声明 exec_depend，避免 colcon 交叉检查。
-       realsense2_camera 依赖 librealsense2；realsense_ws 子模块初始化并 colcon
-       构建后，由 rm65_camera_ros2 / start_sensors.sh source 其 install/setup.sh
-       提供 ROS2 节点出图。./rm65 up 要求全局 D435 通道必须可用，缺少该 overlay
-       时 rm65_camera_ros2 / start_sensors.sh 直接失败，不再降级为仅 Orbbec。 -->
+  <!-- Camera hardware and launch settings are sourced from root config/ros/;
+       orbbec_camera is installed on the host, without a vendor source overlay. -->
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -1,7 +1,5 @@
-# ROS 2 color camera viewer. Image displays subscribe directly to the three
-# Orbbec color topics plus the global RealSense D435 color topic so all four
-# production cameras appear in one RViz window. Depth displays are intentionally
-# omitted for the production UI.
+# ROS 2 RGB viewer for the two Orbbec wrist cameras and back/front global cameras.
+# Best-effort subscriptions accept both best-effort and reliable driver publishers.
 Panels:
   - Class: rviz_common/Displays
     Name: Displays
@@ -34,46 +32,43 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
-      Name: Left color
+      Name: Left wrist color
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /camera_left/color/image_raw
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
-      Name: Middle color
+      Name: Right wrist color
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /camera_middle/color/image_raw
-      Value: true
-    - Class: rviz_default_plugins/Image
-      Enabled: true
-      Name: Right color
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
+        Reliability Policy: Best Effort
         Value: /camera_right/color/image_raw
       Value: true
-    # Global RealSense D435 shares the same UDPv4 DDS transport as the Orbbec
-    # nodes; namespace/camera_name come from cameras_ros2.launch.py defaults
-    # (camera_global/d435) and must stay in sync with realsense_d435.launch.py.
     - Class: rviz_default_plugins/Image
       Enabled: true
-      Name: Global color
+      Name: Back global color
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /camera_global/d435/color/image_raw
+        Reliability Policy: Best Effort
+        Value: /camera_global/color/image_raw
+      Value: true
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Name: Front global color
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera_global2/color/image_raw
       Value: true
   Enabled: true
   Global Options:
