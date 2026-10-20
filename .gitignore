@@ -41,6 +41,8 @@ src/.codex/
 website/node_modules/
 website/docs/.vitepress/cache/
 website/docs/.vitepress/dist/
+# VitePress build staging is generated alongside cache and dist.
+website/docs/.vitepress/.temp/
 website/playwright-report/
 website/test-results/
 .ace-tool/
