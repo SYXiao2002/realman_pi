@@ -16,6 +16,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
+| `./rm65 rviz2` | 设置 `DISPLAY=:1`、`XAUTHORITY=/run/user/1000/gdm/Xauthority`，加载仓库 `functions.zsh` 并调用 `rm65_docker_camera_rviz`，前台显示四路相机 RGB |
 | `./rm65 down` / `status` / `logs` | 停止服务并等待受管相机 launch 退出、释放 USB；或查看状态、最近日志（含相机日志） |
 | `./rm65 bt <l\|m\|r\|three\|control\|name>` | 在**已运行**的 `realman_bringup_remote` 容器内执行行为树；默认 dry-run |
 | `./rm65 bt-test build\|mock\|web\|all` | 构建、运行或校验隔离的行为树 mock 场景 |

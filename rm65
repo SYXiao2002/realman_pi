@@ -227,6 +227,7 @@ Commands:
   down                Stop unified runtime and ROS 2 cameras.
   status              Show camera and Docker service state.
   logs                Show recent camera and bringup logs.
+  rviz2               Open camera RViz on DISPLAY=:1 with the GDM Xauthority.
   camera              Run the legacy RTSP/TCP camera helper.
   bt-test build|mock|web|all  Build, run, or validate isolated behavior-tree scenarios.
   bt [tree-name|l|m|r|three|control]  Run a behavior tree from config/behavior-trees; .xml may be omitted.
@@ -243,6 +244,7 @@ case "$command_name" in
   down) down "$@" ;;
   status) status "$@" ;;
   logs) logs "$@" ;;
+  rviz2) exec env DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority zsh -lc 'source "$1/functions.zsh" && rm65_docker_camera_rviz' _ "$ROOT" ;;
   bt-test) exec "$ROOT/scripts/bt-test.sh" "$@" ;;
   bt) exec "$ROOT/scripts/bt.sh" "$@" ;;
   camera) exec zsh -lc 'source "$1/functions.zsh" && rm65_camera_start' _ "$ROOT" ;;

@@ -27,6 +27,7 @@ rm65_project_help
 ./rm65 up                 # ROS 2 彩色相机 + 三臂真实驱动 + Web control + 录制/回放 + 相机健康诊断，无 RViz
 ./rm65 up desktop         # 同上，并启动远程 ROS 图 RViz
 ./rm65 up model           # 离线三臂模型 + RViz，不连接真机
+./rm65 rviz2              # 在 :1 桌面前台显示四路相机 RGB
 ./rm65 bt <tree-name>    # 按 config/behavior-trees/<tree-name>[.xml] 启动行为树
 ./rm65 bt control         # 显式启动持久输入路由器；Ctrl-C 前保持运行
 # 也可以不开终端：:8765 控制页“行为树”卡片选文件并点“启动”（bringup 容器内的 bt_launcher 代为运行 bt-start）
@@ -217,6 +218,11 @@ rm65_camera_ros2_stop
 | `rm65_web_control_url [host]` | 打印浏览器控制台 URL。 | 不启动服务，只根据 host 和 `REALMAN_WEB_CONTROL_PORT` 输出 `http://host:port/`。 | 启动 Web 控制后，把正确地址复制给同网段开发机浏览器。 | `config/ros/realman_web_control.yaml` 中的端口配置 |
 
 ## 远程 RViz 入口
+
+`./rm65 rviz2` 是四路相机查看快捷入口：设置 `DISPLAY=:1` 和
+`XAUTHORITY=/run/user/1000/gdm/Xauthority` 后，加载仓库 `functions.zsh` 并调用
+`rm65_docker_camera_rviz`。需要对应桌面会话及可读的授权文件；ROS domain 沿用已有 helper 从 `.env`
+加载的配置。命令前台运行，按 `Ctrl-C` 退出查看器；相机需已启动。
 
 | 函数 | 当前用途 | 启动/影响的组件 | 适用场景 | 权威配置与文档 |
 | --- | --- | --- | --- | --- |
