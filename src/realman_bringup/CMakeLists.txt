@@ -9,7 +9,7 @@ install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 # it into bringup's share directory gives launch files stable local and Docker paths.
 set(ROOT_CONFIG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../config")
 install(
-  DIRECTORY "${ROOT_CONFIG_DIR}/ros"
+  DIRECTORY "${ROOT_CONFIG_DIR}/ros" "${ROOT_CONFIG_DIR}/grasp"
   DESTINATION share/${PROJECT_NAME}/config
 )
 

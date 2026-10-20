@@ -36,6 +36,11 @@ fi
 
 printf 'behavior-tree launcher dry-run plan: PASS\n'
 
+grasp_output="$(RM65_DRY_RUN=1 REALMAN_GRASP_PROFILE=left_wrist REALMAN_GRASP_TARGET_LABEL=eu "$ROOT/scripts/bt.sh" grasp)"
+grep -Fq 'REALMAN_GRASP_PROFILE=left_wrist' <<<"$grasp_output"
+grep -Fq 'REALMAN_GRASP_TARGET_LABEL=eu' <<<"$grasp_output"
+grep -Fq 'BT_TREE_FILE=/opt/rm65_ws/config/behavior-trees/grasp.xml' <<<"$grasp_output"
+
 three_output="$(RM65_DRY_RUN=1 REALMAN_BT_DRY_RUN=true "$ROOT/scripts/bt.sh" three)"
 grep -Fq 'BT_TREE_FILE=/opt/rm65_ws/config/behavior-trees/three.xml' <<<"$three_output"
 

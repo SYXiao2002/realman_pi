@@ -48,6 +48,19 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `BT_SERVER_PORT` / `BT_PUBLIC_HOST` | `8080` / `127.0.0.1` | 只读监视器端口与打印出来的访问地址 |
 | `BT_RUNTIME_ARCHIVE_ROOT` | `/opt/rm65_ws/logs/behavior-trees` | 终态后归档 XML 与 `runtime.json` |
 
+### 腕相机抓取
+
+算法服务使用独立 Compose，不随 `./rm65 up` 自动启动：
+
+```bash
+docker buildx bake --allow=network.host -f config/docker/compose.grasp.yaml
+docker compose --project-directory . -f config/docker/compose.grasp.yaml up -d
+# 默认只校验配置，不创建传感器或 IK 客户端
+ros2 launch grasp_bridge grasp_bridge.launch.py profile:=right_wrist
+```
+
+统一 launch 的 `start_grasp_bridge:=true grasp_profile:=right_wrist grasp_dry_run:=true` 也可启动规划节点；`grasp_dry_run:=false` 仅允许真实观测与 IK，执行仍由 BT 负责。实机执行门槛、模型挂载和标定导入命令见[腕相机抓取](../development/grasping)。
+
 ## `.env`
 
 仓库根目录的 `.env` 被 Docker Compose 自动读取，`functions.zsh` 加载时也会读取其中的简单 `KEY=value`（终端里已设置的非空变量优先）。文件里每个变量都带候选值注释，**不要写入密钥**。修改后需要重建容器环境（`docker compose restart` 不会加载新的 `.env`）。
@@ -84,6 +97,7 @@ Web control 不做任何身份校验：`:8765` 能被访问的浏览器就能发
 | `8765` | `realman_web_control` | 控制页 `/`、标定页 `/calibration.html`、WebSocket |
 | `8770` | `realman_recording` | 录制实时页与 LeRobot 回放页，默认只绑定回环地址；无认证，不要直接暴露 |
 | `8080` | 行为树只读监视器 | 仅在 `./rm65 bt …` 运行期间；所有 `/api/` 写请求返回 `405` |
+| `8091` | 独立 `grasp_server` | 显式启动 `config/docker/compose.grasp.yaml`；默认只绑定回环，ROS bridge 为 WS 客户端 |
 | `18000` | 外部 VLA 策略服务 | `policy_bridge` 作为客户端连接，不由本仓库启动 |
 | `8554`、`8100–8103` | 旧 RTSP/TCP 相机推流 | 已弃用 |
 

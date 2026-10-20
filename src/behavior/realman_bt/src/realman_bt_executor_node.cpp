@@ -15,6 +15,7 @@
 #include "bt_nodes/decorator/retry_node.hpp"
 #include "realman_bt/cartesian_velocity_for_duration_node.hpp"
 #include "realman_bt/gripper_ready_node.hpp"
+#include "realman_bt/grasp_nodes.hpp"
 #include "realman_bt/input_mode_nodes.hpp"
 #include "realman_bt/motion_dwell_monitor_node.hpp"
 #include "realman_bt/move_j_node.hpp"
@@ -126,6 +127,28 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
       [this](std::shared_ptr<CartesianVelocityCancellationDrain> drain) {
         enqueueCartesianVelocityCancellationDrain(std::move(drain));
       });
+  blackboard_->set<GraspDrainSink>(kGraspDrainSinkKey,
+      [this](std::shared_ptr<GraspDrain> drain) { enqueueGraspDrain(std::move(drain)); });
+  for (const auto* key : {"grasp_profile_name", "grasp_profile_id", "grasp_base_frame",
+       "grasp_tool_name", "grasp_gripper", "grasp_target_label", "grasp_backend",
+       "grasp_observation_joint_degrees", "grasp_return_joint_degrees", "grasp_readiness_detail"}) {
+    blackboard_->set<std::string>(key, declare_parameter<std::string>(key, ""));
+  }
+  blackboard_->set<bool>("grasp_execution_ready", declare_parameter<bool>("grasp_execution_ready", false));
+  blackboard_->set<int>("grasp_velocity_percent", static_cast<int>(declare_parameter<int64_t>("grasp_velocity_percent", 5)));
+  for (const auto& entry : std::vector<std::pair<std::string, double>>{
+      {"grasp_lease_ttl_sec", 5.0}, {"grasp_acquire_timeout_sec", 10.0},
+      {"grasp_motion_timeout_sec", 30.0}, {"grasp_plan_timeout_sec", 30.0},
+      {"grasp_gripper_timeout_sec", 25.0}, {"grasp_hold_sec", 1.0},
+      {"grasp_confirmation_timeout_sec", 120.0}}) {
+    blackboard_->set<double>(entry.first, declare_parameter<double>(entry.first, entry.second));
+  }
+  factory_.registerNodeType<TaskLeaseNode>("TaskLease");
+  factory_.registerNodeType<PlanGraspNode>("PlanGrasp");
+  factory_.registerNodeType<GraspWaypointNode>("GraspWaypoint");
+  factory_.registerNodeType<TaskGripperNode>("TaskGripper");
+  factory_.registerNodeType<GraspHoldNode>("GraspHold");
+  factory_.registerNodeType<GraspConfirmNode>("GraspConfirm");
   factory_.registerNodeType<bt_nodes::SequenceNode>("Sequence");
   factory_.registerNodeType<bt_nodes::ReactiveSequenceNode>("ReactiveSequence");
   factory_.registerNodeType<bt_nodes::ReactiveFallbackNode>("ReactiveFallback");
@@ -231,6 +254,7 @@ RealmanBtExecutorNode::~RealmanBtExecutorNode() {
         "releasing %zu pending Cartesian velocity cancellation drain(s) during shutdown",
         cartesian_velocity_cancellation_drains_.size());
   }
+  grasp_drains_.clear();
   cancellation_drains_.clear();
   cartesian_velocity_cancellation_drains_.clear();
 }
@@ -428,7 +452,24 @@ void RealmanBtExecutorNode::enqueueCartesianVelocityCancellationDrain(
       std::chrono::milliseconds(50), [this]() { drainCancellationQueue(); });
 }
 
+void RealmanBtExecutorNode::enqueueGraspDrain(std::shared_ptr<GraspDrain> drain) {
+  if (!drain) return;
+  grasp_drains_.push_back(std::move(drain));
+  if (!cancellation_drain_timer_) {
+    cancellation_drain_timer_ = create_wall_timer(
+        std::chrono::milliseconds(50), [this]() { drainCancellationQueue(); });
+  }
+}
+
 void RealmanBtExecutorNode::drainCancellationQueue() {
+  auto grasp_remaining = grasp_drains_.begin();
+  for (auto current = grasp_drains_.begin(); current != grasp_drains_.end(); ++current) {
+    if (!(*current)->drainOnce()) {
+      if (grasp_remaining != current) *grasp_remaining = std::move(*current);
+      ++grasp_remaining;
+    }
+  }
+  grasp_drains_.erase(grasp_remaining, grasp_drains_.end());
   auto remaining = cancellation_drains_.begin();
   for (auto current = cancellation_drains_.begin();
        current != cancellation_drains_.end(); ++current) {
@@ -499,7 +540,7 @@ void RealmanBtExecutorNode::exitAfterShutdownDrain() {
 }
 
 std::size_t RealmanBtExecutorNode::pendingCancellationCount() const {
-  return cancellation_drains_.size() +
+  return cancellation_drains_.size() + grasp_drains_.size() +
          cartesian_velocity_cancellation_drains_.size();
 }
 

@@ -22,6 +22,7 @@ realman_pi/
 │   ├── behavior/             realman_bt（执行器与 router）、realman_bt_mock
 │   ├── driver/               realman_robot_driver、realman_msgs、realman_web_control、xbox_controller_driver
 │   ├── gripper/              gripper_ros2、gripper_ros2_msgs（左右 42D，保留可选 Changingtek 支持）
+│   ├── grasp/                纯 Python 算法服务与协议 + ROS grasp_bridge（纯规划）
 │   ├── policy_bridge/        VLA 策略 WebSocket ⇄ ROS 2 协议桥
 │   ├── recording/            数据录制与回放：realman_recording、realman_recording_msgs
 │   ├── realman_bringup/      系统 launch 编排
@@ -53,6 +54,7 @@ realman_pi/
 | `realman_bt_mock` | Python | 无硬件 mock 图 | `behavior_tree_mock.launch.py` |
 | `gripper_ros2`、`gripper_ros2_msgs` | Python / IDL | 夹爪 manager：串口独占、service/topic | `gripper_manager` |
 | `realman_recording`、`realman_recording_msgs` | Python / IDL | 只订阅的数据录制：recorder、预检、LeRobot v3 导出、Web 实时与回放页 | `recording.launch.py`、`recording_runtime_probe` |
+| `grasp_bridge` | Python | 腕 RGB-D 配对/配准、WS 推理、TCP 转换与受限 IK，不执行运动 | `grasp_bridge.launch.py` |
 | `policy_bridge` | Python | 策略 WebSocket 桥与 mock 策略服务 | `policy_bridge_node`、`mock_policy_server` |
 | `realman_camera_calibration` | Python | ChArUco 采样与手眼求解 | `camera_calibration_node` |
 | `sensor_bringup`、宿主机 `orbbec_camera` | Python / 二进制 ROS 包 | 四路 Orbbec RGB 启动与出图；厂商驱动不由本仓库构建 | `src/sensor_bringup/scripts/host_cameras.py` |
@@ -74,12 +76,14 @@ realman_pi/
 
 ## Docker 边界
 
-Compose 使用 host network 与 host IPC；`./config` 以只读方式挂到 `/opt/rm65_ws/config`，`./logs` 可写。需要写入的目录（`config/web-control/joint-records`、`realman_bringup_remote` 的 `config/ros`）单独声明为可写。完整服务列表见[系统 Bringup](../development/system-bringup#docker-服务)。
+Compose 使用 host network 与 host IPC；`./config` 以只读方式挂到 `/opt/rm65_ws/config`，`./logs` 可写。需要写入的目录（`config/web-control/joint-records`、夹爪行程覆盖所用的 `config/ros`）单独声明为可写。完整服务列表见[系统 Bringup](../development/system-bringup#docker-服务)。
 
 - 容器从 `.env` 读取 `ROS_DOMAIN_ID`、`ROS_LOCALHOST_ONLY`、`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`。host network 下，同网络的 Humble 主机可加入该 ROS 图；防火墙必须放行 DDS UDP。
 - 带 RViz 的服务额外挂载 `/tmp/.X11-unix` 与 `$XAUTHORITY`；`realman_bringup_remote`、`realman_web_control` 不需要显示变量。
 - `realman_bringup_remote` 只映射左右共用的 `/dev/tty_gripper_42d` 稳定别名；中臂无夹爪，不要把易变的 `/dev/ttyUSB*` 写进生产配置。
 - Bringup 设置 `RCUTILS_COLORIZED_OUTPUT=1` 和 `ROS_LOG_DIR`，每次运行在 `logs/YYYYMMDD_HHMMSS/` 保存官方节点日志。规范见 `ros2-logging-conventions` skill。
+
+独立算法服务由 `config/docker/compose.grasp.yaml` 显式启动，使用纯 Python/CUDA 镜像；没有 ROS、串口或机器人控制器连接。其权重只读挂载，与 ROS driver 镜像分别构建。
 
 ## 运行节点（描述与关节状态）
 

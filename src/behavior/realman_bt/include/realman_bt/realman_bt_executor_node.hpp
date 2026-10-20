@@ -25,6 +25,7 @@
 namespace realman_bt {
 
 class MoveJCancellationDrain;
+class GraspDrain;
 
 class RealmanBtExecutorNode final : public rclcpp::Node {
  public:
@@ -46,6 +47,7 @@ class RealmanBtExecutorNode final : public rclcpp::Node {
   void enqueueCancellationDrain(std::shared_ptr<MoveJCancellationDrain> drain);
   void enqueueCartesianVelocityCancellationDrain(
       std::shared_ptr<CartesianVelocityCancellationDrain> drain);
+  void enqueueGraspDrain(std::shared_ptr<GraspDrain> drain);
   void drainCancellationQueue();
   std::size_t pendingCancellationCount() const;
   void requestProcessExitIfReady();
@@ -96,6 +98,7 @@ class RealmanBtExecutorNode final : public rclcpp::Node {
   std::vector<std::shared_ptr<MoveJCancellationDrain>> cancellation_drains_;
   std::vector<std::shared_ptr<CartesianVelocityCancellationDrain>>
       cartesian_velocity_cancellation_drains_;
+  std::vector<std::shared_ptr<GraspDrain>> grasp_drains_;
   double tick_rate_hz_{10.0};
   bool autostart_{true};
   bool stop_on_terminal_{true};

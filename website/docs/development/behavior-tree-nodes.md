@@ -14,6 +14,9 @@ description: realman_bt 行为树的执行模型、各注册节点的语义与�
 下面两个交互模块中的树结构取自 [`config/behavior-trees/control.xml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/behavior-trees/control.xml)；
 各节点的端口、默认值和说明在构建站点时从 C++ 的 `providedPorts()` 中提取（`website/scripts/bt-catalog.mjs`）。
 因此代码或 XML 一旦修改，页面会随之更新。只有描述节点作用的文字是手写的，位于 `theme/bt/node-docs.ts`。
+完整注册目录也包含 `grasp.xml` 使用的 `TaskLease`、`PlanGrasp`、`GraspWaypoint`、
+`TaskGripper`、`GraspHold` 和 `GraspConfirm`。当前交互树仍显示 `control.xml`，
+不模拟抓取动作；抓取的顺序、lease 与人工确认契约见[腕相机单臂抓取](./behavior-tree-motion#腕相机单臂抓取)。
 
 ## 一拍的执行过程
 
@@ -70,7 +73,7 @@ flowchart TB
 | 类别 | 节点 | 约定 |
 | --- | --- | --- |
 | 控制节点 | `Sequence`、`Fallback`、`ReactiveSequence`、`ReactiveFallback` | 只负责组合子节点，不调用 ROS |
-| 装饰节点 | `Repeat`、`Retry`、`RetryUnlessFault`、`MotionDwellMonitor` | 只有一个子节点，重来或提前结束前先 `halt()` 它 |
+| 装饰节点 | `Repeat`、`Retry`、`RetryUnlessFault`、`MotionDwellMonitor`、`TaskLease` | 只有一个子节点；`TaskLease` 还管理整个子树的 driver 租约 |
 | 条件节点 | `InputModeGuard` | 只读不写，从不返回 `RUNNING` |
 | 动作节点 | 其余全部 | 叶节点：调用服务、Action 或话题，或表示某个输入正持有控制权 |
 

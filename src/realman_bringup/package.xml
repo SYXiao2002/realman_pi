@@ -17,6 +17,7 @@
   <exec_depend>rm65_description</exec_depend>
   <exec_depend>realman_robot_driver</exec_depend>
   <exec_depend>realman_camera_calibration</exec_depend>
+  <exec_depend>grasp_bridge</exec_depend>
   <exec_depend>realman_web_control</exec_depend>
   <exec_depend>gripper_ros2</exec_depend>
   <exec_depend>rviz2</exec_depend>

@@ -26,7 +26,7 @@ def test_disabled_system_launch_expands_without_starting_processes(tmp_path, mon
             "start_web_control",
             "start_bt_launcher",
             "start_camera_calibration",
-            "update_layout_after_calibration",
+            "start_grasp_bridge",
         )
     ]
     service = LaunchService()
@@ -35,3 +35,14 @@ def test_disabled_system_launch_expands_without_starting_processes(tmp_path, mon
     )
 
     assert service.run() == 0
+
+
+def test_installed_grasp_configuration_loads_without_environment_override(monkeypatch):
+    from ament_index_python.packages import get_package_share_directory
+    from grasp_bridge.profiles import load_profile
+
+    monkeypatch.delenv("REALMAN_CONFIG_ROOT", raising=False)
+    config_root = Path(get_package_share_directory("realman_bringup")) / "config"
+    profile = load_profile(config_root, "right_wrist")
+    assert profile["arm"] == "r"
+    assert profile["gripper_geometry"]["verified"] is False

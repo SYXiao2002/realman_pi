@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the standalone MoveJ behavior-tree demo."""
+"""Launch a standalone one-shot behavior tree with profile-driven grasp inputs."""
 
 import os
 import sys
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -87,26 +87,44 @@ def generate_launch_description():
         description="Atomic JSON file containing the latest behavior-tree runtime snapshot.",
     )
 
-    executor = Node(
-        package="realman_bt",
-        executable="realman_bt_executor",
-        name="realman_bt_executor",
-        output="screen",
-        parameters=[
-            {
-                "tree_file": LaunchConfiguration("tree_file"),
-                "arm_id": LaunchConfiguration("arm_id"),
-                "dry_run": LaunchConfiguration("dry_run"),
-                "tick_rate_hz": LaunchConfiguration("tick_rate_hz"),
-                "autostart": LaunchConfiguration("autostart"),
-                "stop_on_terminal": LaunchConfiguration("stop_on_terminal"),
-                "exit_on_terminal": LaunchConfiguration("exit_on_terminal"),
-                "runtime_snapshot_file": LaunchConfiguration("runtime_snapshot_file"),
-                "coordinate_references": coordinate_references,
-                "cartesian_velocity_profiles": velocity_profiles,
-            }
-        ],
-    )
+    grasp_profile = DeclareLaunchArgument(
+        "grasp_profile", default_value=os.environ.get("REALMAN_GRASP_PROFILE", ""),
+        description="Profile override for grasp.xml only.")
+    grasp_target_label = DeclareLaunchArgument(
+        "grasp_target_label", default_value=os.environ.get("REALMAN_GRASP_TARGET_LABEL", ""),
+        description="Explicit target override for grasp.xml only.")
+
+    def create_executor(context):
+        extra = {}
+        selected_tree = Path(LaunchConfiguration("tree_file").perform(context))
+        if selected_tree.stem == "grasp":
+            from grasp_task_config import load_grasp_task_parameters
+            extra = load_grasp_task_parameters(
+                config_root,
+                profile_name=LaunchConfiguration("grasp_profile").perform(context) or None,
+                target_label=LaunchConfiguration("grasp_target_label").perform(context) or None,
+            )
+        return [Node(
+            package="realman_bt",
+            executable="realman_bt_executor",
+            name="realman_bt_executor",
+            output="screen",
+            parameters=[
+                {
+                    "tree_file": LaunchConfiguration("tree_file"),
+                    "arm_id": LaunchConfiguration("arm_id"),
+                    "dry_run": LaunchConfiguration("dry_run"),
+                    "tick_rate_hz": LaunchConfiguration("tick_rate_hz"),
+                    "autostart": LaunchConfiguration("autostart"),
+                    "stop_on_terminal": LaunchConfiguration("stop_on_terminal"),
+                    "exit_on_terminal": LaunchConfiguration("exit_on_terminal"),
+                    "runtime_snapshot_file": LaunchConfiguration("runtime_snapshot_file"),
+                    "coordinate_references": coordinate_references,
+                    "cartesian_velocity_profiles": velocity_profiles,
+                    **extra,
+                }
+            ],
+        )]
 
     return LaunchDescription(
         [
@@ -120,6 +138,8 @@ def generate_launch_description():
             stop_on_terminal,
             exit_on_terminal,
             runtime_snapshot_file,
-            executor,
+            grasp_profile,
+            grasp_target_label,
+            OpaqueFunction(function=create_executor),
         ]
     )

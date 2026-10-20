@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -82,13 +83,28 @@ def read_metadata(path: Path) -> tuple[str, str, str, str, str, str]:
     )
 
 
+def runtime_metadata(path: Path, config_root: Path, profile_name: str = ""):
+    """Resolve grasp preflight from the same profile as the executor launch."""
+    metadata = read_metadata(path)
+    if path.stem != "grasp":
+        return metadata
+    from grasp_bridge.profiles import load_profile, read_yaml
+
+    settings = read_yaml(config_root / "ros/grasp_task.yaml")
+    profile = load_profile(config_root, profile_name or settings["profile"])
+    arm = profile["arm"]
+    return (arm, arm, "execute_motion", *metadata[3:])
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         print(f"usage: {argv[0]} TREE.xml", file=sys.stderr)
         return 2
     try:
-        print("\t".join(read_metadata(Path(argv[1]))))
-    except ValueError as error:
+        config_root = Path(os.environ.get("REALMAN_CONFIG_ROOT", "/opt/rm65_ws/config"))
+        print("\t".join(runtime_metadata(Path(argv[1]), config_root,
+                                         os.environ.get("REALMAN_GRASP_PROFILE", ""))))
+    except (ValueError, KeyError, OSError) as error:
         print(f"[bt-start] {error}", file=sys.stderr)
         return 2
     return 0

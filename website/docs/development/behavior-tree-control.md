@@ -163,6 +163,37 @@ Action 或夹爪 command，需要真实 Pika 运动必须显式设置 `REALMAN_B
 
 ## 任务控制节点
 
+### 单臂任务租约
+
+`control.xml` 的输入选择只协调输入来源；选中 `web/policy/pika` 不会取得抓取任务 token。
+`grasp.xml` 使用独立的 `TaskLease` 装饰节点，通过 `/<arm>/task_control`
+（`realman_msgs/srv/TaskControl`）占用所选臂，覆盖观察、推理、运动、夹爪、操作员确认和返回。
+driver 是最终准入边界：lease 存在时，空 token 或不同 token 的新运动、夹爪写请求都会被拒绝。
+已有忙会话也会阻止获取任务 lease；切换输入选择不能绕过该检查。
+
+| 操作 | 值 | 契约 |
+| --- | --- | --- |
+| `ACQUIRE` / `RENEW` | `0` / `1` | 获取私有 token 或延长当前 lease；TTL 从服务端准入计时 |
+| `RELEASE` | `2` | 必须持匹配 token，且当前臂无运动或夹爪预留；忙时拒绝 |
+| `RESERVE_EXTERNAL` / `RELEASE_EXTERNAL` | `3` / `4` | gripper manager 用于一次完整夹爪命令的写入预留 |
+| `STATUS` | `5` | 空 token 只读状态且不泄露 token；非空 token 校验当前租约是否仍有效 |
+
+四种运动 Action（`ExecuteMotion`、`ExecuteTrajectory`、`CartesianPose`、`CartesianVelocity`）
+均增加 `task_token` 字段，调用方与 driver 必须一起重建 `realman_msgs`，旧二进制 ABI 不兼容。
+空 token 仅在没有任务 lease 时保持普通客户端语义；lease token 只经内部黑板和请求传递，
+不写入日志、快照或 WebSocket。`task_id` 是独立的可见关联标识。
+
+lease 超时或 `/<arm>/stop` 会撤销后续准入；停止命令即使在推理/等待阶段也会使任务不能恢复执行。
+超时 watchdog 停止仍活动的机械臂动作，不会打开夹爪。过期或撤销不会自动释放 ownership，
+必须等待在途操作结束后显式 `RELEASE`，避免迟到命令与新任务交叠。普通运动在 SDK 提交前、
+轨迹每个点以及 Cartesian 初始化/周期写入前重新检查准入。夹爪预留是一个完整命令的准入点：
+已经预留的命令可完成；队列中的下一个目标须重新验证，拒绝的目标直接丢弃。
+
+BT 在 halt 时先清除内部 token/计划，再移交在途取消与释放；driver busy 检查仍有最终决定权。
+操作员确认与无自动松爪规则见[腕相机单臂抓取](./behavior-tree-motion#腕相机单臂抓取)。
+
+### 重复和重试
+
 每个节点的语义、端口和可交互的树浏览器、逐拍模拟见 [行为树节点参考](./behavior-tree-nodes)。
 
 除了输入路由用到的 `Sequence`、`ReactiveSequence` 和 `ReactiveFallback`，执行器还注册了

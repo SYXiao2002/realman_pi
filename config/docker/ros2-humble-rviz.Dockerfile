@@ -161,7 +161,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --timeout 300 \
         --requirement /opt/rm65_ws/config/python/gripper-requirements.txt
 
-# Transport deps (msgpack + websockets) for the vendored OpenPI policy client
+# Transport deps (msgpack + websockets) for policy_bridge and grasp_bridge
 # used by policy_bridge.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install \
@@ -194,8 +194,8 @@ COPY config /opt/rm65_ws/config
 
 RUN . /opt/ros/humble/setup.sh \
     && colcon build --symlink-install \
-        --packages-up-to realman_bringup realman_robot_driver realman_msgs realman_web_control realman_camera_calibration gripper_ros2 gripper_ros2_msgs realman_bt realman_bt_mock realman_recording realman_recording_msgs policy_bridge \
-    && colcon test --packages-select xbox_controller_driver realman_robot_driver realman_bringup realman_msgs realman_web_control realman_camera_calibration gripper_ros2 gripper_ros2_msgs realman_bt realman_bt_mock realman_recording realman_recording_msgs policy_bridge \
+        --packages-up-to realman_bringup realman_robot_driver realman_msgs realman_web_control realman_camera_calibration gripper_ros2 gripper_ros2_msgs realman_bt realman_bt_mock realman_recording realman_recording_msgs policy_bridge grasp_bridge \
+    && colcon test --packages-select xbox_controller_driver realman_robot_driver realman_bringup realman_msgs realman_web_control realman_camera_calibration gripper_ros2 gripper_ros2_msgs realman_bt realman_bt_mock realman_recording realman_recording_msgs policy_bridge grasp_bridge \
     && colcon test-result --verbose
 
 COPY --from=bt_editor_build /opt/bt_editor/dist /opt/rm65_ws/behavior_tree/editor-dist

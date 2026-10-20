@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "realman_bt/runtime_snapshot.hpp"
+#include "realman_bt/grasp_nodes.hpp"
 namespace realman_bt {
 namespace {
 
@@ -148,6 +149,7 @@ bool MoveJNode::readGoal(Action::Goal* goal) {
     throw std::invalid_argument("timeout_sec must be positive");
   }
 
+  goal->task_token = blackboard()->get<std::string>(kTaskTokenKey).value_or("");
   goal->command = Action::Goal::MOVEJ;
   goal->reference_type = Action::Goal::BASE;
   goal->reference_name = "base";

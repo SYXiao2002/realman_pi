@@ -49,6 +49,10 @@ website/test-results/
 logs/*
 !logs/.gitkeep
 
+# Standalone grasp weights are external runtime artifacts verified by
+# config/grasp/models.yaml, never source or part of the Docker build context.
+models/grasp/
+
 # Runtime calibration keeps one recoverable layout snapshot beside the YAML.
 config/ros/*.yaml.bak
 

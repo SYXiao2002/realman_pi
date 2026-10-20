@@ -63,6 +63,15 @@ if ! metadata="$(python3 "$tree_metadata_script" "$BT_TREE_FILE")"; then
 fi
 IFS=$'\t' read -r metadata_arm_id metadata_required_arms metadata_required_actions \
   metadata_launch_file metadata_stop_on_terminal metadata_exit_on_terminal <<<"$metadata"
+if [[ "$(basename "$BT_TREE_FILE")" == "grasp.xml" ]]; then
+  # Its arm is selected by grasp_task/profile configuration. Reject a conflicting
+  # legacy arm override before Action preflight or executor launch.
+  if [[ -n "$BT_ARM_ID_OVERRIDE" && "$BT_ARM_ID_OVERRIDE" != "$metadata_arm_id" ]] ||
+     [[ -n "$BT_REQUIRED_ARMS" && "$BT_REQUIRED_ARMS" != "$metadata_required_arms" ]]; then
+    echo "[bt-start] grasp arm overrides disagree with the selected profile" >&2
+    exit 2
+  fi
+fi
 [[ -n "$BT_ARM_ID_OVERRIDE" ]] && metadata_arm_id="$BT_ARM_ID_OVERRIDE"
 [[ -n "$BT_REQUIRED_ARMS" ]] && metadata_required_arms="$BT_REQUIRED_ARMS"
 [[ -n "$BT_REQUIRED_ACTIONS" ]] && metadata_required_actions="$BT_REQUIRED_ACTIONS"

@@ -7,7 +7,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 
 本页是**速查表**：每一行只回答"接口叫什么、类型是什么、谁拥有它"，字段语义、单位、安全约束和失败方式见链接的专题页。接口以代码为准；新增或修改接口时，同一次提交必须更新本页和对应专题页。
 
-约定：通用 `<arm>` 支持 `l`、`m`、`r`（左/中/右），当前生产只启用 `l/r`；`m` 保留为模型/标定参考，没有真实驱动接口。Action、Service、Topic 全部带该 namespace。驱动实例由 `realman_driver.yaml` 中存在的完整节点 section 决定。`msg`/`srv`/`action` 类型来自 [`src/driver/realman_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/driver/realman_msgs) 和 [`src/gripper/gripper_ros2_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/gripper/gripper_ros2_msgs)。
+约定：通用 `<arm>` 支持 `l`、`m`、`r`（左/中/右），当前生产只启用 `l/r`；`m` 保留为历史布局与模型参考，没有真实驱动接口。Action、Service、Topic 全部带该 namespace。驱动实例由 `realman_driver.yaml` 中存在的完整节点 section 决定。`msg`/`srv`/`action` 类型来自 [`src/driver/realman_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/driver/realman_msgs) 和 [`src/gripper/gripper_ros2_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/gripper/gripper_ros2_msgs)。
 
 ## 机械臂驱动 `/<arm>/realman_driver`
 
@@ -26,6 +26,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/<arm>/cartesian_pose` | Action `CartesianPose` | 绝对位姿 session：IK + CANFD 关节透传 |
 | `/<arm>/cartesian_pose/command` | `geometry_msgs/PoseStamped`（订阅） | 刷新位姿 session 的最新目标（base frame） |
 | `/<arm>/connect` `disconnect` `stop` `status` | `std_srvs/Trigger` | 连接生命周期、软件受控停止、状态 |
+| `/<arm>/task_control` | `realman_msgs/TaskControl` | 按臂获取、续期、释放/撤销与查询任务租约；同一 token 覆盖机械臂和夹爪 |
 | `/<arm>/recover_motion` | `realman_msgs/RecoverMotion` | 取消后重建事件通道；不发送运动 |
 | `/<arm>/controller_info` | `std_srvs/Trigger` | 只读控制器信息（JSON），用于比对两台控制器 |
 | `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 关节 FK → 当前位姿（按已验证参考系） |
@@ -33,6 +34,8 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/<arm>/solve_ik` | `realman_msgs/SolveIk` | 参考系目标 → 关节解（度） |
 | `/<arm>/coordinates/verify` `apply` | `realman_msgs/VerifyCoordinates` | 只读回查 / 显式写入默认工具与工作坐标 |
 | `/<arm>/coordinates/select_tool` `select_work` | `realman_msgs/SelectFrame` | 选择配置内的工具/工作坐标并回读 |
+
+抓取任务通过 `/<arm>/task_control`（`realman_msgs/TaskControl`）获取、续期和释放任务租约。运动 Action 新增 `task_token`；任务持有期间，驱动拒绝其他 owner 的动作和坐标写入，对应夹爪也由同一 admission 检查。无任务时沿用原入口；`stop` 保持紧急入口。租约过期不会自动解除未确认结束的命令占用。详见[腕相机抓取](../development/grasping)。
 
 同一时刻一只臂只允许一个运动 owner；`stop` 抢占 ownership。`reference_type` 为 `BASE=0` / `WORK=1` / `TOOL=2`，速度 session 拒绝 BASE。
 
@@ -45,6 +48,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/realman_bt_executor/list_input_modes` | `realman_msgs/ListInputModes` | 按 XML 顺序发现输入模式目录 |
 | `/realman_bt_executor/select_input_mode` | `realman_msgs/SelectInputMode` | 请求模式（`mode_id` + 非空 `requester_id`） |
 | `/realman_bt_executor/input_mode_state` | `realman_msgs/InputModeState` | `ACTIVE` / `SWITCHING` / `FAILED` 及 epoch |
+| `/realman_bt_executor/confirm_grasp` | `realman_msgs/ConfirmGrasp` | 仅在等待人工确认时提供；匹配 task ID，记录观察结果和是否受控放回 |
 | `/realman_bt_executor/bt_status` | `std_msgs/String` | 执行器状态 |
 | `/realman_bt_executor/start` `stop` | `std_srvs/Trigger` | 执行器生命周期 |
 | `/keyboard/<l\|r>/cartesian_velocity` | `geometry_msgs/TwistStamped` | Web 键盘 ingress（由 `realman_web_control` 发布） |
@@ -62,6 +66,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
 | `/<name>/open` `close` `reset` `grasp_check` `calibrate` | `std_srvs/Trigger` | 同步动作；42D 不支持 reset/calibrate/grasp_check，返回失败 |
+| `/<name>/task_command` | `realman_msgs/TaskGripperCommand` | 携带 `task_token` 的 OPEN/CLOSE；只确认命令完成，不表示物体抓稳 |
 | `/<name>/enable` | `std_srvs/SetBool` | 42D 为串口模式准备 / 软件命令门控，失能不表示硬件停止 |
 | `/<name>/percentage` | `gripper_ros2_msgs/GripperPercentage` | 一次性同步目标（`0..1`） |
 | `/<name>/percentage/command` | `std_msgs/Float32`（订阅） | 非阻塞目标；左右 42D 按阈值/回差转为开闭并去重 |
@@ -82,12 +87,13 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/camera_global/color/image_raw`、`/camera_global2/color/image_raw`，及对应 `color/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后 / 前 Gemini 335L 全局相机 |
 | `/camera_right/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 右腕 Gemini 305（`CV2856D0002E`）原始深度；`depth_registration=false` |
 | `/camera_global/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后全局 Gemini 335L（`CP28563000CK`）原始深度；`depth_registration=false` |
-| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 原子采样：图像 + TF + 关节 |
-| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 求解手眼与相对位姿 |
+| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF |
+| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 按 `arm_id/session_id` 求解独立手眼 |
+| `/camera_calibration/update_layout` | `realman_msgs/UpdateCalibrationLayout` | 用户选择 `left_session_id/right_session_id`，更新右臂布局并备份 YAML；重新 bringup 后基座 TF 生效 |
 | `/camera_calibration/camera_health` | `std_msgs/String`（JSON） | 每秒发布，供 Web 标定页面使用 |
 | `/camera_calibration/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 标定节点诊断 |
 
-契约：[三臂 ChArUco 手眼标定](../development/camera-calibration)、[相机指南](../guide/cameras)。
+契约：[单臂 ChArUco 手眼标定](../development/camera-calibration)、[相机指南](../guide/cameras)。
 
 ## 数据录制 `realman_recording`
 
@@ -109,6 +115,18 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/pi05_policy/<l\|r>/gripper_percentage` | `std_msgs/Float32` | `0..1` |
 | `/policy/activate` `deactivate` | `std_srvs/SetBool` | 生命周期；`emergency_stop` 与 `force_infer` 为 `Trigger` |
 | `/policy/stats` | `diagnostic_msgs/DiagnosticArray` | 计数与实时指标；暂停时 `ERROR` |
+
+## 腕相机抓取 `grasp_bridge`
+
+纯规划接口，执行由 BT 编排。契约：[腕相机抓取](../development/grasping)。
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 坐标转换与受限 IK；可取消，不发送运动/夹爪命令 |
+| `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
+| `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
+| `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
+| `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D 与几何；无 ROS |
 
 ## TF 与描述
 

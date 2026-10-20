@@ -11,3 +11,5 @@ src/build/
 src/install/
 src/log/
 **/__pycache__/
+# Grasp model manifests live in config/grasp; weights stay on read-only mounts.
+models/grasp/

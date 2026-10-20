@@ -5,7 +5,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 
 # 配置文件总表
 
-所有运行配置都在仓库根目录 [`config/`](https://github.com/QingTianRobot/realman_pi/tree/main/config)，源码包里**不允许**再放第二份。这是项目约定（`project-config-layout` skill）：配置文件必须带注释，说明用途、单位、取值范围和与其它配置的关系。Docker 把 `./config` 以只读方式挂载到容器的 `/opt/rm65_ws/config`，所以**修改 YAML 后重启对应服务即可生效，不需要重建镜像**。
+所有运行配置都在仓库根目录 [`config/`](https://github.com/QingTianRobot/realman_pi/tree/main/config)，源码包通过安装规则分发配置副本，权威源只保留在根目录。这是项目约定（`project-config-layout` skill）：配置文件必须带注释，说明用途、单位、取值范围和与其它配置的关系。Docker 把 `./config` 以只读方式挂载到容器的 `/opt/rm65_ws/config`，所以**修改 YAML 后重启对应服务即可生效，不需要重建镜像**。
 
 本页只回答"哪个文件管什么、谁读它、改了怎么生效"。字段的具体含义和单位以文件内注释为准，不在这里复制数值，以免漂移。
 
@@ -22,12 +22,16 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `behavior_tree.yaml` | 持久输入路由器参数（tick 频率、切换超时、安全回退模式） | `realman_bt_executor` | [行为树控制权](../development/behavior-tree-control) |
 | `gripper.yaml` | 左右两个 42D 共用串口、地址、二值阈值/回差与兼容坐标；中臂无夹爪 | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
 | `realman_web_control.yaml` | Web 服务监听地址/端口、允许来源、客户端数、模式发现与 override 超时 | `realman_web_control` | [Web 控制](../development/realman-web-control) |
-| `three_robots.yaml` | 通用三臂在 `world` 中的位姿与型号（**标定结果**）；保留中臂模型参考，不决定实际启用的驱动 | 描述包、RViz、网站 3D 预览 | [三臂可视化](../development/three-arm-visualization) |
+| `three_robots.yaml` | 通用三臂在 `world` 中的布局与型号（由用户选择左右已求解会话后更新右臂位姿）；保留中臂模型参考，不决定实际启用的驱动 | 描述包、RViz、网站 3D 预览、标定布局写回 | [三臂可视化](../development/three-arm-visualization) |
 | `end_effectors.yaml` | 左右末端显示模型（AG2F90-C 占位）与安装位姿，中臂无挂载；被文档站三维场景和 `:8765` Web 控制页读取（后者随夹爪位置反馈实时开合），RViz/驱动 TF 尚未包含 | `website/scripts/sync-three-robots.mjs`、`model_manifest.py` | [夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型) |
 | `cameras_ros2.yaml` | 四台 Orbbec 的串号、launch 文件；`defaults` 共享彩色/深度宽高、fps、format，`cameras.<namespace>.parameters` 逐机覆盖，当前右腕与后全局 `enable_depth=true`；可由 `cameras_ros2.local.yaml` 或 `RM65_CAMERAS_LOCAL_CONFIG` 深合并覆盖；修改后停止相机再启动，重复 `up` 不热更新 | `host_cameras.py`、`rm65_camera_ros2` | [相机指南](../guide/cameras) |
-| `camera_calibration.yaml` | ChArUco 板参数、话题、帧、阈值、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
+| `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
 | `recording.yaml` | 录制根目录、订阅/预检清单、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770`；当前只要求左右双臂和两只夹爪，使用独立双臂数据集标识 | `realman_recording` | [数据录制平台](../development/recording-platform) |
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
+| `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用、工作区及实测验收门槛 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
+| `camera_extrinsics.yaml` | 独立腕相机手眼结果、设备身份和物理精度验收；本地覆盖为 `camera_extrinsics.local.yaml`，导入默认未验收 | `grasp_bridge` | [腕相机抓取](../development/grasping) |
+| `grasp_task.yaml` | 目标/后端、租约与各阶段超时、保持与人工确认等待时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
+| `grasp_bridge.yaml` | 纯规划 Action、WS 地址、模型身份、时序/停稳/漂移门槛；默认 dry-run | `grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |
 
@@ -39,7 +43,9 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | --- | --- |
 | `control.xml` | 持久输入路由树（`./rm65 bt control`）：模式目录、分支、`ReactiveSequence` 结构 |
 | `move.xml` / `three.xml` | 单臂 / 三臂分阶段 MoveJ（`./rm65 bt l|m|r|three`） |
-| `tool_x.xml` / `pick_task.xml` / `approach_and_grasp.xml` | 定时笛卡尔速度和任务示例 |
+| `tool_x.xml` | 定时笛卡尔速度 |
+| `grasp.xml` | 单腕单次抓取任务；默认 dry-run，执行前要求实测 profile |
+| `pick_task.xml` / `approach_and_grasp.xml` | 旧任务模板，含未注册节点，不能直接执行 |
 | `config/behavior-tree/frontend.ts` | 行为树只读监视器前端的共享设置 |
 
 按 XML 文件名启动：`./rm65 bt <name>`（扩展名可省略）。
@@ -50,10 +56,13 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | --- | --- |
 | `docker/compose.yaml` | 全部 Compose 服务；根目录 `docker-compose.yml` 只是 discovery adapter |
 | `docker/ros2-humble-rviz.Dockerfile` | 多阶段镜像：Node 构建 BT 编辑器静态文件 → ROS 2 Humble 运行镜像 |
+| `docker/compose.grasp.yaml`、`docker/grasp-server.Dockerfile` | 显式启动的纯 Python/CUDA 算法服务；无 ROS、机器人 SDK 或串口 |
+| `python/grasp-server-requirements.txt` | 固定算法模型和 WS 依赖；不进入机器人 ROS 镜像 |
+| `grasp/server.yaml`、`models.yaml`、`object_policies.yaml`、`gripper_specs.yaml` | 后端、权重 SHA、物体策略和实测夹爪几何，见[抓取契约](../development/grasping) |
 | `python/realman-sdk-requirements.txt` | 固定 `Robotic_Arm==1.1.6`（只有官方 PyPI 提供，镜像源需回退） |
 | `python/ik-requirements.txt` | 自定义 IK 依赖 `casadi`；**刻意不含 pinocchio**（见驱动页） |
 | `python/ruff.toml` | 项目自有 Python 的 lint 规则（pyflakes、语法错误、几条会抓真 bug 的 bugbear 规则），CI 用同一份配置；vendor 目录已排除 | [测试与验证](../development/testing) |
-| `python/gripper-requirements.txt` / `policy-bridge-requirements.txt` | 夹爪 Modbus 与策略桥传输依赖 |
+| `python/gripper-requirements.txt` / `policy-bridge-requirements.txt` | 夹爪 Modbus、策略桥及抓取桥传输依赖（抓取桥需要 websockets ≥11） |
 | `python/recording-requirements.txt` | 录制导出依赖：`lerobot==0.4.4`、Pillow、PyArrow（有意不装 `rerun-sdk`） |
 | `recording/vite.config.mjs`、`recording/playwright.config.mjs` | 录制回放前端（`npm run build:recording`）的构建与浏览器测试配置 |
 
@@ -72,7 +81,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | --- | --- |
 | `config/ros/*.yaml`、`config/behavior-trees/*.xml` | 重启使用它的服务（`docker compose restart <service>` 不会重新读取 `.env`；改 `.env` 需重建容器环境，见 CLI 页） |
 | `config/python/*.txt`、`ros2-humble-rviz.Dockerfile` | 需要 `./rm65 build` 重新构建镜像 |
-| `config/ros/three_robots.yaml` | 重启驱动/RViz；网站在下一次构建时自动同步 3D 预览 |
+| `config/ros/three_robots.yaml` | 标定布局写回后重新 bringup 以加载基座 TF；网站在下一次构建时自动同步 3D 预览 |
 | `config/web-control/joint-records/` | 立即生效（运行时可写） |
 
 ## 改配置时的约束

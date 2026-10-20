@@ -18,6 +18,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.logging import get_logger
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _device_paths(device_path):
@@ -72,7 +73,9 @@ def generate_launch_description():
     start_bt_launcher = LaunchConfiguration("start_bt_launcher")
     start_camera_calibration = LaunchConfiguration("start_camera_calibration")
     camera_calibration_config_file = LaunchConfiguration("camera_calibration_config_file")
-    update_layout_after_calibration = LaunchConfiguration("update_layout_after_calibration")
+    start_grasp_bridge = LaunchConfiguration("start_grasp_bridge")
+    grasp_profile = LaunchConfiguration("grasp_profile")
+    grasp_dry_run = LaunchConfiguration("grasp_dry_run")
     web_control_config_file = LaunchConfiguration("web_control_config_file")
     joint_record_dir = LaunchConfiguration("joint_record_dir")
     gripper_config_file = LaunchConfiguration("gripper_config_file")
@@ -194,7 +197,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "start_camera_calibration",
                 default_value="false",
-                description="Start ChArUco capture and three-arm calibration services.",
+                description="Start independent left/right ChArUco wrist calibration services.",
             ),
             DeclareLaunchArgument(
                 "camera_calibration_config_file",
@@ -202,9 +205,16 @@ def generate_launch_description():
                 description="ChArUco board, camera, TF and solver configuration.",
             ),
             DeclareLaunchArgument(
-                "update_layout_after_calibration",
-                default_value=os.environ.get("REALMAN_UPDATE_LAYOUT_AFTER_CALIBRATION", "true"),
-                description="Write calibrated middle/right base poses into three_robots.yaml.",
+                "start_grasp_bridge", default_value="false",
+                description="Opt in to planning-only wrist RGB-D grasp bridge.",
+            ),
+            DeclareLaunchArgument(
+                "grasp_profile", default_value="right_wrist",
+                description="Selected arm/camera/gripper identity in grasp_profiles.yaml.",
+            ),
+            DeclareLaunchArgument(
+                "grasp_dry_run", default_value="true",
+                description="Validate grasp configuration without sensor/IK clients.",
             ),
             DeclareLaunchArgument(
                 "web_control_config_file",
@@ -258,8 +268,13 @@ def generate_launch_description():
                 launch_arguments={
                     "config_file": camera_calibration_config_file,
                     "layout_config_file": str(three_robots_config),
-                    "update_layout_after_solve": update_layout_after_calibration,
                 }.items(),
+            ),
+            Node(
+                package="grasp_bridge", executable="grasp_bridge_node", name="grasp_bridge",
+                condition=IfCondition(start_grasp_bridge), output="screen",
+                parameters=[{"config_root": str(config_root), "profile": grasp_profile,
+                             "dry_run": ParameterValue(grasp_dry_run, value_type=bool)}],
             ),
             Node(
                 package="gripper_ros2",

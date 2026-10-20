@@ -47,6 +47,7 @@ target_link_libraries(input_mode_nodes PUBLIC
 add_library(move_j_nodes
   src/cartesian_velocity_for_duration_node.cpp
   src/move_j_node.cpp
+  src/grasp_nodes.cpp
   src/three_arm_move_j_node.cpp)
 target_include_directories(move_j_nodes PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -133,12 +134,14 @@ install(TARGETS move_j_nodes prepare_keyboard_work_node policy_task_nodes policy
   RUNTIME DESTINATION bin)
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME} FILES_MATCHING PATTERN "*.py")
 install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/move.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/control.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/three.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/tool_x.xml"
   DESTINATION share/${PROJECT_NAME}/behavior-trees)
 install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/grasp_task.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/realman_coordinates.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/realman_motion.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/pika_config.yaml"
@@ -183,6 +186,14 @@ if(BUILD_TESTING)
     "${BT_VENDOR_ROOT}")
   target_link_libraries(test_runtime_snapshot PRIVATE runtime_snapshot)
   add_test(NAME test_runtime_snapshot COMMAND test_runtime_snapshot)
+
+  add_executable(test_grasp_nodes test/test_grasp_nodes.cpp)
+  target_include_directories(test_grasp_nodes PRIVATE "${BT_VENDOR_ROOT}" "${BT_VENDOR_ROOT}/bt_nodes")
+  target_link_libraries(test_grasp_nodes move_j_nodes)
+  target_compile_definitions(test_grasp_nodes PRIVATE GRASP_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml")
+  ament_target_dependencies(test_grasp_nodes rclcpp rclcpp_action realman_msgs)
+  add_test(NAME test_grasp_nodes COMMAND test_grasp_nodes)
+  set_tests_properties(test_grasp_nodes PROPERTIES TIMEOUT 45 ENVIRONMENT "ROS_DOMAIN_ID=231;ROS_LOCALHOST_ONLY=1")
 
   add_executable(test_three_arm_move_j_node test/test_three_arm_move_j_node.cpp)
   target_link_libraries(test_three_arm_move_j_node move_j_nodes)
@@ -284,6 +295,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_retry_unless_fault_node PRIVATE bt::core)
   add_test(NAME test_retry_unless_fault_node COMMAND test_retry_unless_fault_node)
 
+  ament_add_pytest_test(test_grasp_task_config test/test_grasp_task_config.py)
   ament_add_pytest_test(test_tree_contract test/test_tree_contract.py)
   ament_add_pytest_test(test_bt_launcher test/test_bt_launcher.py)
   ament_add_pytest_test(test_control_router_tree test/test_control_router_tree.py)

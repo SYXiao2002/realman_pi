@@ -1,4 +1,6 @@
-# Transport deps for the vendored OpenPI policy client used by policy_bridge.
+# Shared transport deps for policy_bridge and the ROS-side grasp_bridge.
+# grasp_bridge uses websockets.sync.client, which requires websockets >=11;
+# the Ubuntu 22.04 python3-websockets package alone does not provide that API.
 # The client (src/policy_bridge/policy_bridge/inference/openpi_client) speaks the
 # OpenPI WebsocketPolicyServer protocol: msgpack carrying raw NumPy bytes.
 # numpy comes from the ROS python3-numpy dep; it is NOT pinned <2 here because
