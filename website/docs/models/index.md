@@ -50,7 +50,7 @@ link_6
 
 ## 末端夹爪
 
-机械臂型号之外，描述包还带有 Changingtek AG2F90-C 夹爪模型（`urdf/ctag2f90c.urdf`），它不属于上述五个型号的 URDF，也不参与 `RM65_MODEL` 选择；挂载方式和模型细节见[Changingtek 夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型)。
+机械臂型号之外，描述包还带有 Changingtek AG2F90-C 夹爪模型（`urdf/ctag2f90c.urdf`），它不属于上述五个型号的 URDF，也不参与 `RM65_MODEL` 选择；当前用作左右 42D 的占位显示模型，中臂不挂载夹爪，挂载方式和模型细节见[夹爪显示模型](../development/gripper-control#ag2f90-c-夹爪模型)。
 
 ## 选择规则
 

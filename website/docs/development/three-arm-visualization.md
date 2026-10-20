@@ -7,6 +7,8 @@ description: l、m、r 三台 RM65 在 ROS 2、RViz 2 和 GitHub Pages 中共享
 
 该功能使用一份 YAML 同时定义左侧 `l`、中间 `m` 和右侧 `r` 三台机械臂的型号与世界位姿。ROS 2 运行环境根据它发布三组隔离的机器人状态和完整 TF；Web 构建根据同一配置生成 Three.js 场景。
 
+这里的三臂是模型与标定布局契约。当前生产只安装 `l/r` 两台机械臂及两只 42D 夹爪，`m` 保留为模型参考；真实驱动由 `realman_driver.yaml` 中存在的节点参数段决定，录制与预检也只要求 `l/r`。生产启用真实驱动时不启动假关节源，因此中臂没有实时关节反馈。
+
 ## 功能契约
 
 - 配置必须且只能包含 `l`、`m`、`r` 三台机械臂。
@@ -15,7 +17,7 @@ description: l、m、r 三台 RM65 在 ROS 2、RViz 2 和 GitHub Pages 中共享
 - 位置单位为米，欧拉角单位为弧度；Web 与 ROS 2 使用相同的 `x/y/z/roll/pitch/yaw`。
 - 两个 Web 查看器固定以中间臂 `m` 的基座为**显示原点和相机焦点**。这只是渲染坐标的平移；YAML 中的世界/TF 变换不会被改写。
 - `settings.default_joint_position` 作为六个旋转关节的初始位置。
-- 当前配置保存最近一次生产三臂 ChArUco 标定结果：左臂是布局参考；中、右臂的六自由度位姿来自同一次求解。重新标定后应将成功写回的 `three_robots.yaml` 提交，才能让 GitHub Pages 与生产布局一致。
+- 当前配置保存最近一次三臂布局 ChArUco 标定结果：左臂是布局参考；中、右臂的六自由度位姿来自同一次求解。重新标定后应将成功写回的 `three_robots.yaml` 提交，才能让 GitHub Pages 与配置布局一致。
 - 生产 Web 控制台进入 `ACTIVE/keyboard` 时，会在 l/r URDF 上绘制当前已验证 WORK 坐标轴；坐标位姿来自驱动运行状态，失配或离开模式立即隐藏。
 
 权威配置是 [`config/ros/three_robots.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/three_robots.yaml)。不要在 launch 文件、网页组件或 RViz 配置中复制布局数值。
@@ -59,7 +61,7 @@ config/ros/three_robots.yaml + config/ros/end_effectors.yaml
 
 ## 共用底座（pedestal）
 
-三台机械臂装在同一个底座上。`three_robots.yaml` 的 `pedestal` 段把它描述成 `world` 下一个轴对齐的长方体，首页的 `RobotViewer` 和 `:8765` Web 控制台都按同一份数值画出来：
+三臂模型布局使用同一个底座。`three_robots.yaml` 的 `pedestal` 段把它描述成 `world` 下一个轴对齐的长方体，首页的 `RobotViewer` 和 `:8765` Web 控制台都按同一份数值画出来：
 
 | 键 | 当前值 | 含义 |
 |---|---|---|
@@ -98,11 +100,11 @@ npm run test:e2e
 
 ## 末端夹爪与关节滑块
 
-首页三维场景在每臂 `link_6` 上各挂一个 AG2F90-C 夹爪。挂载关系来自 [`config/ros/end_effectors.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/end_effectors.yaml)：`grippers` 定义夹爪（URDF、驱动关节、闭合/全开弧度），`mounts` 按 `l/m/r` 指定挂在哪个 link 以及 `xyz`（m）、`rpy`（rad，ZYX）。`website/scripts/sync-three-robots.mjs` 在构建时校验该文件，把夹爪 URDF 与网格复制到站点资源，并把 `grippers`、`endEffectors` 写入生成的 `three-robots.json`；`RobotViewer.vue` 据此把夹爪加载为对应 link 的子节点。夹爪模型细节见[Changingtek 夹爪控制](./gripper-control#ag2f90-c-夹爪模型)。
+首页三维场景只在左右臂 `link_6` 上各挂一个 AG2F90-C 显示模型，中臂无夹爪。左右实际硬件为 42D，保留此模型用于开／闭预览，不代表 42D 的真实几何或连续位置能力。挂载关系来自 [`config/ros/end_effectors.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/end_effectors.yaml)：`grippers` 定义夹爪（URDF、驱动关节、闭合/全开弧度），`mounts` 按 `l/r` 指定挂在哪个 link 以及 `xyz`（m）、`rpy`（rad，ZYX）。`website/scripts/sync-three-robots.mjs` 在构建时校验该文件，把夹爪 URDF 与网格复制到站点资源，并把 `grippers`、`endEffectors` 写入生成的 `three-robots.json`；`RobotViewer.vue` 据此把夹爪加载为对应 link 的子节点。夹爪模型细节见[42D 与 Changingtek 夹爪控制](./gripper-control#ag2f90-c-夹爪模型)。
 
 场景右下角的"关节控制"面板：
 
-- 选 `L / M / R`，六个滑块控制该臂关节（范围取自 URDF 限位），"夹爪"滑块控制开合（`0%` 闭合、`100%` 全开）。
+- 选 `L / M / R`，六个滑块控制该臂关节（范围取自 URDF 限位）；左右臂的"夹爪"滑块控制开合（`0%` 闭合、`100%` 全开），中臂无夹爪。
 - 自动摆动时滑块实时跟随；拖动任一滑块，该臂（或夹爪）停止自由变化并保持用户设定的值，标签显示"手动"。"恢复自动摆动"让该臂的关节与夹爪重新自动运动。
 - 这只是网页预览，不会连接真实机器人。
 

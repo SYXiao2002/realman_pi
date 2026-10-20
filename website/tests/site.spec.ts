@@ -298,10 +298,11 @@ test("mermaid labels stay inside their boxes and the SVG", async ({ page }) => {
   }
 });
 
-test("grippers are mounted on every arm and the gripper slider takes over", async ({ page, request }) => {
+test("grippers are mounted on the left and right arms and the gripper slider takes over", async ({ page, request }) => {
   const layout = await (await request.get("three-robots.json")).json();
   const source = YAML.parse(await readFile(resolve("../config/ros/end_effectors.yaml"), "utf8"));
-  for (const id of ["l", "m", "r"]) {
+  expect(Object.keys(layout.endEffectors).sort()).toEqual(["l", "r"]);
+  for (const id of ["l", "r"]) {
     expect(layout.endEffectors[id].gripper).toBe(source.mounts[id].gripper);
     expect(layout.endEffectors[id].parentLink).toBe(source.mounts[id].parent_link);
   }
@@ -309,9 +310,9 @@ test("grippers are mounted on every arm and the gripper slider takes over", asyn
 
   await page.goto("./");
   await expect(page.locator(".robot-viewport")).toHaveAttribute("data-state", "ready", { timeout: 30_000 });
-  // 3 arms plus 3 grippers (9 meshes each) must all be loaded before the scene reports ready.
+  // 3 arms plus 2 grippers (9 meshes each) must all be loaded before the scene reports ready.
   const meshes = Number(await page.locator(".robot-viewport").getAttribute("data-mesh-count"));
-  expect(meshes).toBeGreaterThanOrEqual(21 + 27);
+  expect(meshes).toBeGreaterThanOrEqual(21 + 18);
 
   const toggle = page.locator(".joint-panel-toggle");
   if (!(await toggle.textContent())?.includes("收起")) await toggle.click();
@@ -321,6 +322,8 @@ test("grippers are mounted on every arm and the gripper slider takes over", asyn
   await expect(page.locator(".joint-arms button.active small")).toHaveText("手动");
   await page.waitForTimeout(1200);
   await expect(slider).toHaveValue("0");
+  await page.locator(".joint-arms").getByRole("tab", { name: /^M/ }).click();
+  await expect(slider).toHaveCount(0);
 });
 
 test("the joint panel never covers the arms or the headline", async ({ page }) => {

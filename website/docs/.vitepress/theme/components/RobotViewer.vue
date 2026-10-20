@@ -76,7 +76,7 @@ const angles = reactive<Record<ArmId, number[]>>({
 });
 const manual = reactive<Record<ArmId, boolean>>({ l: false, m: false, r: false });
 // Gripper opening per arm: 0 = closed, 1 = fully open (same convention as gripper_manager's percentage).
-const hasGripper = ref(false);
+const hasGripper = reactive<Record<ArmId, boolean>>({ l: false, m: false, r: false });
 const gripper = reactive<Record<ArmId, number>>({ l: 1, m: 1, r: 1 });
 const manualGripper = reactive<Record<ArmId, boolean>>({ l: false, m: false, r: false });
 const onGripperSlider = (event: Event) => {
@@ -288,7 +288,7 @@ onMounted(async () => {
         loadedGrippers.push({ id: robotConfig.id, robot: gripperRobot, definition });
       }),
     );
-    hasGripper.value = loadedGrippers.length > 0;
+    loadedGrippers.forEach(({ id }) => { hasGripper[id] = true; });
     const setGripper = (id: ArmId, opening: number) => {
       const entry = loadedGrippers.find((item) => item.id === id);
       if (!entry) return;
@@ -508,7 +508,7 @@ onBeforeUnmount(() => dispose?.());
           />
           <span class="joint-value">{{ toDegrees(angles[selectedArm][index - 1]) }}°</span>
         </label>
-        <label v-if="hasGripper" class="joint-row gripper-row">
+        <label v-if="hasGripper[selectedArm]" class="joint-row gripper-row">
           <span class="joint-name">夹爪</span>
           <input
             type="range"

@@ -61,10 +61,9 @@ def test_manifest_accepts_symlink_installed_description_root(tmp_path):
 def test_manifest_publishes_per_arm_gripper_mounts_from_end_effectors_config():
     manifest = build_manifest(*paths(), ROOT / "config/ros/end_effectors.yaml")
 
-    assert set(manifest["end_effectors"]) == {"l", "m", "r"}
+    assert set(manifest["end_effectors"]) == {"l", "r"}
     left = manifest["end_effectors"]["l"]
     assert left["gripper_name"] == "gripper_left"
-    assert manifest["end_effectors"]["m"]["gripper_name"] == "gripper_mid"
     assert manifest["end_effectors"]["r"]["gripper_name"] == "gripper_right"
     assert left["urdf_url"] == "/models/urdf/ctag2f90c.urdf"
     assert left["parent_link"] == "link_6"

@@ -74,14 +74,13 @@ await emit({
   type: "gripper_list",
   grippers: [
     { name: "gripper_left", open_position: 20, close_position: 900 },
-    { name: "gripper_mid", open_position: 0, close_position: 9000 },
     { name: "gripper_right", open_position: 50, close_position: 8500 },
   ],
 });
-for (const [name, position] of [["gripper_left", 420], ["gripper_mid", 3000], ["gripper_right", 2500]]) {
+for (const [name, position] of [["gripper_left", 20], ["gripper_right", 8500]]) {
   await emit({ type: "gripper_state", name, connected: true, position, speed: 0, current: 0, torque_reached: false, alarm: 0 });
 }
-await page.waitForFunction(() => document.querySelector("#viewer")?.dataset.gripperMeshes === "27", null, { timeout: 30000 });
+await page.waitForFunction(() => document.querySelector("#viewer")?.dataset.gripperMeshes === "18", null, { timeout: 30000 });
 await page.waitForTimeout(1500);
 await page.screenshot({ path: join(outDir, "web-control-overview.png") });
 console.log("wrote", join(outDir, "web-control-overview.png"));

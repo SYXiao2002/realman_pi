@@ -8,7 +8,7 @@ description: realman_web_control 的 WebSocket 协议、Action 反馈、软件�
 `realman_web_control` 是一个 ROS 2 功能包：它把浏览器同源 WebSocket 消息转换成现有的
 `ExecuteMotion`、`ExecuteTrajectory`、`CartesianVelocity` Action、速度命令、FK/IK 查询、
 `/stop` 和 `/recover_motion` 服务。页面同一端口会同时
-渲染三台机械臂的实时 URDF 和坐标状态，但控制指令始终只作用于当前选中的 arm。浏览器永远
+保留 `l/m/r` 三个 URDF 与状态槽位；当前生产只有 `l/r` 提供真实关节和坐标反馈，`m` 是离线模型参考。控制指令始终只作用于当前选中的 arm。浏览器永远
 不直接加载 RealMan SDK，也不绕过 `realman_robot_driver` 的 ownership、坐标 gate、
 watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joint-records/<arm>/`，
 按 `l`、`m`、`r` 分目录存放。
@@ -29,9 +29,9 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 realman_web_control (aiohttp 线程 + ROS 2 executor)
     │ ActionClient / Trigger client / TwistStamped publisher
     ▼
-/l、/m、/r realman_robot_driver
+/l、/r realman_robot_driver（按生产配置启动）
     ▼
-RealMan SDK / 三台控制器
+RealMan SDK / 左右两台控制器
 ```
 
 
@@ -40,7 +40,7 @@ RealMan SDK / 三台控制器
   alt="Web 控制页总览：三臂 URDF、输入模式、键盘面板与坐标状态"
   caption=":8765 控制页（脚本化数据生成的截图，无需机器人）。悬停编号或下方说明，两边同步高亮；点击图片放大。"
   :marks="[
-    { x: 33, y: 40, label: '三维视图：实体姿态（青/橙/灰三色）与目标影子，末端挂 AG2F90-C 并随夹爪反馈开合' },
+    { x: 33, y: 40, label: '三维视图：实体姿态（青/橙/灰三色）与目标影子，左右末端挂 AG2F90-C 占位模型并随夹爪反馈开合，中臂无夹爪' },
     { x: 7.5, y: 24, label: '机械臂切换条：L / M / R 的连接与 joint_states 状态，点击切换控制焦点' },
     { x: 72, y: 12, label: '全局输入模式：来自行为树的模式目录，显示当前 ACTIVE 模式' },
     { x: 72, y: 33, label: '双臂键盘面板：l/r 各 12 个速度键与夹爪全开/全闭键' },
@@ -223,7 +223,7 @@ Pika 提高到 `0.15 m/s`，线速度比例相应设为 `0.13333333`，当前 l/
 `0.10 rad/s`（角速度比例 `0.4` × `0.25 rad/s`）角速度。WORK 名称和 frame ID 仍来自
 [`config/ros/realman_coordinates.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/realman_coordinates.yaml)，键盘配置不会复制
 运动上限或坐标定义。`grippers.l|r.open|close` 定义夹爪物理键；全部机械臂和夹爪键码必须全局唯一。
-实际全开／全闭位置由 `config/ros/gripper.yaml` 叠加运行时覆盖文件 `gripper_overrides.yaml`（由夹爪面板的"行程设置"写入）决定，
+全开／全闭坐标由 `config/ros/gripper.yaml` 叠加运行时覆盖文件 `gripper_overrides.yaml`（由夹爪面板的"行程设置"写入）决定；左右两个 42D 的坐标为兼容端点，
 并通过 `/<name>/limits` 实时发布，见[在网页上设置开位和闭位](./gripper-control#在网页上设置开位和闭位)；`min_position` / `max_position` 仍只来自 `gripper.yaml`。
 
 每臂速度必须独立满足默认 WORK gate；一侧失配只清空该侧速度键，不清除健康夹爪键。卡片状态含义是：
@@ -343,10 +343,10 @@ launcher 从不终止任何进程，停止仍走“终止行为树”。`realman
 Action 没有这两类多点契约，因此网页不会把它们伪装成单次按钮。
 
 MOVEJ 目标关节使用 degree；Web 后端会从 URDF limit 再检查一次。
-左侧三块 `L`、`M`、`R` 会同时显示三台机械臂的连接和坐标状态；点击其中一个块即可切换
+左侧三块 `L`、`M`、`R` 保留通用三臂状态槽位；当前生产 `L/R` 显示真实连接和坐标状态，`M` 因未配置驱动而离线。点击其中一个块即可切换
 当前控制对象，右侧滑条随之控制该 arm。页面会优先使用当前 `coordinate_state` 给出的默认参考系发送目标：
 右侧关节面板标题会显示当前激活的 arm，便于确认选择是否已经切换。
-实时状态只会原位更新三块卡片的文本和选中状态，不会替换按钮节点；三台驱动高频发布
+实时状态只会原位更新三块卡片的文本和选中状态，不会替换按钮节点；各驱动高频发布
 `joint_state` 时，点击切换仍保持可用。Action feedback 只用于显示阶段、进度与结果，不能覆盖实体
 URDF；Action 的 validating 阶段没有可用关节读数，序列化为零值会造成模型瞬间跳动。
 Web 控制桥和浏览器都会校验 `joint_state` 的六轴有限数值及单调递增的 `stamp_ns`。检测到
@@ -576,23 +576,23 @@ Action cancel。浏览器刷新不会留下仍由网页拥有的速度命令。
 
 ## 夹爪模型与实时开合反馈
 
-`:8765` 页面的实体姿态（LIVE）URDF 视图在每臂 `link_6` 上挂载 AG2F90-C 夹爪模型，并按真实夹爪的位置反馈实时开合；目标影子（SHADOW）不带夹爪。
+`:8765` 页面的实体姿态（LIVE）URDF 视图在左右臂 `link_6` 上挂载 AG2F90-C 显示模型，按 `position` 反馈开合；中臂无夹爪，目标影子（SHADOW）也不带夹爪。左右 42D 只提供由状态合成的开／闭端点。AG2F90-C 是占位显示模型，不能表示 42D 真实几何。
 
 **数据来源**（全部在根目录 `config/`，页面不写死任何数值）：
 
 | 内容 | 来源 |
 | --- | --- |
-| 每臂挂哪个夹爪、挂在哪个 link、`xyz` / `rpy`、驱动关节与闭合/全开弧度、`gripper_name` | [`config/ros/end_effectors.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/end_effectors.yaml) → `model_manifest.py` 的 `end_effectors` 字段 |
-| 每个夹爪的 `open_position` / `close_position`（设备单位） | `config/ros/gripper.yaml` 叠加覆盖文件 `gripper_overrides.yaml` → `gripper_list` 事件；`gripper_manager` 每次发布新的 `/<name>/limits`，Web 节点就重新广播 `gripper_list`，页面随之刷新 |
-| 实时位置 | `/<name>/position`（`Float64`，设备单位）→ `gripper_state` 事件，`gripper_manager` 约 `20 Hz` 发布 |
+| 左右臂的夹爪显示模型、挂载 link、`xyz` / `rpy`、驱动关节与闭合/全开弧度、`gripper_name`；中臂无挂载 | [`config/ros/end_effectors.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/end_effectors.yaml) → `model_manifest.py` 的 `end_effectors` 字段 |
+| 每个夹爪的 `open_position` / `close_position`（左右为兼容坐标） | `config/ros/gripper.yaml` 叠加覆盖文件 `gripper_overrides.yaml` → `gripper_list` 事件；网页保存端点后，manager 发布 `/<name>/limits`，Web 重新广播 `gripper_list`，页面随之刷新；手工改 YAML 需重启 manager 与 Web |
+| 位置 | `/<name>/position`（`Float64`）→ `gripper_state`；左右 42D 为状态合成端点，轮询频率取自 `gripper.yaml` 的共享 bus |
 
-**映射**：`l`、`m`、`r` 分别对应 `gripper_left`、`gripper_mid`、`gripper_right`（`end_effectors.yaml` 的 `gripper_name`）。页面用该夹爪**自己的**端点把设备位置换算成开合度 `(position − close) / (open − close)`，限制在 `0..1`（`0` 闭合、`1` 全开，与 `percentage` 约定一致），再换算成驱动关节角 `closed_rad + (open_rad − closed_rad) × 开合度`；其余可动关节由 URDF 的 `mimic` 跟随。三个夹爪的行程单位不同也不影响显示。
+**映射**：`l`、`r` 分别对应 `gripper_left`、`gripper_right`，`m` 不配置夹爪挂载（`end_effectors.yaml` 的 `gripper_name`）。页面用各自端点换算开合度 `(position − close) / (open − close)`，限制在 `0..1`（`0` 闭合、`1` 全开），再换算驱动关节角 `closed_rad + (open_rad − closed_rad) × 开合度`；其余关节由 `mimic` 跟随。42D 的中间百分比及原始目标会先由适配器二值化，模型不能证明实际行程、静止状态或夹持间距；速度、电流、报警的 `0` 也仅为兼容占位。
 
 **行为约定**：
 
-- 夹爪网格随 URDF 一起通过 `/models/…` 提供（`resolve_model_asset` 仍拒绝目录穿越），挂载完成、9 个网格全部加载后场景才算就绪（`data-gripper-meshes="27"`）。
+- 夹爪网格随 URDF 一起通过 `/models/…` 提供（`resolve_model_asset` 仍拒绝目录穿越），挂载完成、左右共 18 个网格全部加载后场景才算就绪（`data-gripper-meshes="18"`，左右各 9 个）。
 - 在收到第一条反馈之前模型保持全开；夹爪离线或 `gripper.yaml` 缺该夹爪时保持最后一个姿态，不会猜测数值，右侧夹爪面板的 `ONLINE/OFFLINE` 仍是权威状态。
-- 选中夹爪的反馈行显示 `开合 NN%`；`data-gripper-l|m|r` 暴露各臂当前开合度，供测试使用。
+- 选中夹爪的反馈行显示 `开合 NN%`；`data-gripper-l|r` 暴露左右夹爪当前开合度，供测试使用。
 - 没有 `end_effectors.yaml` 时 `end_effectors` 为空，页面显示不带夹爪的机械臂。
 
 模型只反映反馈，**不会**发送任何夹爪命令；开合操作仍使用页面的夹爪按钮、键盘或 Pika 路径。
@@ -606,7 +606,7 @@ Action cancel。浏览器刷新不会留下仍由网页拥有的速度命令。
 - `config/ros/realman_motion.yaml`：速度、加速度、watchdog 默认值；
 - `config/ros/realman_coordinates.yaml`：BASE/WORK/TOOL 当前配置名称；
 - `rm65_description/urdf/<model>.urdf`：六个关节的 lower/upper limit 和 mesh。
-- `config/ros/end_effectors.yaml`：每臂夹爪挂载（见下节），文件缺失时不显示夹爪。
+- `config/ros/end_effectors.yaml`：左右臂夹爪显示模型挂载（见[夹爪模型与实时开合反馈](#夹爪模型与实时开合反馈)），中臂无挂载，文件缺失时不显示夹爪。
 - `config/ros/camera_calibration.yaml`：独立标定页面展示的 ChArUco 配置；标定
   service 仍由 `realman_camera_calibration` 节点实际执行。
 
