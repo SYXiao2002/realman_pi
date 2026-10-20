@@ -38,8 +38,8 @@ rm65_project_help
 
 默认相机链路是宿主机 `rm65_camera_ros2 color`：直接使用已安装的 `orbbec_camera` 二进制包，
 按串号启动两台 Gemini 335L 全局相机（`/camera_global`、`/camera_global2`）和两台 Gemini 305
-腕部相机（`/camera_right`、`/camera_left`）。四路均为 RGB-only；`./rm65 up` 等待每路
-`color/image_raw` 首帧，首帧失败会清理相机且不启动 Docker。相机就绪后若 Compose 启动失败，命令返回失败但
+腕部相机（`/camera_right`、`/camera_left`）。四路均发布 RGB，配置为 `camera_right` 与 `camera_global`
+额外启用原始 depth；`./rm65 up` 等待四路 `color/image_raw` 和这两路 `depth/image_raw` 首帧，首帧失败会清理相机且不启动 Docker。相机就绪后若 Compose 启动失败，命令返回失败但
 保留相机流；执行 `./rm65 down` 可停止服务并等待相机 launch 逐个退出、释放 USB。不 source 本仓库 install
 或 vendor overlay，不依赖 RealSense。默认 `up` 不启动 RViz，生产端不需要 `DISPLAY` 或 `XAUTHORITY`。
 详情见[相机指南](../guide/cameras)。
@@ -156,12 +156,12 @@ Ctrl-C。`./rm65 up` 不会替它启动 executor；只要 bringup 容器已运�
 相机主线运行在直接连接 USB 相机的宿主机上。`start_sensors.sh` source `/opt/ros/humble/setup.bash`，
 仅在显式设置 `REALMAN_ORBBEC_ROS2_SETUP` 时额外 source 该文件，
 由 `src/sensor_bringup/scripts/host_cameras.py` 管理四个独立的 `ros2 launch orbbec_camera` 子进程；
-`./rm65 up` 等待四路真实 RGB 首帧后才继续。不需要构建
+`./rm65 up` 等待四路真实 RGB 及配置启用的两路 depth 首帧后才继续。不需要构建
 `src/sensor_bringup` 或已移除的厂商源码驱动。完整串号、命名空间及检查步骤见[相机指南](../guide/cameras)。
 
 | 函数 | 当前用途 | 启动/影响的组件 | 权威配置与文档 |
 | --- | --- | --- | --- |
-| `rm65_camera_ros2 [color|depth] [rviz]` | 默认按串号启动四路 Orbbec RGB，并等待每路首帧；可显式切换 `depth`，`rviz` 额外打开 RViz2。 | 宿主机 `orbbec_camera` 的 Gemini 330 series / 301 series launch；发布各 namespace 下的 `color/image_raw` 与 `color/camera_info`。 | `config/ros/cameras_ros2.yaml`、可选 `RM65_CAMERAS_LOCAL_CONFIG`、`.env`、`config/rviz/cameras.rviz` |
+| `rm65_camera_ros2 [color|depth] [rviz]` | 默认启动四路 RGB 及配置开启的逐机 depth，等待所有启用流首帧；显式 `depth` 为全部已启用设备的 depth-only 模式，`rviz` 额外打开 RViz2。 | 宿主机 `orbbec_camera` 的 Gemini 330 series / 301 series launch；发布 `color/*`，启用深度的设备还发布 `depth/image_raw` 与 `depth/camera_info`。 | `config/ros/cameras_ros2.yaml`、可选 `RM65_CAMERAS_LOCAL_CONFIG`、`.env`、`config/rviz/cameras.rviz` |
 | `rm65_camera_ros2_stop` | 停止项目管理的相机进程并释放 USB；监督进程已退出时仍按当前配置清理残留 launch/组件进程。 | 相机启动器及其 launch 子进程，不影响 RealMan 驱动。 | `src/sensor_bringup/scripts/host_cameras.py` |
 | `rm65_camera_ros2_status` | 检查受管相机进程和日志位置。 | 只读检查。 | `logs/<timestamp>/` |
 | `rm65_camera_ros2_logs` | 查看最近一次相机运行日志。 | 官方 ROS 日志。 | `logs/<timestamp>/` |
@@ -177,13 +177,13 @@ rm65_camera_ros2_stop
 ```
 
 不依赖 zsh 时可执行 `bash start_sensors.sh [color|depth] [rviz]`，使用 `bash start_sensors.sh stop` 单独停止相机；旧的 `enable_color:=true enable_depth:=false`
-与 `use_rviz:=true` 形式仍兼容。`./rm65 up` 和省略模式时只启 RGB；`depth` 仅供显式调用兼容。
+与 `use_rviz:=true` 形式仍兼容。`./rm65 up` 和省略模式时启用 RGB，并按逐机配置同时启用深度；显式 `depth` 为全部已启用相机的 depth-only 模式。
 需要本地 GUI 时执行 `rm65_camera_ros2 color rviz`；生产端通常不带桌面，应使用笔记本的
 [相机 RViz](../guide/cameras#查看四路实拍画面)。
 
 顶层 `cameras` mapping 以 `camera_global`、`camera_global2`、`camera_right`、`camera_left`
 为键，每项配置 `serial`、`launch_file`，`enabled` 可选且默认开启，`parameters` 用于设备级覆盖。顶层 `defaults` 提供共享参数；
-`launch.stagger_seconds` 为启动间隔（秒）。默认 `color_width` / `color_height` 为 `0`（驱动自动选分辨率）、`color_fps=30`、`color_format=ANY`；默认 RGB 模式关闭深度、IR、IMU、点云和帧同步。`config/ros/cameras_ros2.local.yaml` 可覆盖共享或逐设备参数、串号等叶子字段，也可通过 `RM65_CAMERAS_LOCAL_CONFIG` 指定覆盖文件；旧的 `wrist_cameras` / `global_camera` 结构必须迁移，不能继续加载。
+`launch.stagger_seconds` 为启动间隔（秒）。`color_*` 和 `depth_*` 的宽高、帧率与格式由配置决定，宽高与帧率 `0`、格式 `ANY` 使用 SDK 默认档位。`enable_depth` 在 `color` 模式按合并后的设备配置生效，当前仅 `camera_right` 和 `camera_global` 为 `true`；`depth_registration=false` 发布原始深度。IR、IMU、点云和帧同步仍关闭。`config/ros/cameras_ros2.local.yaml` 可覆盖共享或逐设备参数、串号等叶子字段，也可通过 `RM65_CAMERAS_LOCAL_CONFIG` 指定覆盖文件；修改后须停止相机再启动，重复 `up` 不会热更新。旧的 `wrist_cameras` / `global_camera` 结构必须迁移，不能继续加载。参数示例见[相机配置](../guide/cameras#串号、分辨率、帧率与深度配置)。
 
 四路预期 RGB topic：
 
@@ -194,8 +194,8 @@ rm65_camera_ros2_stop
 /camera_left/color/image_raw
 ```
 
-每路同时发布 `color/camera_info`。节点存在或 topic publisher 存在都不足以证明设备出图；
-以四路持续收到真实帧为准。首帧检查失败时先核对串号、宿主机 `orbbec_camera` launch 文件和 USB
+每路同时发布 `color/camera_info`；`camera_right` 与 `camera_global` 另发布 `depth/image_raw` 和 `depth/camera_info`。
+节点存在或 topic publisher 存在都不足以证明设备出图，以四路 RGB 和两路 depth 持续收到真实帧为准。首帧检查失败时先核对串号、宿主机 `orbbec_camera` launch 文件和 USB
 连接，再查看本次 `logs/<timestamp>/` 日志。宿主机与 Docker 共同读取 `.env` 的 ROS domain 与
 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，修改后重启相关节点。
 

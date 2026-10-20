@@ -23,10 +23,10 @@ description: 三臂、RViz 2、输入节点、远程调试和 ROS 2 运行日志
 
 ## 统一生产入口
 
-推荐从仓库根目录执行 `./rm65 up`。该命令先在宿主机通过二进制 `orbbec_camera` 包启动四路 Orbbec RGB，等待四路都实际出帧，再启动 Docker
+推荐从仓库根目录执行 `./rm65 up`。该命令先在宿主机通过二进制 `orbbec_camera` 包启动四路 Orbbec RGB，以及配置开启的 `camera_right`、`camera_global` 原始深度；等待四路彩色和两路深度都实际出帧，再启动 Docker
 中的 `realman_bringup_remote`（三臂真实驱动、headless、`restart: unless-stopped`），因此标定和
 机械臂节点加入同一个 ROS 2 图。相机启动失败时会清理已启动的相机并且不会启动 Docker。若相机已就绪但
-Compose 启动失败，`./rm65 up` 返回失败并保留 RGB 流，便于继续查看画面和诊断；确认要结束本次运行时执行
+Compose 启动失败，`./rm65 up` 返回失败并保留相机流，便于继续查看画面和诊断；确认要结束本次运行时执行
 `./rm65 down`，它会停止 Compose 服务，再等待受管相机 launch 逐个退出并释放 USB 设备。
 
 ```bash
@@ -51,7 +51,9 @@ Compose 启动失败，`./rm65 up` 返回失败并保留 RGB 流，便于继续�
 
 相机后台进程 PID 保存在 `logs/.rm65-camera.pid`，其标准输出写入 `logs/rm65-camera.log`；ROS 2
 节点仍按官方机制写入 `logs/YYYYMMDD_HHMMSS/`。相机使用宿主机 ROS distro 中的二进制
-`orbbec_camera`，不 source 仓库 install 或 vendor overlay。配置与串号见[相机指南](../guide/cameras)。
+`orbbec_camera`，不 source 仓库 install 或 vendor overlay。串号、分辨率、帧率与逐机 `enable_depth` 均由
+`config/ros/cameras_ros2.yaml` 及可选本地覆盖配置管理。修改后须先停止相机再启动，重复 `up` 只复用运行中的监督进程。
+配置示例与话题见[相机指南](../guide/cameras)。
 
 `bt control` 必须在一个唯一运行中的 bringup 容器上单独运行，但不要求该容器由 `./rm65 up` 启动：它加入
 同一 ROS domain，保持 :8080 只读监视器、`realman_bt_executor`、`pika_control_router` 和

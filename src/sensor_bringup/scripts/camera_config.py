@@ -82,6 +82,8 @@ def _parameters(value, label):
             isinstance(parameter, float) and not math.isfinite(parameter)
         ):
             raise ValueError(f"{label}.{key} must be a finite scalar")
+        if key == "enable_depth" and not isinstance(parameter, bool):
+            raise ValueError(f"{label}.enable_depth must be true or false")
 
 
 def validate_config(config):
@@ -135,10 +137,11 @@ def camera_commands(config, mode="color"):
     commands = []
     for namespace, camera in cameras.items():
         parameters = {**config.get("defaults", {}), **camera.get("parameters", {})}
-        # Identity and stream selection are owned by the entrypoint, never generic overrides.
+        # Keep RGB in color mode; depth is opt-in per camera. The explicit depth
+        # mode remains depth-only for all enabled cameras.
         parameters.update(
             camera_name=namespace, serial_number=camera["serial"], device_num=len(cameras),
-            enable_color=mode == "color", enable_depth=mode == "depth",
+            enable_color=mode == "color", enable_depth=mode == "depth" or parameters.get("enable_depth", False),
             enable_left_ir=False, enable_right_ir=False, enable_accel=False, enable_gyro=False,
             enable_point_cloud=False, enable_colored_point_cloud=False,
             enable_frame_sync=False, trigger_out_enabled=False, software_trigger_enabled=False,
@@ -154,3 +157,14 @@ def topic_map(config, mode="color"):
     if mode not in {"color", "depth"}:
         raise ValueError("Camera mode must be color or depth")
     return {name: f"/{name}/{mode}/image_raw" for name in enabled_cameras(config)}
+
+
+def required_topic_map(config, mode="color"):
+    """Wait for each requested stream, including per-camera depth alongside RGB."""
+    topics = topic_map(config, mode)
+    if mode == "color":
+        for name, camera in enabled_cameras(config).items():
+            parameters = {**config.get("defaults", {}), **camera.get("parameters", {})}
+            if parameters.get("enable_depth", False):
+                topics[f"{name}/depth"] = f"/{name}/depth/image_raw"
+    return topics

@@ -1,4 +1,4 @@
-"""Check that all configured Orbbec RGB topics publish a frame."""
+"""Check that every configured Orbbec color and depth stream publishes a frame."""
 
 import sys
 import time
@@ -9,7 +9,7 @@ from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
-from camera_config import load_config, topic_map
+from camera_config import load_config, required_topic_map
 
 
 class HealthCheck(Node):
@@ -51,7 +51,7 @@ def _load_config():
 
 
 def _enabled_topics(config, mode="color"):
-    return topic_map(config, mode)
+    return required_topic_map(config, mode)
 
 
 def main():

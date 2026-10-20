@@ -70,12 +70,14 @@ def test_committed_hardware_map_uses_binary_package_launches(config, camera_conf
         assert args["device_num"] == "4"
 
 
-def test_production_mode_opens_rgb_only_without_triggering_or_point_clouds(config, camera_config):
-    for _, argv in camera_config.camera_commands(config):
+def test_production_mode_preserves_all_rgb_and_enables_requested_depth(config, camera_config):
+    depth_cameras = {"camera_global", "camera_right"}
+    for namespace, argv in camera_config.camera_commands(config):
         args = _arguments(argv)
         assert args["enable_color"] == "true"
+        assert args["enable_depth"] == str(namespace in depth_cameras).lower()
         for flag in (
-            "enable_depth", "enable_left_ir", "enable_right_ir", "enable_accel",
+            "enable_left_ir", "enable_right_ir", "enable_accel",
             "enable_gyro", "enable_point_cloud", "enable_colored_point_cloud",
             "enable_frame_sync", "trigger_out_enabled", "software_trigger_enabled",
         ):
@@ -96,11 +98,24 @@ def test_topics_and_depth_mode_follow_each_namespace(config, camera_config):
         assert args["enable_depth"] == "true"
 
 
+def test_readiness_requires_rgb_and_each_requested_depth_stream(config, camera_config):
+    rgb_topics = {namespace: f"/{namespace}/color/image_raw" for namespace in HARDWARE}
+    assert camera_config.required_topic_map(config) == {
+        **rgb_topics,
+        "camera_global/depth": "/camera_global/depth/image_raw",
+        "camera_right/depth": "/camera_right/depth/image_raw",
+    }
+    assert camera_config.required_topic_map(config, mode="depth") == {
+        namespace: f"/{namespace}/depth/image_raw" for namespace in HARDWARE
+    }
+
+
 def test_disabling_camera_updates_launch_count_and_health_topics(config, camera_config):
-    config["cameras"]["camera_global2"]["enabled"] = False
+    config["cameras"]["camera_global"]["enabled"] = False
     commands = dict(camera_config.camera_commands(config))
-    assert set(commands) == set(HARDWARE) - {"camera_global2"}
+    assert set(commands) == set(HARDWARE) - {"camera_global"}
     assert set(camera_config.topic_map(config)) == set(commands)
+    assert set(camera_config.required_topic_map(config)) == set(commands) | {"camera_right/depth"}
     assert all(_arguments(argv)["device_num"] == "3" for argv in commands.values())
 
 
@@ -114,12 +129,60 @@ def test_per_camera_stream_override_preserves_shared_defaults(config, camera_con
     assert all(_arguments(argv)["color_width"] == "640" for argv in commands.values())
 
 
+def test_missing_depth_selection_keeps_rgb_only(config, camera_config):
+    config["defaults"].pop("enable_depth", None)
+    for camera in config["cameras"].values():
+        camera.get("parameters", {}).pop("enable_depth", None)
+    for _, argv in camera_config.camera_commands(config):
+        assert _arguments(argv)["enable_color"] == "true"
+        assert _arguments(argv)["enable_depth"] == "false"
+    assert camera_config.required_topic_map(config) == camera_config.topic_map(config)
+
+
+def test_per_camera_depth_overrides_shared_selection_and_profile(config, camera_config):
+    config["defaults"].update(enable_depth=True, depth_width=640, depth_height=480, depth_fps=30)
+    for camera in config["cameras"].values():
+        camera.get("parameters", {}).pop("enable_depth", None)
+    config["cameras"]["camera_left"].setdefault("parameters", {})["enable_depth"] = False
+    config["cameras"]["camera_right"].setdefault("parameters", {})["depth_fps"] = 15
+    commands = dict(camera_config.camera_commands(config))
+    assert _arguments(commands["camera_left"])["enable_depth"] == "false"
+    assert _arguments(commands["camera_right"])["depth_fps"] == "15"
+    for namespace, argv in commands.items():
+        args = _arguments(argv)
+        assert args["enable_color"] == "true"
+        assert args["enable_depth"] == str(namespace != "camera_left").lower()
+        assert args["depth_width"] == "640"
+        assert args["depth_height"] == "480"
+        if namespace != "camera_right":
+            assert args["depth_fps"] == "30"
+    assert set(camera_config.required_topic_map(config)) == set(HARDWARE) | {
+        f"{namespace}/depth" for namespace in HARDWARE if namespace != "camera_left"
+    }
+    # The explicit depth diagnostic mode still opens every device as depth-only.
+    for _, argv in camera_config.camera_commands(config, mode="depth"):
+        assert _arguments(argv)["enable_color"] == "false"
+        assert _arguments(argv)["enable_depth"] == "true"
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+@pytest.mark.parametrize("scope", ["defaults", "camera"])
+def test_depth_selection_requires_yaml_boolean(config, camera_config, base_path, scope, value):
+    parameters = (
+        config["defaults"] if scope == "defaults"
+        else config["cameras"]["camera_left"].setdefault("parameters", {})
+    )
+    parameters["enable_depth"] = value
+    _write_yaml(base_path, config)
+    with pytest.raises(ValueError):
+        camera_config.load_config(base_path)
+
+
 @pytest.mark.parametrize("key,value,expected", [
     ("camera_name", "hijacked", "camera_left"),
     ("serial_number", "WRONG", "CV2856D0008H"),
     ("device_num", 99, "4"),
     ("enable_color", False, "true"),
-    ("enable_depth", True, "false"),
     ("enable_left_ir", True, "false"),
     ("enable_point_cloud", True, "false"),
     ("enable_frame_sync", True, "false"),
@@ -233,6 +296,17 @@ def test_health_subscriptions_accept_sensor_data_qos(camera_config, monkeypatch)
     assert len(calls) == 1
     assert calls[0][0] == "/camera_left/color/image_raw"
     assert calls[0][1].reliability == ReliabilityPolicy.BEST_EFFORT
+
+
+def test_supervisor_health_waits_for_requested_depth_too(config, camera_config, monkeypatch):
+    pytest.importorskip("rclpy")
+    health = _import_script("check_cameras")
+    host = _import_script("host_cameras")
+    calls = []
+    monkeypatch.setattr(health, "check_topics", lambda topics, timeout: calls.append((topics, timeout)) or False)
+    assert host._health(config, 42, "color") is False
+    assert calls == [(camera_config.required_topic_map(config), 42)]
+    assert {"camera_global/depth", "camera_right/depth"} <= set(calls[0][0])
 
 
 def test_health_check_never_reports_empty_camera_set_as_success(camera_config, monkeypatch):

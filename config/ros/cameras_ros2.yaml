@@ -8,12 +8,18 @@ launch:
 
 # 直接传给官方 launch 的共享参数，单机可在 cameras.<namespace>.parameters 覆盖。
 # 宽高 0 / ANY 使用驱动支持的默认 profile，fps 单位 Hz；换档位前确认设备支持。
-# RGB/depth 互斥及 IR/IMU/点云/同步/触发关闭由入口强制保证。
+# color 模式保留 RGB；enable_depth 可共享设置，也可逐设备覆盖。
+# depth 宽高/fps 为 0、格式 ANY 时使用 SDK 默认档位；IR/IMU/点云/同步/触发保持关闭。
 defaults:
   color_width: 0
   color_height: 0
   color_fps: 30
   color_format: ANY
+  enable_depth: false
+  depth_width: 0
+  depth_height: 0
+  depth_fps: 0
+  depth_format: ANY
   enable_color_auto_exposure: true
   enable_point_cloud: false
   enable_colored_point_cloud: false
@@ -31,6 +37,8 @@ cameras:
     # back GLOBAL CAM：Gemini 335L。
     serial: "CP28563000CK"
     launch_file: gemini_330_series.launch.py
+    # 后置全局相机同时发布 RGB 和原始深度，不启用深度对齐或点云。
+    parameters: {enable_depth: true}
   camera_global2:
     # front GLOBAL CAM：Gemini 335L。
     serial: "CP28563000CV"
@@ -39,8 +47,8 @@ cameras:
     # right WRIST CAM：Gemini 305 使用官方 301 series 启动文件。
     serial: "CV2856D0002E"
     launch_file: gemini_301_series.launch.py
-    # 仅开 RGB 时使用彩色流自身作为自动曝光参考。
-    parameters: {ae_reference_stream: color}
+    # 右腕同时发布 RGB 和原始深度；彩色流仍作为自动曝光参考。
+    parameters: {ae_reference_stream: color, enable_depth: true}
   camera_left:
     # left WRIST CAM；没有中腕相机，不发布 camera_middle。
     serial: "CV2856D0008H"

@@ -80,6 +80,8 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | --- | --- | --- |
 | `/camera_left/color/image_raw`、`/camera_right/color/image_raw`，及对应 `color/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 左 / 右 Gemini 305 腕部相机 |
 | `/camera_global/color/image_raw`、`/camera_global2/color/image_raw`，及对应 `color/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后 / 前 Gemini 335L 全局相机 |
+| `/camera_right/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 右腕 Gemini 305（`CV2856D0002E`）原始深度；`depth_registration=false` |
+| `/camera_global/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后全局 Gemini 335L（`CP28563000CK`）原始深度；`depth_registration=false` |
 | `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 原子采样：图像 + TF + 关节 |
 | `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 求解手眼与相对位姿 |
 | `/camera_calibration/camera_health` | `std_msgs/String`（JSON） | 每秒发布，供 Web 标定页面使用 |

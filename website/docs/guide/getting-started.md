@@ -51,7 +51,7 @@ RViz，生产机不需要桌面：
 
 <Steps>
 
-1. **宿主机四路 Orbbec RGB**——按串号分别执行 `ros2 launch orbbec_camera`，四路首帧确认失败则不启动 Docker。
+1. **宿主机四路 Orbbec RGB + 两路 depth**——按串号分别执行 `ros2 launch orbbec_camera`，右腕与后全局相机由配置额外开启原始深度；所有启用流首帧确认失败则不启动 Docker。
 2. **`realman_bringup_remote`**——三臂真实驱动、TF、标定健康诊断、夹爪 manager。
 3. **`realman_web_control`**——`:8765` 控制页。
 4. **`realman_recording`**——数据录制与回放网页 `http://127.0.0.1:8770/`，见[独立数据录制平台](../development/recording-platform)。
@@ -407,7 +407,7 @@ rm65_project_help
 | `rm65_docker_bringup_model` / `hardware` / `headless` | 启动模型、真机 RViz 或无 GUI 预设 |
 | `rm65_docker_bringup_input` / `web` | 只启动输入链路，或启动真机与 Web 控制 |
 | `rm65_docker_bringup_custom_args ...` | 临时透传 `system.launch.py` 参数 |
-| `rm65_camera_ros2 [color|depth] [rviz]` | **相机出图主线**：使用宿主机二进制 `orbbec_camera` 按串号启动四路 RGB；可显式切换深度或附加 RViz2；`./rm65 up` 仅启 RGB |
+| `rm65_camera_ros2 [color|depth] [rviz]` | **相机出图主线**：宿主机二进制 `orbbec_camera` 按串号启动四路 RGB，按配置额外开启右腕与后全局深度；`./rm65 up` 使用相同配置；显式 `depth` 为全部已启用设备的 depth-only 模式，可附加 RViz2 |
 | `rm65_camera_ros2_stop` / `status` / `logs` | 停止、检查或查看 ROS2 相机节点日志 |
 | `rm65_camera_start` / `stop`（已弃用） | 启动或停止 RTSP/TCP SDK 推流；已被 ROS2 出图取代，仅作历史备选 |
 | `rm65_camera_status` / `logs [-f]`（已弃用） | 查看已弃用推流进程、`8554`/`8100-8103` 端口或跟踪推流日志 |

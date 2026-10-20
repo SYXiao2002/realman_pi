@@ -12,7 +12,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | 命令 | 作用 |
 | --- | --- |
 | `./rm65 build [service ...]` | 默认重建 `realman_bringup_remote` 与 `realman_web_control`，可指定如 `rm65_rviz`；使用 Bake 显式授权 `network.host` 并载入本机镜像，不改变容器状态 |
-| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB（四路首帧确认后启动 Docker）+ 三臂真实驱动 + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
+| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 三臂真实驱动 + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
@@ -23,6 +23,8 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `./rm65 camera` | 旧 RTSP/TCP 相机助手（已弃用，与 ROS 2 相机互斥） |
 
 `./rm65 up` 在 `realman_driver_rviz` 仍运行时拒绝启动：两个服务都会连真机，会让同一 namespace 出现重复驱动和多个 `cartesian_velocity` Action server。`./rm65 up` 的内置 usage 文本目前没有列出 `policy`，以本表为准。
+
+相机串号、彩色/深度分辨率与帧率、逐机 `enable_depth` 由 `config/ros/cameras_ros2.yaml` 和可选本地覆盖决定，见[相机指南](../guide/cameras)。修改后先执行 `bash start_sensors.sh stop` 再 `./rm65 up`；重复 `up` 复用当前相机进程，不会热更新配置。专项入口 `rm65_camera_ros2 color` 使用同一配置；显式 `depth` 切换为全部已启用设备的 depth-only 模式。
 
 ### 行为树启动器 `./rm65 bt`
 
@@ -66,7 +68,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `REALMAN_ORBBEC_ROS2_SETUP` | 仅显式设置时额外 source 的宿主机 Orbbec ROS 2 setup 文件；默认只加载 `/opt/ros/humble/setup.bash`，不自动加载仓库 overlay |
 | `RM65_CAMERAS_LOCAL_CONFIG` | 可选的宿主机相机 YAML 覆盖文件；按 `cameras_ros2.yaml` 结构覆盖默认配置 |
 | `CAMERA_START_TIMEOUT` | `rm65 wait` / `./rm65 up` 等待相机启动的最长秒数，默认 `90`；超时中止启动并清理受管相机 |
-| `REALMAN_CAMERA_CHECK_TIMEOUT` | 相机 supervisor 等待首帧的最长秒数，默认 `60`；超时判定该相机启动失败 |
+| `REALMAN_CAMERA_CHECK_TIMEOUT` | 相机 supervisor 等待所有启用流首帧的最长秒数，默认 `60`；当前为四路 color + 右腕、后全局两路 depth，超时判定启动失败 |
 
 ::: warning Web 控制没有认证
 Web control 不做任何身份校验：`:8765` 能被访问的浏览器就能发送运动和停止命令，所以必须只放在受信任的机器人局域网内，不要暴露到公网或经 NAT 映射。（`.env` 里曾有一个 `REALMAN_WEB_CONTROL_TOKEN`，但从来没有代码读取它，已删除，避免让人误以为有认证。）

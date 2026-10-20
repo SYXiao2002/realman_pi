@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start and supervise the configured host-side Orbbec RGB cameras."""
+"""Start and supervise the configured host-side Orbbec color and depth streams."""
 
 import argparse
 import os
@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from camera_config import camera_commands, load_config, topic_map
+from camera_config import camera_commands, load_config, required_topic_map
 from rclpy.logging import get_logger
 
 
@@ -101,7 +101,7 @@ def stop_configured_cameras(config):
 def _health(config, timeout, mode):
     from check_cameras import check_topics
 
-    return check_topics(topic_map(config, mode), timeout)
+    return check_topics(required_topic_map(config, mode), timeout)
 
 
 def main(argv=None):
@@ -167,7 +167,7 @@ def main(argv=None):
         if ready:
             ready.parent.mkdir(parents=True, exist_ok=True)
             ready.write_text(f"{os.getpid()}\n", encoding="ascii")
-        LOG.info(f"all {len(commands)} configured cameras are publishing {args.mode} frames")
+        LOG.info(f"all {len(required_topic_map(config, args.mode))} configured image streams are publishing")
         while True:
             if any(child.poll() is not None for child in children):
                 LOG.error("an Orbbec launch process exited")
