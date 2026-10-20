@@ -126,6 +126,8 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
 | `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
 | `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
+| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子评估快照：RGB、深度显示、反投影点云、相机/基座系候选和 readiness；按 `observation_id` 绑定 |
+| `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
 | `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D 与几何；无 ROS |
 
 ## TF 与描述

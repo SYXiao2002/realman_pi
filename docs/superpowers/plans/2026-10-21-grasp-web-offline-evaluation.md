@@ -1,6 +1,6 @@
 # Grasp Web 离线评估页实施计划
 
-状态：实施中（只读评估，不执行机械臂或夹爪动作）
+状态：已实施（只读评估，不执行机械臂或夹爪动作）
 
 ## 目标
 
@@ -19,7 +19,7 @@
 ```text
 腕部 RGB-D + CameraInfo + JointState + TF
   -> grasp_bridge（配对、反投影、policy、候选/规划诊断）
-  -> ROS topics（RGB、depth、overlay、candidates、plan、diagnostics）
+  -> `/grasp_bridge/evaluation` 原子 JSON snapshot + Action feedback/result
   -> realman_web_control（订阅、编码、WebSocket 事件）
   -> grasp.html（图像、候选表、3D 线框/机械臂布局、评价 JSON）
 ```
@@ -37,36 +37,42 @@
 
 ### A. 评估数据契约
 
-- 增加 bridge 的 RGB、registered depth、候选详细 JSON、overlay、plan/diagnostic 事件。
-- 在候选 JSON 中保留完整 `T_camera_grasp`、`T_base_grasp`、score、width、object id、filter reason。
+- [x] 增加 bridge 的 RGB、registered depth、候选详细 JSON、overlay、pose/diagnostic 快照。
+- [x] 在候选 JSON 中保留完整 `T_camera_grasp`、可用时的 `T_base_grasp`、score、width、object id 和 policy metrics。
 - 增加 observation cache，确保页面首次连接可收到最近一次完整快照；旧 observation 到达时丢弃。
-- 为协议和候选身份添加纯 Python 测试。
+- [x] 为快照几何和只读 Action 添加离线测试。
 
 ### B. Web control ROS/WebSocket 桥
 
-- `web_control_node.py` 订阅 grasp bridge 只读 topics，并把 ROS 图像安全编码后广播。
-- 新增 cached grasp state，client reconnect 后可恢复最近一次 snapshot。
-- 保留现有控制协议；grasp 页面不增加任何写入命令。
-- 增加事件 schema 测试，确认大图、非法 JSON、旧 observation 和未就绪 profile 的处理。
+- [x] `web_control_node.py` 订阅 grasp bridge 只读快照，并缓存最近状态供新 WebSocket 客户端恢复。
+- [x] 保留现有控制协议；grasp 页面不增加任何运动或夹爪写入命令。
+- [x] 增加请求协议、快照校验、observation identity 和 readiness 测试。
 
 ### C. Portal 页面
 
-- 新增 `grasp.html`、`grasp.ts` 和页面样式；更新 Vite multi-page input 与静态构建产物。
+- [x] 新增 `grasp.html`、`grasp.ts` 和页面样式；更新 Vite multi-page input 与静态构建产物。
 - 复用现有 `theme.css`、panel/button/status 组件，移动端采用单列布局。
-- RGB/depth/overlay 支持最近帧显示；候选表与图像点击保持同步。
-- 用 Canvas/Three.js 绘制候选 grasp wireframe、base/camera 轴和当前臂布局；没有数据时显示明确空状态。
+- [x] RGB/depth/overlay 支持 observation 绑定显示；候选表与图像投影保持同步。
+- [x] 用 Canvas/Three.js 绘制候选 grasp wireframe、base/camera 轴、相机系点云和当前臂布局。
 
 ### D. 人工评价和验证
 
-- localStorage key 按 observation/profile 分区，导出带 schema version 的 JSON。
-- 增加 Web protocol、bridge publisher、页面静态路由和 Playwright smoke tests。
-- 构建 Web control，运行相关 Python 测试、`npm run build:web-control`、网站 build/style gate。
-- 以 dry-run 和离线 fixture 验证完整流程；不连接真实运动入口，不执行机器人动作。
+- [x] localStorage key 按 observation/profile 分区，导出带 schema version 的 JSON。
+- [x] 增加 Web protocol、bridge publisher、页面静态路由和 Playwright smoke tests。
+- [x] 构建 Web control，运行相关 Python 测试、`npm run build:web-control` 和网站 style gate。
+- [x] 以 dry-run 和离线 fixture 验证评估流程；不连接真实运动入口，不执行机器人动作。
 
 ## 验收标准
 
-- 页面能显示所选 profile、目标类别、RGB、深度、overlay、候选 pose/score/width、机械臂关节/布局和规划结果。
+- 页面能显示所选 profile、目标类别、RGB、深度、overlay、候选 pose/score/width、机械臂关节/布局和评估诊断。
 - 所有可视化数据带 observation identity，切换新观测不会残留旧候选。
-- 未通过标定/夹爪 readiness 时页面仍可审阅图像和 policy 候选，但明确标注“不可执行”。
+- 未批准标定时页面仍可审阅 RGB-D 和相机系点云；夹爪几何缺失时保留推理拒绝原因并标注“不可执行”。两个 backend 都依赖夹爪尺寸过滤候选，不能在尺寸未测量时保证返回 policy pose。
 - 评价 JSON 可下载并可离线复现候选选择；页面不存在运动或夹爪写入命令。
 - 相关测试通过；无法运行的宿主依赖在最终报告中列明。
+
+## 实施验证
+
+- `realman_msgs` 在 `/tmp/realman-grasp-review-*` 独立目录构建成功；grasp Action、evaluation snapshot、grasp protocol、Web protocol 和 evaluation cache 测试共 57 项通过。
+- Grasp Portal Playwright 桌面/移动端共 4 项通过，`npm run build:web-control` 和网站 style gate 通过。
+- VitePress 完整 build 因工作区用户文件 `config/ros/three_robots.yaml` 当前不可读而无法运行；该文件未读取、修改或纳入提交。
+- 当前 `config/grasp/gripper_specs.yaml` 的左右夹爪尺寸均为 `null` 且未验证。完成物理测量并更新权威配置后，portal 才能对这只 EU 插头显示 policy 候选；标定/夹爪 readiness 未批准时不可执行。

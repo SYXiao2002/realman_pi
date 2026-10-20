@@ -22,6 +22,29 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 `WebGL 渲染失败` 和底层错误，不伪造二维机械臂或布局加载成功。恢复浏览器 WebGL 后刷新页面，
 即可重新加载完整 URDF 网格显示。
 
+## Grasp 离线评估页
+
+`/grasp.html` 是与控制台同源的只读评估页。它选择 grasp profile、目标类别和 policy backend，向
+`/grasp_bridge/plan_grasp` 发送带 `evaluation_only=true` 的 `realman_msgs/PlanGrasp` 请求，并显示
+`/grasp_bridge/evaluation` 的原子 JSON 快照：RGB、注册深度、候选投影、相机系和基座系 pose、深度反投影
+点云、关节快照、规划诊断以及标定和夹爪 readiness。浏览器只保存人工候选评价到 localStorage，支持导出
+带 `observation_id` 的 JSON；页面没有运动、轨迹、速度或夹爪写入入口。
+
+`grasp_bridge` 的 `dry_run` 禁止 IK/waypoint 规划，但允许只读 RGB-D、TF 和 policy 请求，便于人在机械臂
+保持静止时审阅当前场景。未批准手眼标定时仍可查看图像和相机系点云，但不会生成基座系 pose；policy
+backend 需要有效夹爪尺寸来过滤候选，尺寸缺失时会在快照中保留 inference 拒绝原因。快照的
+`execution_ready` 恒为 `false`，页面列出 readiness 阻断原因。每个快照只接受同一个 `observation_id` 的图像、候选和评价，避免跨帧拼接。
+
+构建与浏览器 smoke test：
+
+```bash
+cd website
+npm run build:web-control
+npm run test:web-control -- grasp.spec.ts
+```
+
+离线评估不会调用 `ExecuteMotion`、`ExecuteTrajectory`、Cartesian velocity、夹爪 service 或行为树执行。
+
 ```text
 笔记本浏览器
     │ http://工控机:8765/ + /ws

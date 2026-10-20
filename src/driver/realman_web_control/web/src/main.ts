@@ -141,6 +141,7 @@ app.innerHTML = `
     <span id="mode" class="status-pill ready">CONTROL READY</span>
     <span id="auth-button" class="status-pill ready">CONTROL OPEN</span>
     <a href="/calibration.html" class="button ghost">相机标定</a>
+    <a href="/grasp.html" class="button ghost">Grasp 评估</a>
     <button id="cancel-motion" class="button ghost" type="button" disabled>取消 Action</button>
     <button id="recover-motion" class="button secondary" type="button" disabled>恢复机械臂</button>
     <button id="stop-button" class="button danger" type="button" disabled>■ 软件停止</button>

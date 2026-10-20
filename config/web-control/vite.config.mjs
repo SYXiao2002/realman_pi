@@ -167,11 +167,12 @@ export default defineConfig({
     emptyOutDir: true,
     sourcemap: false,
     rollupOptions: {
-      // Keep motion control and calibration as separate operator pages while
+      // Keep motion control, calibration, and grasp evaluation as separate operator pages while
       // sharing the same authenticated WebSocket/ROS bridge.
       input: {
         control: resolve(webDirectory, "index.html"),
         calibration: resolve(webDirectory, "calibration.html"),
+        grasp: resolve(webDirectory, "grasp.html"),
       },
     },
   },

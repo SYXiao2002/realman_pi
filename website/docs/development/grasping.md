@@ -123,7 +123,7 @@ ros2 launch grasp_bridge grasp_bridge.launch.py config_root:="$PWD/config"
 
 宿主机构建须先安装上面的共享传输依赖；Ubuntu 22.04 自带的 websockets 版本不足以提供同步客户端。ROS Docker 已安装这些依赖。
 
-默认配置 dry-run 验证 profile 并报告未就绪项，**不创建 TF listener、IK/任务状态 client 或传感器订阅**。算法服务不必在线。携带任务 lease 的请求在采集、推理前后及输出计划前使用只读 `TaskControl STATUS` 核对有效期；撤销或过期会使计划失效。独立只读规划可以不携带 lease。真实观测与 IK 规划需要显式设置 `dry_run:=false`，完成几何/标定/走廊输入并固定模型身份；该入口仍不发送机械臂或夹爪命令。
+默认配置 `dry_run=true` 时创建 RGB-D、关节和 TF 的只读订阅，允许 Web grasp 评估页采集观测；不创建 IK 或任务状态 client，因此不会生成 waypoint。未批准的手眼标定会阻止基座系 pose 计算，但相机系图像和深度仍可审阅。两个 policy backend 都要求有效夹爪开口/指爪几何来过滤候选；这些尺寸缺失或未测量时，快照会保留图像并显示 inference 拒绝原因，不会填入虚构默认值。普通规划请求仍会被 dry-run 拒绝。携带任务 lease 的请求在采集、推理前后及输出计划前使用只读 `TaskControl STATUS` 核对有效期；撤销或过期会使计划失效。独立只读评估不携带 lease。真实观测与 IK 规划需要显式设置 `dry_run:=false`，完成几何/标定/走廊输入并固定模型身份；该入口仍不发送机械臂或夹爪命令。
 
 | 接口 | 类型/意义 |
 | --- | --- |
