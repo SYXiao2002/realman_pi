@@ -16,6 +16,8 @@ uint32 velocity_percent
 uint32 blend_radius_percent
 bool connect
 float32 timeout_sec
+# Empty for legacy clients; required while this arm has a task lease.
+string task_token
 ---
 # Result constants
 uint8 SUCCEEDED=0

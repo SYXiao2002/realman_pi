@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import secrets
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -33,15 +34,23 @@ class CoordinateMotionGate(Protocol):
 
 
 class ArmOwnership:
-    """Atomic per-arm ownership shared by motion, velocity, and coordinates."""
+    """Atomic command ownership and longer-lived task leases for each arm.
 
-    def __init__(self) -> None:
+    A lease reserves admission between commands, including while inference is
+    running. Expiry revokes command eligibility but never releases the lease:
+    its owner must explicitly release it once all hardware work has drained.
+    """
+
+    def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._lock = threading.Lock()
         self._owned: set[str] = set()
+        self._leases: dict[str, TaskLease] = {}
+        self._external: dict[str, str] = {}
+        self._monotonic = monotonic
 
-    def acquire(self, arm: str) -> bool:
+    def acquire(self, arm: str, task_token: str = "") -> bool:
         with self._lock:
-            if arm in self._owned:
+            if arm in self._owned or not self._admitted_locked(arm, task_token):
                 return False
             self._owned.add(arm)
             return True
@@ -53,6 +62,106 @@ class ArmOwnership:
     def is_busy(self, arm: str) -> bool:
         with self._lock:
             return arm in self._owned
+
+    def _admitted_locked(self, arm: str, token: str) -> bool:
+        lease = self._leases.get(arm)
+        if lease is None:
+            return token == ""
+        return bool(token) and secrets.compare_digest(token, lease.token) and self._monotonic() < lease.expires_at
+
+    def acquire_task(self, arm: str, owner_id: str, ttl_sec: float) -> "TaskLease":
+        self._validate_lease_request(arm, owner_id, ttl_sec)
+        with self._lock:
+            if arm in self._owned or arm in self._leases:
+                raise ValueError("arm already has a command or task owner")
+            lease = TaskLease(owner_id, secrets.token_urlsafe(32), self._monotonic() + ttl_sec)
+            self._leases[arm] = lease
+            return lease
+
+    def renew_task(self, arm: str, token: str, ttl_sec: float) -> "TaskLease":
+        if not math.isfinite(ttl_sec) or ttl_sec <= 0.0:
+            raise ValueError("ttl_sec must be positive and finite")
+        with self._lock:
+            if not self._admitted_locked(arm, token) or arm not in self._leases:
+                raise ValueError("task token is absent, expired, or does not own this arm")
+            lease = self._leases[arm]
+            renewed = TaskLease(lease.owner_id, lease.token, self._monotonic() + ttl_sec)
+            self._leases[arm] = renewed
+            return renewed
+
+    def release_task(self, arm: str, token: str) -> None:
+        with self._lock:
+            lease = self._leases.get(arm)
+            if lease is None or not token or not secrets.compare_digest(token, lease.token):
+                raise ValueError("task token does not own this arm")
+            if arm in self._owned:
+                raise ValueError("hardware command has not drained; task lease retained")
+            del self._leases[arm]
+
+    def task_state(self, arm: str) -> tuple["TaskLease | None", bool]:
+        with self._lock:
+            return self._leases.get(arm), arm in self._owned
+
+    def validate_task(self, arm: str, token: str) -> bool:
+        with self._lock:
+            return arm in self._leases and self._admitted_locked(arm, token)
+
+    def command_admitted(self, arm: str, task_token: str = "") -> bool:
+        """Recheck eligibility immediately before a new hardware submission."""
+        with self._lock:
+            return self._admitted_locked(arm, task_token)
+
+    def revoke_task(self, arm: str) -> bool:
+        """Invalidate future commands immediately while retaining task ownership."""
+        with self._lock:
+            lease = self._leases.get(arm)
+            if lease is None:
+                return False
+            self._leases[arm] = TaskLease(lease.owner_id, lease.token, min(lease.expires_at, self._monotonic()))
+            return True
+
+    def motion_is_busy(self, arm: str) -> bool:
+        with self._lock:
+            return arm in self._owned and arm not in self._external
+
+    def expired_task(self, arm: str) -> bool:
+        with self._lock:
+            lease = self._leases.get(arm)
+            return lease is not None and self._monotonic() >= lease.expires_at
+
+    def acquire_external(self, arm: str, task_token: str = "") -> str:
+        """Reserve the same admission boundary for a gripper hardware command."""
+        with self._lock:
+            if arm in self._owned or not self._admitted_locked(arm, task_token):
+                raise ValueError("arm is busy or task token is not eligible")
+            command_id = secrets.token_urlsafe(32)
+            self._owned.add(arm)
+            self._external[arm] = command_id
+            return command_id
+
+    def release_external(self, arm: str, command_id: str) -> None:
+        with self._lock:
+            expected = self._external.get(arm)
+            if not expected or not command_id or not secrets.compare_digest(command_id, expected):
+                raise ValueError("external command does not own this arm")
+            del self._external[arm]
+            self._owned.discard(arm)
+
+    @staticmethod
+    def _validate_lease_request(arm: str, owner_id: str, ttl_sec: float) -> None:
+        if arm not in {"l", "m", "r"}:
+            raise ValueError("arm must be l, m, or r")
+        if not isinstance(owner_id, str) or not owner_id.strip() or len(owner_id) > 128:
+            raise ValueError("owner_id must contain 1 to 128 characters")
+        if not math.isfinite(ttl_sec) or ttl_sec <= 0.0:
+            raise ValueError("ttl_sec must be positive and finite")
+
+
+@dataclass(frozen=True)
+class TaskLease:
+    owner_id: str
+    token: str
+    expires_at: float
 
 
 # Keep a descriptive alias for later modules without multiplying ownership APIs.
@@ -267,7 +376,9 @@ class MotionCoordinator:
                 return self.goal_response_type.REJECT
             # Linearize ownership acquisition with reservation publication so
             # an idle fast stop cannot cross a half-accepted goal.
-            if not self.ownership.acquire(self.arm_id):
+            token = getattr(goal_request, "task_token", "")
+            acquired = self.ownership.acquire(self.arm_id, token) if token else self.ownership.acquire(self.arm_id)
+            if not acquired:
                 self._log("warn", f"Rejecting motion goal: arm {self.arm_id} is busy")
                 return self.goal_response_type.REJECT
             self._owns_ownership = True
@@ -1203,7 +1314,8 @@ class MotionCoordinator:
             elif self._reservation is not None:
                 return None
             else:
-                if not self.ownership.acquire(self.arm_id):
+                task_token = getattr(request, "task_token", "")
+                if not self.ownership.acquire(self.arm_id, task_token):
                     return None
                 self._owns_ownership = True
             self._generation += 1
@@ -1319,6 +1431,14 @@ class MotionCoordinator:
                     TerminalState.CANCELED,
                     0,
                     "motion canceled before submission",
+                )
+            if not self.ownership.command_admitted(
+                self.arm_id, getattr(getattr(goal_handle, "request", None), "task_token", "")
+            ):
+                return (
+                    TerminalState.ABORTED,
+                    -1,
+                    "task lease expired or was revoked before motion submission",
                 )
             return None
 

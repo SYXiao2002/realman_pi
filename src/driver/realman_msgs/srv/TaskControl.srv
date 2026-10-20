@@ -1,0 +1,24 @@
+# Per-arm task admission, not authentication. The driver owns this state.
+uint8 ACQUIRE=0
+uint8 RENEW=1
+uint8 RELEASE=2
+uint8 RESERVE_EXTERNAL=3
+uint8 RELEASE_EXTERNAL=4
+uint8 STATUS=5
+uint8 operation
+string owner_id
+# STATUS with a token validates its live lease; empty STATUS is read-only.
+string task_token
+# Positive finite seconds, required by ACQUIRE and RENEW.
+float64 ttl_sec
+# Returned by RESERVE_EXTERNAL; required by RELEASE_EXTERNAL.
+string command_id
+---
+bool success
+string task_token
+string command_id
+string owner_id
+bool leased
+bool expired
+bool command_busy
+string message

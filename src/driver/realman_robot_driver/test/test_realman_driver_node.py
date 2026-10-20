@@ -1053,7 +1053,10 @@ def test_disconnect_succeeds_when_velocity_historical_error_is_safely_inactive()
         clear_lockout_after_disconnect=lambda: None,
     )
     adapter = SimpleNamespace(disconnect=lambda: 0)
+    from realman_robot_driver.motion_coordinator import ArmOwnership
     node = SimpleNamespace(
+        arm_id="r",
+        arm_ownership=ArmOwnership(),
         velocity_session=velocity,
         motion_coordinator=motion,
         adapter=adapter,

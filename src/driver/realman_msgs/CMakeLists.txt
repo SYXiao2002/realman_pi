@@ -20,6 +20,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetCurrentPose.srv"
   "srv/ForwardKinematics.srv"
   "srv/SolveIk.srv"
+  "srv/TaskControl.srv"
+  "srv/TaskGripperCommand.srv"
   "srv/RecoverMotion.srv"
   "srv/ListInputModes.srv"
   "srv/SelectInputMode.srv"

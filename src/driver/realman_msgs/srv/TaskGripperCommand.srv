@@ -1,0 +1,8 @@
+# Explicit endpoint operations for a task-owned binary or continuous gripper.
+uint8 OPEN=0
+uint8 CLOSE=1
+uint8 operation
+string task_token
+---
+bool success
+string message

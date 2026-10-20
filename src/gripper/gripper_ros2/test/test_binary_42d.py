@@ -1,9 +1,9 @@
 """Exercise binary mapping, bus scheduling and observed completion without hardware."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from types import SimpleNamespace
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -75,6 +75,37 @@ class BinaryDriverTest(unittest.TestCase):
         self.left.enable()
         self.right.enable()
         self.sdk.calls.clear()
+
+    def test_task_gate_rejects_queued_command_before_mode_or_motion_writes(self):
+        @contextmanager
+        def denied(_name):
+            raise PermissionError("grasp owns arm")
+            yield
+
+        self.bus.command_guard = denied
+        self.manager.request_move("right", 50)
+        self.assertFalse(self.bus._process_pending())
+        self.assertEqual(self.sdk.calls, [])
+        self.assertNotIn(2, self.bus._pending)
+        del self.bus.command_guard
+        self.assertFalse(self.bus._process_pending())
+        self.assertEqual(self.sdk.calls, [])
+
+    def test_task_gate_spans_preparation_and_hardware_write(self):
+        phases = []
+
+        @contextmanager
+        def admitted(name):
+            phases.append(("enter", name, len(self.sdk.calls)))
+            yield
+            phases.append(("exit", name, len(self.sdk.calls)))
+
+        self.bus.command_guard = admitted
+        self.manager.request_move("right", 50)
+        self.assertTrue(self.bus._process_pending())
+        self.assertEqual(phases[0], ("enter", "right", 0))
+        self.assertEqual(phases[-1][0:2], ("exit", "right"))
+        self.assertGreater(phases[-1][2], 0)
 
     def test_connect_and_feedback_are_read_only_and_share_one_instrument(self):
         self.assertEqual(self.sdk.calls, [])

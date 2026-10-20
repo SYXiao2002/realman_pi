@@ -35,6 +35,14 @@ class GripperManagerNode:
             node.get_logger().error(f"Ignoring gripper override: {problem}")
         apply_overrides(self.config, overrides)
         self.manager = GripperManager.from_config(self.config)
+        self.task_admission = None
+        if "task_control" in self.config:
+            from .task_admission import TaskAdmission
+            self.task_admission = TaskAdmission(node, self.config["task_control"])
+            # The check belongs at consumption time, since queued streaming
+            # commands may predate a newly acquired task lease.
+            for bus in self.manager.buses.values():
+                bus.command_guard = self.task_admission.command
         self.limits = LimitsStore(self.manager, path, overrides)
         self._services = []
         self._subscriptions = []
@@ -54,16 +62,22 @@ class GripperManagerNode:
     def _create_device_interfaces(self, name: str):
         prefix = f"/{name}"
         self._services.extend([
-            self.node.create_service(Trigger, f"{prefix}/open", lambda req, res, n=name: self._move(n, True, res)),
-            self.node.create_service(Trigger, f"{prefix}/close", lambda req, res, n=name: self._move(n, False, res)),
-            self.node.create_service(Trigger, f"{prefix}/reset", lambda req, res, n=name: self._reset(n, res)),
-            self.node.create_service(SetBool, f"{prefix}/enable", lambda req, res, n=name: self._enable(n, req, res)),
-            self.node.create_service(Trigger, f"{prefix}/grasp_check", lambda req, res, n=name: self._grasp(n, res)),
-            self.node.create_service(GripperPercentage, f"{prefix}/percentage", lambda req, res, n=name: self._percentage(n, req, res)),
+            self.node.create_service(Trigger, f"{prefix}/open", lambda req, res, n=name: self._guard(n, res, lambda: self._move(n, True, res))),
+            self.node.create_service(Trigger, f"{prefix}/close", lambda req, res, n=name: self._guard(n, res, lambda: self._move(n, False, res))),
+            self.node.create_service(Trigger, f"{prefix}/reset", lambda req, res, n=name: self._guard(n, res, lambda: self._reset(n, res))),
+            self.node.create_service(SetBool, f"{prefix}/enable", lambda req, res, n=name: self._guard(n, res, lambda: self._enable(n, req, res))),
+            self.node.create_service(Trigger, f"{prefix}/grasp_check", lambda req, res, n=name: self._guard(n, res, lambda: self._grasp(n, res))),
+            self.node.create_service(GripperPercentage, f"{prefix}/percentage", lambda req, res, n=name: self._guard(n, res, lambda: self._percentage(n, req, res))),
             self.node.create_service(Trigger, f"{prefix}/calibrate", lambda req, res, n=name: self._calibrate(n, res)),
-            self.node.create_service(SetGripperLimits, f"{prefix}/set_limits", lambda req, res, n=name: self._set_limits(n, req, res)),
-            self.node.create_service(MoveGripperRaw, f"{prefix}/move_raw", lambda req, res, n=name: self._move_raw(n, req, res)),
+            self.node.create_service(SetGripperLimits, f"{prefix}/set_limits", lambda req, res, n=name: self._guard(n, res, lambda: self._set_limits(n, req, res))),
+            self.node.create_service(MoveGripperRaw, f"{prefix}/move_raw", lambda req, res, n=name: self._guard(n, res, lambda: self._move_raw(n, req, res))),
         ])
+        if self.task_admission is not None:
+            from realman_msgs.srv import TaskGripperCommand
+            self._services.append(self.node.create_service(
+                TaskGripperCommand, f"{prefix}/task_command",
+                lambda req, res, n=name: self._task_command(n, req, res),
+            ))
         self._subscriptions.append(
             self.node.create_subscription(
                 std_msgs.msg.Float32,
@@ -98,6 +112,20 @@ class GripperManagerNode:
         response.success = bool(success)
         response.message = str(message)
         return response
+
+    def _guard(self, name, response, callback, task_token=""):
+        if self.task_admission is None:
+            return callback()
+        try:
+            with self.task_admission.command(name, task_token):
+                return callback()
+        except PermissionError as error:
+            return self._response(response, False, f"Task admission refused: {error}")
+
+    def _task_command(self, name, request, response):
+        if request.operation not in (0, 1) or not request.task_token:
+            return self._response(response, False, "OPEN/CLOSE and nonempty task_token are required")
+        return self._guard(name, response, lambda: self._move(name, request.operation == 0, response), request.task_token)
 
     def _ready(self, name):
         device = self.manager.get(name)
@@ -202,7 +230,7 @@ class GripperManagerNode:
         device = self.manager.get(name)
         # Binary preparation needs several serial transactions. Queue it with
         # the target so a shared-bus turnaround cannot block this ROS callback.
-        if getattr(device, "is_binary", False):
+        if getattr(device, "is_binary", False) or self.task_admission is not None:
             error = None if device.connected else "Not connected to gripper"
         else:
             device, error = self._ready(name)
@@ -285,6 +313,7 @@ class GripperManagerNode:
 def main(args=None):
     import rclpy
     from rclpy.node import Node
+    from rclpy.executors import MultiThreadedExecutor
 
     rclpy.init(args=args)
     node = Node("gripper_manager")
@@ -300,10 +329,14 @@ def main(args=None):
         node, str(Path(config_file)), node.get_parameter("overrides_file").value,
     )
     try:
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=3)
+        executor.add_node(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        if "executor" in locals():
+            executor.shutdown()
         adapter.destroy()
         node.destroy_node()
         if rclpy.ok():

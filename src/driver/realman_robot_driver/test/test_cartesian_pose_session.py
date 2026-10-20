@@ -422,3 +422,60 @@ def test_pose_session_rechecks_custom_tcp_for_each_session():
         session.cancel()
 
     assert len(adapter.fk_calls) == 2
+
+
+@pytest.mark.parametrize("revoke_during_ik", [False, True])
+def test_pose_passthrough_rechecks_task_lease_after_ik(monkeypatch, revoke_during_ik):
+    clock = Clock()
+    ownership = ArmOwnership(monotonic=clock)
+    lease = ownership.acquire_task("l", "pose-review", 0.05)
+    adapter = Adapter()
+    session = CartesianPoseSession(
+        arm_id="l", adapter=adapter, ownership=ownership, settings=settings(),
+        active_frame={ReferenceType.BASE: ("base", "l/base_link")}, monotonic=clock,
+    )
+    monkeypatch.setattr(session, "_run_loop", lambda: None)
+    monkeypatch.setattr(session, "_run_safety", lambda: None)
+    solve = adapter.inverse_kinematics
+
+    def delayed_ik(*args):
+        if revoke_during_ik:
+            ownership.revoke_task("l")
+        else:
+            clock.advance(0.06)
+        return solve(*args)
+
+    monkeypatch.setattr(adapter, "inverse_kinematics", delayed_ik)
+    assert session.start(goal(task_token=lease.token))
+    assert session.accept_command(pose())
+    clock.advance(0.02)
+    result = session.tick()
+    assert result.terminal_state == PoseTerminalState.ABORTED
+    assert "task lease" in result.message
+    assert adapter.canfd_calls == []
+    assert adapter.slow_stop_calls == 1
+    assert not ownership.is_busy("l")
+    assert not ownership.acquire("l")  # Expired task still retains exclusion.
+
+
+def test_pose_startup_rechecks_task_lease_after_joint_read(monkeypatch):
+    clock = Clock()
+    ownership = ArmOwnership(monotonic=clock)
+    lease = ownership.acquire_task("l", "pose-review", 0.05)
+    adapter = Adapter()
+    read_state = adapter.get_state
+
+    def delayed_state():
+        clock.advance(0.06)
+        return read_state()
+
+    monkeypatch.setattr(adapter, "get_state", delayed_state)
+    session = CartesianPoseSession(
+        arm_id="l", adapter=adapter, ownership=ownership, settings=settings(),
+        active_frame={ReferenceType.BASE: ("base", "l/base_link")}, monotonic=clock,
+    )
+    assert not session.start(goal(task_token=lease.token))
+    assert "task lease" in session.result.message
+    assert adapter.canfd_calls == []
+    assert not ownership.is_busy("l")
+    assert not ownership.acquire("l")

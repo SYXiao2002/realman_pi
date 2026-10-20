@@ -57,6 +57,73 @@ goal，并在三路都成功后返回 SUCCESS。任一路失败或超时会使�
 `120`。成功要求三路 Action 均返回 `SUCCEEDED`，且每个结果消息的 `success=true`。超时从节点初始化
 开始计算，包含等待服务器就绪的时间。
 
+## 腕相机单臂抓取
+
+`config/behavior-trees/grasp.xml` 是单次腕相机抓取树；默认选择右臂，换臂由
+`config/ros/grasp_profiles.yaml` 的完整 profile 决定，不在 XML 中复制臂、相机、TCP 或夹爪身份。
+算法服务使用独立的非 ROS Docker，通过 WebSocket 向 `grasp_bridge` 返回相机坐标候选；
+桥只生成计划，机械臂动作仍由 BT 和 driver 执行。完整观测与坐标链见[腕相机抓取](./grasping)。
+
+```text
+TaskLease（获取并持续续租）
+  -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
+  -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
+  -> GraspHold -> GraspConfirm（记录观察结果、显式决定是否返回）
+  -> MoveJ 已验收返回位 -> TaskGripper open -> 空闲后释放 lease
+```
+
+所有节点的端口来自 `providedPorts()`，在[节点参考](./behavior-tree-nodes)列出。`PlanGrasp` 使用
+`/grasp_bridge/plan_grasp`（`realman_msgs/action/PlanGrasp`），核对 profile、BASE、TCP、观测/计划 ID
+和有效期。`GraspWaypoint` 只接受 `pregrasp/grasp/lift`，通过选定臂的 `ExecuteMotion` 发送
+BASE 下的 MoveL；它与闭爪步骤都会拒绝过期计划。观察与返回继续使用 `MoveJ`，并传递同一任务 token。
+操作员等待期间计划可能过期；返回使用启动前已验收的关节位，不再次依赖旧观测。
+
+运行参数在 `config/ros/grasp_task.yaml`，几何和物理验收留在 profile 中：
+
+| 配置 | 单位与约束 | 含义 |
+| --- | --- | --- |
+| `profile`、`target_label`、`backend` | 显式身份；后端为 `geometry/contact_graspnet/mock` | `mock` 不允许进入真机执行；目标不能留空 |
+| `lease_ttl_sec`、`acquire_timeout_sec` | 正有限秒数 | lease 有效期和获取上限；整个子树持续续租 |
+| `motion_timeout_sec`、`plan_timeout_sec`、`gripper_timeout_sec` | 正有限秒数 | 各阶段超时；夹爪上限须覆盖 manager 的到位等待 |
+| `hold_sec`、`confirmation_timeout_sec` | 正有限秒数 | 抬起后短暂停留、等待观察/返回决定的上限 |
+
+默认配置的观察位、返回位、工作区、TCP 补偿和手眼结果仍未实测，因此会明确拒绝真机执行，
+不会代入零位或伪造可用姿态。`corridor_verified` 必须覆盖载物返回路径和释放位，
+`execution_verified` 也须在现场验收后才可置位；IK 通过不等于路径无碰撞。
+
+### 观察确认与返回
+
+抬起和夹爪闭合只证明命令执行，不证明夹住物体。`GraspHold` 记录 `held_unverified`；
+随后 `GraspConfirm` 在当前 executor 私有命名空间创建 `~/confirm_grasp`，标准名称为
+`/realman_bt_executor/confirm_grasp`（`realman_msgs/srv/ConfirmGrasp`），并在日志和快照中显示
+`awaiting_confirmation` 及非秘密的 `task_id`。此时仍持有、续租同一 lease，禁止竞争输入。
+
+请求必须精确匹配当前 `task_id`，且 `observed_outcome` 必须显式为 `VERIFIED_GRASP=1`、
+`FAILED_GRASP=2` 或 `UNVERIFIED=3`。只有 `return_object=true` 才允许沿已验收路径返回并在
+返回 Action 成功后开爪；失败或未确认的观察也可由操作员明确授权返回，诊断仍保留原观察结果。
+服务 `success=true` 表示决定已记录，不表示物理抓取成功；整棵树 `SUCCESS` 表示授权的命令序列完成。
+
+以下是人工验收时的接口格式，运行前应将 `task_id` 替换为当前等待任务；该调用会授权后续真实返回与释放：
+
+```bash
+ros2 service call /realman_bt_executor/confirm_grasp realman_msgs/srv/ConfirmGrasp \
+  "{task_id: '当前任务 ID', observed_outcome: 1, return_object: true}"
+```
+
+`return_object=false` 记录观察后终止任务；确认超时、旧任务 ID、无效观察值、重复确认、取消和任一
+阶段失败均不会自动返回或开爪。halt 会撤销确认服务，已排队回调也不能让旧树继续。错误后的物体
+处置需要重新评估现场状态，不能把重新运行整棵树当作持物恢复，因为树首步会开爪。
+
+`dry_run=true` 只验证参数，不获取 lease、不创建规划/运动/夹爪 client，也不创建确认 service；
+测试使用隔离 mock 服务覆盖完整序列、续租等待、旧确认、超时、取消及每个阶段失败。
+未实测 profile 的缺失参数仍会显示校验失败，这是预期的配置门槛。
+
+抓取专用 drain 保留迟到的 lease 授予、规划/MoveL 的非终态 Action 和在途夹爪响应；
+它等待 Action 终态或服务完成后再结束，并通过 driver 的 busy 检查释放 lease。
+这与既有 MoveJ/速度 drain 的“取消成功提交即可结束”不同，所有类型都计入
+`pending_cancellations`，one-shot 退出须等待归零。进程崩溃时 driver 的 lease watchdog
+仍会拒绝后续动作并停止机械臂；它不会打开夹爪或自动释放过期 ownership。
+
 ## 定时笛卡尔速度节点
 
 `CartesianVelocityForDuration` 用于“沿指定坐标方向以固定速度运动一段时间”。XML 只使用统一的逻辑

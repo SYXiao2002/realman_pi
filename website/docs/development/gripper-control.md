@@ -64,6 +64,7 @@ Web `percentage` 仍为 `0.0..1.0`，`0` 闭合、`1` 打开。42D 不支持连�
 | 接口 | ROS 类型 | 语义 |
 | --- | --- | --- |
 | `/<name>/open`、`close`、`reset` | `std_srvs/srv/Trigger` | 打开、闭合、复位；42D 的 `reset` 返回不支持 |
+| `/<name>/task_command` | `realman_msgs/srv/TaskGripperCommand` | 抓取任务携带 driver lease token 执行 `OPEN/CLOSE`；接口成功仍不证明夹住物体 |
 | `/<name>/grasp_check` | `std_srvs/srv/Trigger` | Changingtek 读取力矩到达状态；42D 无已验证的夹持检测，返回不支持 |
 | `/<name>/calibrate` | `std_srvs/srv/Trigger` | 当前固定返回失败；默认禁用自动标定 |
 | `/<name>/enable` | `std_srvs/srv/SetBool` | 42D `true` 显式准备开合模式，`false` 仅关闭软件命令入口，不是硬件停止 |
@@ -77,6 +78,28 @@ Web `percentage` 仍为 `0.0..1.0`，`0` 闭合、`1` 打开。42D 不支持连�
 | `/<name>/torque_reached`、`connected` | `std_msgs/msg/Bool` | 力矩到达和通信健康状态；42D 的 `torque_reached=false` 为占位 |
 
 服务在设备不可用时返回 `success=false`，manager 继续运行并尝试重连。除显式 `enable=false` 外，运动服务会在需要时先使能设备。
+
+### 与机械臂共享任务准入
+
+`config/ros/gripper.yaml` 的 `task_control.arms` 将 `gripper_left/right` 映射到 `l/r`。
+manager 通过 driver 的 `/<arm>/task_control` 对一次完整写操作做 `RESERVE_EXTERNAL`，
+在命令完成后用返回的 `command_id` 释放预留。这样检查与机械臂任务共用同一个 ownership/busy 边界，
+不会仅在 Web 层屏蔽按钮。新部署须一起重建 `realman_msgs`、driver、gripper manager 和 BT。
+
+普通 Web service、键盘/Pika percentage topic 没有任务 token：无 lease 时按普通准入执行，
+任务 lease 存在时拒绝。`/<name>/task_command` 只接受有效 token 和 `OPEN/CLOSE`，
+并复用既有总线、二值适配与到位等待。`TaskGripper` BT 节点使用它，闭爪前还校验计划新鲜度。
+在途服务响应由 executor 保留；超时、取消或失败都不会自动发送反向开爪。
+
+`task_control.timeout_sec` 是每次准入服务等待上限，单位为秒。driver 不在线、映射缺失、准入拒绝、
+通信异常或超时都会拒绝后续写命令，反馈读取和 42D 只读重连仍继续。连续 topic 目标在真正消费时
+重新取得预留；拒绝的排队目标直接丢弃，不会在任务结束后重放。成功预留代表一整次命令已经准入，
+该命令可在 lease 过期/撤销后完成；下一个目标必须重新验证。
+
+准入响应丢失时可能已有服务端预留，manager 不会猜测释放 ID 或继续发命令；应检查 driver ownership
+再人工处理。过期 lease 不会自行释放，也不会开爪。当前生产 42D 无可靠夹持检测，`close` 到位、
+`torque_reached=false` 和 BT `SUCCESS` 均不能充当物理抓取成功证据；
+观察确认及受控返回见[抓取流程](./behavior-tree-motion#观察确认与返回)。
 
 ### 42D 二值适配 {#binary-42d-adapter}
 

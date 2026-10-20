@@ -201,6 +201,7 @@ class CartesianVelocitySession:
         self._fast_stop_in_progress = False
         self._last_fast_stop_status: int | None = None
         self._goal: _ValidatedGoal | None = None
+        self._task_token = ""
         self._command = _ZERO
         self._limited_command = _ZERO
         self._command_received_at = 0.0
@@ -305,7 +306,8 @@ class CartesianVelocitySession:
                 return False
             if reservation is None:
                 try:
-                    acquired = bool(self.ownership.acquire(self.arm_id))
+                    token = getattr(goal, "task_token", "")
+                    acquired = bool(self.ownership.acquire(self.arm_id, token) if token else self.ownership.acquire(self.arm_id))
                 except Exception as error:
                     self._set_result_locked(
                         False,
@@ -344,6 +346,7 @@ class CartesianVelocitySession:
             token = self._start_token
             self._starting = True
             self._goal = validated
+            self._task_token = getattr(goal, "task_token", "")
             self._velocity_initialized = False
             self._movev_in_progress = False
             self._phase = VelocityFeedbackPhase.VALIDATING
@@ -357,6 +360,13 @@ class CartesianVelocitySession:
         trace_before = self._trace_joints()
         self._cadence = []
         self._cadence_period_sec = validated.control_period_ms / 1000.0
+        with self._condition:
+            if not self.ownership.command_admitted(self.arm_id, self._task_token):
+                self._finish_start_failure_locked(reservation, VelocityResult(
+                    False, VelocityTerminalState.ABORTED, -1,
+                    "task lease expired or was revoked before velocity initialization",
+                ))
+                return False
         init_error: Exception | None = None
         try:
             init_status = _status(
@@ -449,6 +459,7 @@ class CartesianVelocitySession:
         self._log_arm_errors()
 
         finish_canceled_start = False
+        admission_denied = False
         recover_initial_zero = False
         thread_start_error: Exception | None = None
         failed_thread_name = ""
@@ -464,9 +475,12 @@ class CartesianVelocitySession:
             if zero_status != 0:
                 self._starting = False
                 recover_initial_zero = True
+            admission_denied = not self.ownership.command_admitted(self.arm_id, self._task_token)
+            if admission_denied:
+                self._starting = False
             if finish_canceled_start:
                 pass
-            if not finish_canceled_start and not recover_initial_zero:
+            if not finish_canceled_start and not recover_initial_zero and not admission_denied:
                 now = self._monotonic()
                 self._active_request = goal
                 self._command = _ZERO
@@ -511,6 +525,14 @@ class CartesianVelocitySession:
                     if reservation is not None and self._reservation is reservation:
                         self._reservation = None
                     return True
+
+        if admission_denied and not finish_canceled_start and not recover_initial_zero:
+            self._stop_and_join(
+                VelocityTerminalState.ABORTED,
+                "task lease expired or was revoked during velocity initialization",
+                api2_status=-1,
+            )
+            return False
 
         if thread_start_error is not None:
             self._stop_and_join(
@@ -622,8 +644,15 @@ class CartesianVelocitySession:
             )
 
         send_started = self._monotonic()
+        admission_denied = False
         try:
-            status = _status(
+            with self._condition:
+                if token != self._start_token or not self._running or self._goal is not goal:
+                    self._movev_in_progress = False
+                    self._condition.notify_all()
+                    return self._result
+                admission_denied = not self.ownership.command_admitted(self.arm_id, self._task_token)
+            status = -1 if admission_denied else _status(
                 self.adapter.movev(
                     list(limited), goal.follow, goal.trajectory_mode, goal.radio
                 )
@@ -648,7 +677,7 @@ class CartesianVelocitySession:
         if status != 0:
             return self._stop_and_join(
                 VelocityTerminalState.ABORTED,
-                "Cartesian velocity command failed",
+                "task lease expired or was revoked before velocity command" if admission_denied else "Cartesian velocity command failed",
                 api2_status=status,
             )
         return None
@@ -785,7 +814,8 @@ class CartesianVelocitySession:
             ):
                 return _goal_reject()
             try:
-                acquired = bool(self.ownership.acquire(self.arm_id))
+                token = getattr(goal_request, "task_token", "")
+                acquired = bool(self.ownership.acquire(self.arm_id, token) if token else self.ownership.acquire(self.arm_id))
             except Exception as error:
                 self._log("error", f"velocity ownership acquire failed: {error}")
                 return _goal_reject()

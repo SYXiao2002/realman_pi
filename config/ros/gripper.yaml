@@ -2,6 +2,13 @@
 # Their positions are compatibility coordinates, not measured travel: the adapter
 # maps opening percentage to fully open/closed while preserving ROS/UI endpoints.
 # The middle arm has no gripper; do not require its former Changingtek serial bus.
+# Keep gripper writes and arm commands under the driver's same task lease.
+# Unavailable admission services reject writes; feedback remains independent.
+task_control:
+  timeout_sec: 1.0
+  arms:
+    gripper_left: l
+    gripper_right: r
 buses:
   - port: /dev/tty_gripper_42d
     protocol: binary_42d

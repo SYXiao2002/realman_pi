@@ -10,6 +10,8 @@ uint8 reference_type
 string reference_name
 realman_msgs/MotionWaypoint[] waypoints
 float32 timeout_sec
+# Empty for legacy clients; required while this arm has a task lease.
+string task_token
 ---
 # Result constants
 uint8 SUCCEEDED=0

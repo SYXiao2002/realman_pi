@@ -33,6 +33,75 @@ class Clock:
         self.value += seconds
 
 
+@pytest.mark.parametrize("revoke", [False, True])
+def test_velocity_tick_stops_after_task_lease_expiry_or_revoke(monkeypatch, revoke):
+    clock = Clock()
+    ownership = ArmOwnership(monotonic=clock)
+    lease = ownership.acquire_task("l", "velocity-review", 0.05)
+    adapter = FakeAdapter()
+    session = make_session(adapter=adapter, clock=clock, ownership=ownership)
+    monkeypatch.setattr(session, "_run_loop", lambda: None)
+    monkeypatch.setattr(session, "_run_safety_supervisor", lambda: None)
+    assert session.start(valid_goal(task_token=lease.token))
+    for worker in (session._thread, session._safety_thread):
+        worker.join(timeout=1.0)
+    session._thread = session._safety_thread = None
+    session.accept_command(twist("l/tool/tcpgrip", linear=(0.1, 0.0, 0.0)))
+    clock.advance(0.02)
+    assert session.tick() is None
+    assert adapter.velocity_calls[-1][0][0] > 0
+    written = len(adapter.velocity_calls)
+    if revoke:
+        ownership.revoke_task("l")
+    else:
+        clock.advance(0.04)
+    result = session.tick()
+    assert result.terminal_state == VelocityTerminalState.ABORTED
+    assert "task lease" in result.message
+    assert all(call[0] == [0.0] * 6 for call in adapter.velocity_calls[written:])
+    assert adapter.slow_stop_calls == 1
+    assert not ownership.is_busy("l")
+    assert not ownership.acquire("l")
+
+
+def test_reserved_velocity_start_rechecks_expired_task_before_sdk_init():
+    clock = Clock()
+    ownership = ArmOwnership(monotonic=clock)
+    lease = ownership.acquire_task("l", "velocity-review", 0.05)
+    adapter = FakeAdapter()
+    session = make_session(adapter=adapter, clock=clock, ownership=ownership)
+    request = valid_goal(task_token=lease.token)
+    assert _goal_response_is_accepted(session.goal_callback(request))
+    clock.advance(0.06)
+    assert not session._start(request, require_reservation=True)
+    assert "task lease" in session.result.message
+    assert adapter.init_calls == []
+    assert adapter.velocity_calls == []
+    assert not ownership.is_busy("l")
+    assert not ownership.acquire("l")
+
+
+def test_velocity_initialization_expiry_sends_only_zero_and_stop(monkeypatch):
+    clock = Clock()
+    ownership = ArmOwnership(monotonic=clock)
+    lease = ownership.acquire_task("l", "velocity-review", 0.05)
+    adapter = FakeAdapter()
+    initialize = adapter.set_movev_init
+
+    def delayed_initialize(*args):
+        clock.advance(0.06)
+        return initialize(*args)
+
+    monkeypatch.setattr(adapter, "set_movev_init", delayed_initialize)
+    session = make_session(adapter=adapter, clock=clock, ownership=ownership)
+    assert not session.start(valid_goal(task_token=lease.token))
+    assert "task lease" in session.result.message
+    assert all(call[0] == [0.0] * 6 for call in adapter.velocity_calls)
+    assert adapter.slow_stop_calls == 1
+    assert not ownership.is_busy("l")
+    assert not ownership.acquire("l")
+
+
 class RosClock:
     def __init__(self, value_ns: int) -> None:
         self.value_ns = value_ns
@@ -533,6 +602,9 @@ def test_watchdog_sends_zero_then_stops_once_and_rejects_commands():
     session.start(valid_goal())
     clock.advance(0.101)
     session.tick()
+    # The independent safety supervisor can claim the stop before tick() sees
+    # the running session. Observe its terminal result after cleanup completes.
+    assert session._done_event.wait(timeout=2.0)
 
     assert adapter.velocity_calls[-1][0] == [0.0] * 6
     assert adapter.slow_stop_calls == 1

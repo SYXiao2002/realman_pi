@@ -38,6 +38,16 @@ def percentage_to_position(percentage: float, *, open_position: int,
 def load_gripper_config(path: str | Path) -> dict:
     path = Path(path)
     document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    admission = document.get("task_control")
+    if admission is not None:
+        if not isinstance(admission, dict):
+            raise ValueError("task_control must be a mapping")
+        timeout = admission.get("timeout_sec")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("task_control.timeout_sec must be positive and finite")
+        arms = admission.get("arms")
+        if not isinstance(arms, dict) or not arms or any(arm not in {"l", "m", "r"} for arm in arms.values()):
+            raise ValueError("task_control.arms must map gripper names to l/m/r")
     buses = document.get("buses")
     if not isinstance(buses, list) or not buses:
         raise ValueError("gripper config must contain a non-empty buses list")
@@ -99,4 +109,6 @@ def load_gripper_config(path: str | Path) -> dict:
                 raise ValueError(f"{name}.close_position is outside configured limits")
             if protocol == "binary_42d" and gripper["open_position"] >= gripper["close_position"]:
                 raise ValueError(f"{name}.open_position must be smaller than close_position")
+    if admission is not None and set(admission["arms"]) != names:
+        raise ValueError("task_control.arms must cover every configured gripper exactly")
     return document

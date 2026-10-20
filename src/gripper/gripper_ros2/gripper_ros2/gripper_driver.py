@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import nullcontext
 
 from .changingtek import Changingtek_rtu_psdk
 from .changingtek.rtu_psdk import (
@@ -305,7 +306,16 @@ class GripperBus:
                     self._drop_pending(slave_id, position)
                     continue
             self._drop_pending(slave_id, position)
-            device.move_to(position)
+            guard = getattr(self, "command_guard", None)
+            try:
+                with guard(device.name) if guard else nullcontext():
+                    if guard and not device._enabled:
+                        device.enable(True)
+                    device.move_to(position)
+            except PermissionError:
+                # A task may have acquired the arm after this stream sample
+                # was queued. Drop it permanently, with no delayed replay.
+                continue
             self._last_sent[slave_id] = (now, position)
             sent = True
         return sent

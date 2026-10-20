@@ -368,19 +368,23 @@ class Binary42DBus(GripperBus):
                 if last is not None and now - last[0] < self.min_command_interval_s:
                     continue
                 try:
-                    if not device._enabled or not device._prepared:
-                        device.enable(True)
-                    # Preparation can take several serial transactions. Keep
-                    # coalescing inputs until it finishes, then commit the
-                    # newest endpoint before beginning the motion write.
-                    with self._cmd_lock:
-                        position = self._pending.pop(slave_id, None)
-                    if position is None:
-                        continue
-                    target = position == device.open_position
-                    if device._command(target):
-                        self._last_sent[slave_id] = (now, position)
-                        sent = True
+                    from contextlib import nullcontext
+                    guard = getattr(self, "command_guard", None)
+                    with guard(device.name) if guard else nullcontext():
+                        if not device._enabled or not device._prepared:
+                            device.enable(True)
+                        # Preparation can take several serial transactions.
+                        # Commit the newest endpoint under the same lease.
+                        with self._cmd_lock:
+                            position = self._pending.pop(slave_id, None)
+                        if position is None:
+                            continue
+                        target = position == device.open_position
+                        if device._command(target):
+                            self._last_sent[slave_id] = (now, position)
+                            sent = True
+                except PermissionError:
+                    self._drop_pending(slave_id, position)
                 except Exception as error:
                     device._read_failed(error)
                     # Do not replay an uncertain write, or starve the other slave.

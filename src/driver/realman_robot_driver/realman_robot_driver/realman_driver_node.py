@@ -30,6 +30,7 @@ from realman_msgs.srv import (
     RecoverMotion,
     SelectFrame,
     SolveIk,
+    TaskControl,
     VerifyCoordinates,
 )
 from sensor_msgs.msg import JointState
@@ -372,7 +373,12 @@ class RealManDriverNode(Node):
             ),
         )
         self.connected_publisher = self.create_publisher(Bool, "connected", 10)
+        # Renewal/watchdog cannot queue behind blocking SDK/IK service calls.
+        # Serialize both together so a stale expiry cannot stop a replacement task.
+        self.task_callback_group = MutuallyExclusiveCallbackGroup()
         self._services = [
+            self.create_service(TaskControl, "task_control", self._task_control,
+                                callback_group=self.task_callback_group),
             self.create_service(Trigger, "connect", self._connect),
             self.create_service(Trigger, "disconnect", self._disconnect),
             self.create_service(Trigger, "stop", self._stop),
@@ -413,6 +419,8 @@ class RealManDriverNode(Node):
             1.0 / self.coordinate_state_publish_rate,
             self._publish_coordinate_state,
         )
+        self.task_lease_timer = self.create_timer(0.1, self._check_task_lease,
+                                                  callback_group=self.task_callback_group)
         self._last_state_error = 0
         self._last_joint_count_error = 0
         self._last_connect_attempt = 0.0
@@ -444,6 +452,7 @@ class RealManDriverNode(Node):
     def _disconnect(
         self, _request: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
+        self.arm_ownership.revoke_task(self.arm_id)
         pose_session = getattr(self, "pose_session", None)
         pose_shutdown_status = pose_session.shutdown() if pose_session is not None else 0
         velocity_shutdown_status = self.velocity_session.shutdown()
@@ -492,7 +501,54 @@ class RealManDriverNode(Node):
             response.message = "disconnected"
         return response
 
+    def _task_control(self, request: TaskControl.Request, response: TaskControl.Response):
+        """Short task admission operations; tokens never appear in ROS logs."""
+        response.success = False
+        try:
+            operation = request.operation
+            if operation == TaskControl.Request.ACQUIRE:
+                lease = self.arm_ownership.acquire_task(self.arm_id, request.owner_id, request.ttl_sec)
+                response.task_token = lease.token
+            elif operation == TaskControl.Request.RENEW:
+                self.arm_ownership.renew_task(self.arm_id, request.task_token, request.ttl_sec)
+            elif operation == TaskControl.Request.RELEASE:
+                self.arm_ownership.release_task(self.arm_id, request.task_token)
+            elif operation == TaskControl.Request.RESERVE_EXTERNAL:
+                response.command_id = self.arm_ownership.acquire_external(self.arm_id, request.task_token)
+            elif operation == TaskControl.Request.RELEASE_EXTERNAL:
+                self.arm_ownership.release_external(self.arm_id, request.command_id)
+            elif operation == TaskControl.Request.STATUS:
+                if request.task_token and not self.arm_ownership.validate_task(self.arm_id, request.task_token):
+                    raise ValueError("task token is absent, expired, or does not own this arm")
+            else:
+                raise ValueError("unknown task-control operation")
+            response.success = True
+            response.message = "task admission updated"
+        except ValueError as error:
+            response.message = str(error)
+        lease, busy = self.arm_ownership.task_state(self.arm_id)
+        response.leased = lease is not None
+        response.expired = self.arm_ownership.expired_task(self.arm_id)
+        response.owner_id = lease.owner_id if lease is not None else ""
+        response.command_busy = busy
+        return response
+
+    def _check_task_lease(self):
+        # Never release an expired lease here. A disconnected task must not
+        # permit takeover before physical termination has been confirmed.
+        if not self.arm_ownership.expired_task(self.arm_id):
+            return
+        if self.arm_ownership.motion_is_busy(self.arm_id):
+            self._stop(None, Trigger.Response())
+
     def _stop(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        # An operator stop during inference must also prevent the next task stage.
+        # Revocation keeps the lease; it never hands an unconfirmed arm to a caller.
+        revoked = self.arm_ownership.revoke_task(self.arm_id)
+        if revoked and not self.arm_ownership.motion_is_busy(self.arm_id):
+            response.success = True
+            response.message = "task revoked; arm idle; an issued gripper command is not undone"
+            return response
         pose_status = self.pose_session.fast_stop_if_owned()
         velocity_status = self.velocity_session.fast_stop_if_owned()
         code = (

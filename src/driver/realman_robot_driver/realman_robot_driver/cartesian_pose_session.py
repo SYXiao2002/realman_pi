@@ -125,6 +125,7 @@ class CartesianPoseSession:
         self._thread: threading.Thread | None = None
         self._safety_thread: threading.Thread | None = None
         self._goal: _Goal | None = None
+        self._task_token = ""
         self._running = False
         self._owns_ownership = False
         self._result: PoseResult | None = None
@@ -161,7 +162,9 @@ class CartesianPoseSession:
         with self._condition:
             if self._running or self._stop_in_progress or self._owns_ownership or self._lockout:
                 return False
-            if not self.ownership.acquire(self.arm_id):
+            token = getattr(goal, "task_token", "")
+            acquired = self.ownership.acquire(self.arm_id, token) if token else self.ownership.acquire(self.arm_id)
+            if not acquired:
                 return False
             self._owns_ownership = True
             try:
@@ -173,6 +176,8 @@ class CartesianPoseSession:
                 current = self._read_current_joints()
                 if current is None:
                     raise ValueError("current joint state is unavailable")
+                if not self.ownership.command_admitted(self.arm_id, token):
+                    raise ValueError("task lease expired or was revoked before pose startup")
             except Exception as error:
                 self.ownership.release(self.arm_id)
                 self._owns_ownership = False
@@ -180,6 +185,7 @@ class CartesianPoseSession:
                 return False
             now = self._monotonic()
             self._running = True
+            self._task_token = token
             self._result = None
             self._phase = PoseFeedbackPhase.EXECUTING
             self._target_position, self._target_quaternion = _ZERO_POSE
@@ -258,6 +264,7 @@ class CartesianPoseSession:
         if expired:
             return self._stop_and_join(PoseTerminalState.WATCHDOG_STOP, "pose command watchdog expired")
         command = seed
+        admission_denied = False
         try:
             solution = self._solve_ik(position, quaternion, seed)
             if solution is not None:
@@ -266,7 +273,15 @@ class CartesianPoseSession:
                 )
             # IK failure (singularity / unreachable) re-sends the previous
             # target, which holds the arm and keeps the passthrough stream alive.
-            status = int(
+            with self._condition:
+                # IK may block across cancellation, stop, or task expiry.
+                # Recheck at the passthrough boundary before any fresh target.
+                if not self._running or self._goal is not goal:
+                    self._move_in_progress = False
+                    self._condition.notify_all()
+                    return self._result
+                admission_denied = not self.ownership.command_admitted(self.arm_id, self._task_token)
+            status = -1 if admission_denied else int(
                 self.adapter.movej_canfd(command, goal.follow, goal.trajectory_mode, goal.radio)
             )
         except Exception:
@@ -282,7 +297,8 @@ class CartesianPoseSession:
             self._last_api2_status = status
             self._condition.notify_all()
         if status != 0:
-            return self._stop_and_join(PoseTerminalState.ABORTED, "Cartesian pose command failed", api2_status=status)
+            message = "task lease expired or was revoked before pose command" if admission_denied else "Cartesian pose command failed"
+            return self._stop_and_join(PoseTerminalState.ABORTED, message, api2_status=status)
         return None
 
     def _read_current_joints(self) -> list[float] | None:

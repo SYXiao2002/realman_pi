@@ -371,6 +371,63 @@ def make_coordinator(
     return coordinator, adapter, clock, ownership
 
 
+@pytest.mark.parametrize("expiry_boundary", ["accepted", "precheck", "before_motion", "revoked"])
+def test_task_lease_is_rechecked_at_ordinary_sdk_submission(expiry_boundary):
+    clock = FakeClock()
+    ownership = ArmOwnership(monotonic=clock.monotonic)
+    coordinator, adapter, _, _ = make_coordinator(clock=clock, ownership=ownership)
+    lease = ownership.acquire_task("l", "grasp", 1.0)
+    request = SimpleNamespace(**vars(movej_goal()), task_token=lease.token)
+    assert coordinator.goal_callback(request) == FakeGoalResponse.ACCEPT
+    if expiry_boundary == "accepted":
+        clock.now = 2.0
+    elif expiry_boundary == "precheck":
+        original_get_state = adapter.get_state
+
+        def delayed_precheck():
+            clock.now = 2.0
+            return original_get_state()
+
+        adapter.get_state = delayed_precheck
+    elif expiry_boundary == "before_motion":
+        coordinator._before_motion = lambda: setattr(clock, "now", 2.0)
+    else:
+        coordinator._before_motion = lambda: ownership.revoke_task("l")
+
+    result = coordinator.execute(FakeGoalHandle(request))
+    assert result.terminal_state == FakeResult.ABORTED
+    assert "task lease" in result.message
+    assert not any(call[0] in {"movej", "movel", "movej_p"} for call in adapter.calls)
+    assert not ownership.is_busy("l")
+    assert ownership.task_state("l")[0] is not None  # Still no takeover after expiry.
+    ownership.release_task("l", lease.token)
+
+
+def test_task_lease_expiry_between_connected_waypoints_stops_partial_queue():
+    clock = FakeClock()
+    ownership = ArmOwnership(monotonic=clock.monotonic)
+    coordinator, adapter, _, _ = make_coordinator(clock=clock, ownership=ownership)
+    lease = ownership.acquire_task("l", "grasp", 1.0)
+    request = trajectory_goal()
+    request.task_token = lease.token
+    assert coordinator.trajectory_goal_callback(request) == FakeGoalResponse.ACCEPT
+    original_movej = adapter.movej
+
+    def first_waypoint_expires_lease(*args, **kwargs):
+        status = original_movej(*args, **kwargs)
+        clock.now = 2.0
+        return status
+
+    adapter.movej = first_waypoint_expires_lease
+    result = coordinator.execute_trajectory(FakeGoalHandle(request))
+    assert result.terminal_state == FakeResult.ABORTED
+    assert "task lease" in result.message
+    assert len([call for call in adapter.calls if call[0] == "movej"]) == 1
+    assert ("stop",) in adapter.calls
+    assert not ownership.is_busy("l")
+    ownership.release_task("l", lease.token)
+
+
 def complete_after_first_poll(
     coordinator: MotionCoordinator,
     adapter: FakeAdapter,
