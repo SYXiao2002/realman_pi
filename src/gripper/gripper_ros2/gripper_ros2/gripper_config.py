@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import re
 
@@ -9,6 +10,7 @@ import yaml
 
 
 NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+PROTOCOLS = ("changingtek", "binary_42d")
 SERVICE_SUFFIXES = (
     "open", "close", "reset", "enable", "grasp_check", "percentage", "calibrate",
     "set_limits", "move_raw",
@@ -39,16 +41,42 @@ def load_gripper_config(path: str | Path) -> dict:
     buses = document.get("buses")
     if not isinstance(buses, list) or not buses:
         raise ValueError("gripper config must contain a non-empty buses list")
-    names = set()
+    names, ports = set(), set()
     for bus in buses:
         if not isinstance(bus, dict) or not isinstance(bus.get("port"), str) or not bus["port"]:
             raise ValueError("each gripper bus requires a non-empty port")
+        if bus["port"] in ports:
+            raise ValueError(f"duplicate gripper bus port: {bus['port']}")
+        ports.add(bus["port"])
+        protocol = bus.get("protocol", "changingtek")
+        if protocol not in PROTOCOLS:
+            raise ValueError(f"unsupported gripper protocol: {protocol!r}")
+        if protocol == "binary_42d":
+            threshold = bus.get("binary_threshold", 0.5)
+            hysteresis = bus.get("binary_hysteresis", 0.05)
+            interval = bus.get("inter_transaction_s", 0.1)
+            for field, value in (("binary_threshold", threshold),
+                                 ("binary_hysteresis", hysteresis),
+                                 ("inter_transaction_s", interval)):
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value)):
+                    raise ValueError(f"{field} must be a finite number")
+            if not 0 < threshold < 1:
+                raise ValueError("binary_threshold must be in (0, 1)")
+            if not 0 <= hysteresis < min(threshold, 1 - threshold):
+                raise ValueError("binary_hysteresis must fit inside the threshold range")
+            if interval < 0.1:
+                raise ValueError("42D inter_transaction_s must be at least 0.1 seconds")
         grippers = bus.get("grippers")
         if not isinstance(grippers, list) or not grippers:
             raise ValueError(f"gripper bus {bus['port']} requires at least one gripper")
         slave_ids = set()
         for gripper in grippers:
+            if not isinstance(gripper, dict):
+                raise ValueError("each gripper must be a mapping")
             name = gripper.get("name")
+            if not isinstance(name, str):
+                raise ValueError("each gripper requires a name")
             interface_names(name)
             if name in names:
                 raise ValueError(f"duplicate gripper name: {name}")
@@ -69,4 +97,6 @@ def load_gripper_config(path: str | Path) -> dict:
                 raise ValueError(f"{name}.open_position is outside configured limits")
             if not minimum <= gripper["close_position"] <= maximum:
                 raise ValueError(f"{name}.close_position is outside configured limits")
+            if protocol == "binary_42d" and gripper["open_position"] >= gripper["close_position"]:
+                raise ValueError(f"{name}.open_position must be smaller than close_position")
     return document

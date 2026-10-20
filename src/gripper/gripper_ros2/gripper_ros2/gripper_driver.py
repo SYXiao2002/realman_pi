@@ -1,4 +1,4 @@
-"""Reusable multi-bus Changingtek gripper driver.
+"""Reusable multi-bus gripper driver with protocol-specific device adapters.
 
 The implementation follows the reference repository's concurrency model:
 one SDK instance per physical serial bus, an RLock around address switching
@@ -49,6 +49,10 @@ class GripperDevice:
         self._enabled = False
         self.feedback = _empty_feedback()
 
+    @property
+    def connected(self):
+        return self.bus.connected
+
     def enable(self, on: bool = True):
         result = self.bus.transaction(self.slave_id, lambda sdk: sdk.enable(on))
         self._enabled = bool(on)
@@ -56,6 +60,14 @@ class GripperDevice:
 
     def disable(self):
         return self.enable(False)
+
+    def reset(self):
+        return self.bus.transaction(self.slave_id, lambda sdk: sdk.griger_reset())
+
+    def wait_until_reached(self, timeout: float = 20.0):
+        return self.bus.transaction(
+            self.slave_id, lambda sdk: sdk.wait_until_pos_or_torque(timeout),
+        )
 
     def move_to(self, position: int, speed_pct: int | None = None,
                 force_pct: int | None = None):
@@ -348,9 +360,15 @@ class GripperManager:
     def __init__(self):
         self.buses, self._devices, self._active_name = {}, {}, None
 
-    def add_bus(self, port: str, **kwargs):
+    def add_bus(self, port: str, protocol: str = "changingtek", **kwargs):
         if port not in self.buses:
-            self.buses[port] = GripperBus(port, **kwargs)
+            if protocol == "binary_42d":
+                from .binary_42d import Binary42DBus
+                self.buses[port] = Binary42DBus(port, **kwargs)
+            elif protocol == "changingtek":
+                self.buses[port] = GripperBus(port, **kwargs)
+            else:
+                raise ValueError(f"unsupported gripper protocol: {protocol}")
         return self.buses[port]
 
     def get_bus(self, port: str):
@@ -411,7 +429,16 @@ class GripperManager:
         defaults = config.get("defaults", {})
         for bus_config in config.get("buses", []):
             port = bus_config["port"]
-            manager.add_bus(port, baudrate=bus_config.get("baudrate", 115200),
+            protocol = bus_config.get("protocol", "changingtek")
+            protocol_options = {}
+            if protocol == "binary_42d":
+                protocol_options = {
+                    "binary_threshold": bus_config.get("binary_threshold", 0.5),
+                    "binary_hysteresis": bus_config.get("binary_hysteresis", 0.05),
+                    "inter_transaction_s": bus_config.get("inter_transaction_s", 0.1),
+                }
+            manager.add_bus(port, protocol=protocol,
+                            baudrate=bus_config.get("baudrate", 115200),
                             timeout=bus_config.get("timeout", 0.3),
                             poll_hz=bus_config.get("poll_hz", 25.0),
                             auto_reconnect=bus_config.get("auto_reconnect", True),
@@ -419,7 +446,8 @@ class GripperManager:
                             command_quiet_s=bus_config.get("command_quiet_s", 0.2),
                             streaming_poll_interval=bus_config.get("streaming_poll_interval", 0.5),
                             min_command_interval_s=bus_config.get("min_command_interval_s", 0.25),
-                            command_deadband=bus_config.get("command_deadband", 0.01))
+                            command_deadband=bus_config.get("command_deadband", 0.01),
+                            **protocol_options)
             for item in bus_config.get("grippers", []):
                 values = {key: value for key, value in defaults.items() if key in DEVICE_FIELDS}
                 values.update({key: value for key, value in item.items() if key in DEVICE_FIELDS})

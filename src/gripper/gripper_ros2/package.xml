@@ -3,7 +3,7 @@
 <package format="3">
   <name>gripper_ros2</name>
   <version>1.0.0</version>
-  <description>ROS 2 wrapper for Changingtek (Zhixing) gripper — Modbus RTU over RS-485.</description>
+  <description>ROS 2 manager for binary 42D and Changingtek Modbus RTU grippers over RS-485.</description>
 
   <maintainer email="maintainer@example.com">gripper_maintainer</maintainer>
   <license>BSD-3-Clause</license>

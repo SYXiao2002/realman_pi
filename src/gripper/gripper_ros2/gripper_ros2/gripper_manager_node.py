@@ -1,4 +1,4 @@
-"""ROS 2 service façade for the multi-bus Changingtek driver."""
+"""ROS 2 service façade shared by continuous and binary gripper adapters."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ class GripperManagerNode:
         result = self.manager.connect_all()
         for port, connected in result.items():
             level = node.get_logger().info if connected else node.get_logger().warning
-            level(f"Changingtek bus {port}: {'connected' if connected else 'offline; reconnect enabled'}")
+            level(f"Gripper bus {port}: {'serial opened' if connected else 'offline; reconnect enabled'}")
         self.manager.start_all()
         self._timer = node.create_timer(0.05, self._publish_feedback)
 
@@ -101,7 +101,7 @@ class GripperManagerNode:
 
     def _ready(self, name):
         device = self.manager.get(name)
-        if not device.bus.connected:
+        if not device.connected:
             return None, "Not connected to gripper"
         try:
             if not device._enabled:
@@ -118,10 +118,7 @@ class GripperManagerNode:
         label = "open" if opening else "close"
         try:
             device.move_to(target)
-            result = device.bus.transaction(
-                device.slave_id,
-                lambda sdk: sdk.wait_until_pos_or_torque(20.0),
-            )
+            result = device.wait_until_reached(20.0)
             feedback = device.read_feedback()
             return self._response(
                 response,
@@ -132,26 +129,35 @@ class GripperManagerNode:
             return self._response(response, False, f"{label} error: {error}")
 
     def _reset(self, name, response):
+        device = self.manager.get(name)
+        if getattr(device, "is_binary", False):
+            return self._response(response, False, "42D reset is not supported by the documented protocol")
         device, error = self._ready(name)
         if error:
             return self._response(response, False, error)
         try:
-            device.bus.transaction(device.slave_id, lambda sdk: sdk.griger_reset())
+            device.reset()
             return self._response(response, True, "Gripper reset OK")
         except Exception as error:
             return self._response(response, False, f"Reset error: {error}")
 
     def _enable(self, name, request, response):
         device = self.manager.get(name)
-        if not device.bus.connected:
+        if not device.connected and not (getattr(device, "is_binary", False) and not request.data):
             return self._response(response, False, "Not connected")
         try:
             device.enable(request.data)
-            return self._response(response, True, f"Enable set to {request.data}")
+            message = f"Enable set to {request.data}"
+            if getattr(device, "is_binary", False) and not request.data:
+                message += " (software command gate only; no hardware stop/disable)"
+            return self._response(response, True, message)
         except Exception as error:
             return self._response(response, False, f"Enable error: {error}")
 
     def _grasp(self, name, response):
+        device = self.manager.get(name)
+        if getattr(device, "is_binary", False):
+            return self._response(response, False, "42D grasp sensing is not supported by the documented protocol")
         device, error = self._ready(name)
         if error:
             return self._response(response, False, error)
@@ -176,10 +182,7 @@ class GripperManagerNode:
                 close_position=device.close_position,
             )
             device.move_to(target)
-            result = device.bus.transaction(
-                device.slave_id,
-                lambda sdk: sdk.wait_until_pos_or_torque(20.0),
-            )
+            result = device.wait_until_reached(20.0)
             feedback = device.read_feedback()
             return self._response(
                 response,
@@ -196,7 +199,13 @@ class GripperManagerNode:
                 f"Ignoring invalid continuous percentage for {name}: {value!r}"
             )
             return
-        device, error = self._ready(name)
+        device = self.manager.get(name)
+        # Binary preparation needs several serial transactions. Queue it with
+        # the target so a shared-bus turnaround cannot block this ROS callback.
+        if getattr(device, "is_binary", False):
+            error = None if device.connected else "Not connected to gripper"
+        else:
+            device, error = self._ready(name)
         if error:
             self.node.get_logger().warning(
                 f"Ignoring continuous percentage for {name}: {error}"
@@ -241,10 +250,7 @@ class GripperManagerNode:
         position = int(request.position)
         try:
             device.move_to(position)
-            result = device.bus.transaction(
-                device.slave_id,
-                lambda sdk: sdk.wait_until_pos_or_torque(20.0),
-            )
+            result = device.wait_until_reached(20.0)
             feedback = device.read_feedback()
             return self._response(
                 response,
@@ -263,7 +269,7 @@ class GripperManagerNode:
             publishers["current"].publish(std_msgs.msg.Int32(data=int(feedback["current"])))
             publishers["torque_reached"].publish(std_msgs.msg.Bool(data=bool(feedback["torque_reached"])))
             publishers["alarm"].publish(std_msgs.msg.Int32(data=int(feedback["alarm"])))
-            publishers["connected"].publish(std_msgs.msg.Bool(data=bool(device.bus.connected)))
+            publishers["connected"].publish(std_msgs.msg.Bool(data=bool(device.connected)))
 
     def destroy(self):
         self.manager.stop_all()

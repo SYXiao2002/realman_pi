@@ -218,9 +218,9 @@ services:
     devices:
       # Stable udev aliases prevent ttyUSB numbering changes after reconnect/reboot.
       # Environment overrides are useful on development hosts without these aliases.
-      - ${REALMAN_GRIPPER_RIGHT_DEVICE:-/dev/realman/gripper_right}:/dev/realman/gripper_right
-      - ${REALMAN_GRIPPER_LEFT_DEVICE:-/dev/realman/gripper_left}:/dev/realman/gripper_left
-      - ${REALMAN_GRIPPER_MID_DEVICE:-/dev/realman/gripper_mid}:/dev/realman/gripper_mid
+      # Both 42D slave addresses use this one shared serial device.
+      # This rig has no middle gripper; missing mappings block all arm drivers.
+      - ${REALMAN_GRIPPER_42D_DEVICE:-/dev/tty_gripper_42d}:/dev/tty_gripper_42d
     volumes:
       # REALMAN_START_WEB_CONTROL=true runs the browser bridge in this service;
       # it needs write access only to confirmed joint record files.

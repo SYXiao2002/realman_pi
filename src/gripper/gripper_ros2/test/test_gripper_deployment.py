@@ -46,33 +46,36 @@ class GripperDeploymentTest(unittest.TestCase):
         # An out-of-range jog must be rejected before the gripper is auto-enabled.
         self.assertLess(body.index("check_raw_position("), body.index("self._ready("))
 
-    def test_root_config_uses_three_stable_gripper_aliases(self):
+    def test_root_config_requires_only_the_shared_42d_port(self):
         config = load_gripper_config(ROOT / "config/ros/gripper.yaml")
         ports = {bus["port"] for bus in config["buses"]}
         self.assertEqual(
             ports,
-            {
-                "/dev/realman/gripper_right",
-                "/dev/realman/gripper_left",
-                "/dev/realman/gripper_mid",
-            },
+            {"/dev/tty_gripper_42d"},
         )
+        shared = next(bus for bus in config["buses"] if bus["protocol"] == "binary_42d")
+        self.assertEqual(shared["baudrate"], 115200)
+        self.assertEqual(shared["timeout"], 0.3)
+        self.assertEqual(shared["poll_hz"], 5.0)
+        self.assertEqual(shared["inter_transaction_s"], 0.1)
+        self.assertEqual(shared["binary_threshold"], 0.5)
+        self.assertEqual(shared["binary_hysteresis"], 0.05)
+        self.assertEqual(
+            {gripper["name"]: gripper["slave_id"] for gripper in shared["grippers"]},
+            {"gripper_left": 1, "gripper_right": 2},
+        )
+        for gripper in shared["grippers"]:
+            self.assertFalse({"speed_pct", "force_pct", "accel", "decel"} & gripper.keys())
+        self.assertEqual(len(config["buses"]), 1)
 
     def test_remote_bringup_maps_aliases_into_container(self):
         compose = yaml.safe_load((ROOT / "config/docker/compose.yaml").read_text())
         devices = compose["services"]["realman_bringup_remote"]["devices"]
         self.assertIn(
-            "${REALMAN_GRIPPER_RIGHT_DEVICE:-/dev/realman/gripper_right}:/dev/realman/gripper_right",
+            "${REALMAN_GRIPPER_42D_DEVICE:-/dev/tty_gripper_42d}:/dev/tty_gripper_42d",
             devices,
         )
-        self.assertIn(
-            "${REALMAN_GRIPPER_LEFT_DEVICE:-/dev/realman/gripper_left}:/dev/realman/gripper_left",
-            devices,
-        )
-        self.assertIn(
-            "${REALMAN_GRIPPER_MID_DEVICE:-/dev/realman/gripper_mid}:/dev/realman/gripper_mid",
-            devices,
-        )
+        self.assertEqual(len(devices), 1)
 
 
 if __name__ == "__main__":

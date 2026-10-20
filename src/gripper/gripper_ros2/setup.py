@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='gripper_maintainer',
     maintainer_email='maintainer@example.com',
-    description='ROS 2 wrapper for Changingtek gripper (Modbus RTU).',
+    description='ROS 2 manager for binary 42D and Changingtek Modbus RTU grippers.',
     license='BSD-3-Clause',
     entry_points={
         'console_scripts': [
