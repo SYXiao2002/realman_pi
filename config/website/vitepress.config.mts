@@ -110,9 +110,10 @@ export default withMermaid(defineConfig({
         text: "末端、感知与策略",
         items: [
           { text: "Changingtek 夹爪控制", link: "/development/gripper-control" },
-          { text: "三臂 ChArUco 手眼标定", link: "/development/camera-calibration" },
+          { text: "单臂 ChArUco 手眼标定", link: "/development/camera-calibration" },
           { text: "三臂配置驱动可视化", link: "/development/three-arm-visualization" },
           { text: "VLA 策略桥接节点", link: "/development/policy-bridge" },
+          { text: "独立抓取算法与规划桥", link: "/development/grasping" },
           { text: "Policy 任务（行为树监督）", link: "/development/policy-task" },
           { text: "独立数据录制平台", link: "/development/recording-platform" },
         ],

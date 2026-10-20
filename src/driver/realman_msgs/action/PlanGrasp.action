@@ -1,0 +1,31 @@
+# Planning only. Never sends robot or gripper commands. All poses use the
+# selected profile's base frame, active controller TCP, metres and w,x,y,z.
+string profile_name
+string target_label
+string backend
+string task_id
+string lease_token
+---
+bool success
+string plan_id
+string observation_id
+string profile_id
+string message
+string base_frame
+string tool_name
+int64 capture_timestamp_ns
+int64 expires_timestamp_ns
+float64[3] pregrasp_position_m
+float64[4] pregrasp_quaternion_wxyz
+float64[6] pregrasp_joint_degrees
+float64[3] grasp_position_m
+float64[4] grasp_quaternion_wxyz
+float64[6] grasp_joint_degrees
+float64[3] lift_position_m
+float64[4] lift_quaternion_wxyz
+float64[6] lift_joint_degrees
+string diagnostics_json
+---
+string phase
+uint32 candidate_count
+string detail

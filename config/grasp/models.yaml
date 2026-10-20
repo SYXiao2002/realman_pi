@@ -1,0 +1,20 @@
+# Provenance: chaung_wei_2_jiao_fu 5e80c6f845ff0c102648ecff4d31b624c830e9d4.
+# Hashes were measured from that checkout's local ignored weights, not an
+# upstream download. In particular yolov8n.pt is a custom detector filename.
+# External runtime data must be supplied under models_root; never commit it.
+yolo:
+  file: yolov8n.pt
+  sha256: fcc66bc2fa3fb605948704f26535ed6b9fe15cb13286496209b39dd075eac9ef
+  class_names: [adapter, eu, uk, router, line]
+mobile_sam:
+  file: mobile_sam.pt
+  sha256: 6dbb90523a35330fedd7f1d3dfc66f995213d81b29a5ca8108dbcdd4e37d6c2f
+# CGN is opt-in and needs an independently installed compatible runtime and a
+# validated checkpoint/config manifest. Empty hashes deliberately reject use.
+# Its native origin is 0.1034 m behind the closing center; this is NOT a TCP.
+contact_graspnet:
+  file: contact_graspnet/checkpoints/model.pt
+  sha256: ''
+  config_file: contact_graspnet/config.yaml
+  config_sha256: ''
+  native_hand_depth_m: 0.1034

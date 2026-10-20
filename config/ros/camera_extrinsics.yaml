@@ -1,0 +1,30 @@
+# Reviewed hand-eye results. Never auto-promote a solver residual to grasp approval.
+# T_flange_color maps the color optical frame to the immutable flange frame.
+# Import each selected-arm result explicitly, preserve its result file and hash,
+# then approve only after held-out task-space accuracy checks.
+version: 1
+calibrations:
+  right_wrist:
+    verified: false
+    calibration_id: null
+    camera_serial: CV2856D0002E
+    mount_id: right_wrist_1
+    flange_frame: r/link_6
+    color_frame: camera_right_color_optical_frame
+    intrinsics_sha256: null
+    result_file: null
+    T_flange_color: null
+    maximum_validation_error_m: null
+    measured_validation_error_m: null
+  left_wrist:
+    verified: false
+    calibration_id: null
+    camera_serial: CV2856D0008H
+    mount_id: left_wrist_1
+    flange_frame: l/link_6
+    color_frame: camera_left_color_optical_frame
+    intrinsics_sha256: null
+    result_file: null
+    T_flange_color: null
+    maximum_validation_error_m: null
+    measured_validation_error_m: null

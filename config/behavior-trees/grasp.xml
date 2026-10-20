@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!-- Profile-derived arm/actions are resolved by the launcher before preflight.
+     SUCCESS means the command sequence ended, not a verified physical grasp.
+     After lift, an operator must record the observed outcome and authorize the
+     verified return path/release pose. Cancel/failure never opens the gripper. -->
+<root main_tree_to_execute="MainTree"
+      realman_arm_id="r" realman_required_arms="r"
+      realman_required_actions="execute_motion" realman_launch="arm_move"
+      realman_stop_on_terminal="true" realman_exit_on_terminal="true">
+  <BehaviorTree ID="MainTree">
+    <TaskLease name="grasp_task" arm_id="{arm_id}" dry_run="{dry_run}"
+               execution_ready="{grasp_execution_ready}" readiness_detail="{grasp_readiness_detail}"
+               ttl_sec="{grasp_lease_ttl_sec}" timeout_sec="{grasp_acquire_timeout_sec}">
+      <Sequence name="wrist_grasp">
+        <TaskGripper name="prepare_gripper" gripper="{grasp_gripper}" command="open" dry_run="{dry_run}" timeout_sec="{grasp_gripper_timeout_sec}"/>
+        <MoveJ name="observe" arm_id="{arm_id}" dry_run="{dry_run}" joint_degrees="{grasp_observation_joint_degrees}" velocity_percent="{grasp_velocity_percent}" timeout_sec="{grasp_motion_timeout_sec}"/>
+        <PlanGrasp name="plan_grasp" dry_run="{dry_run}" profile_name="{grasp_profile_name}" profile_id="{grasp_profile_id}" base_frame="{grasp_base_frame}" tool_name="{grasp_tool_name}" target_label="{grasp_target_label}" backend="{grasp_backend}" timeout_sec="{grasp_plan_timeout_sec}"/>
+        <GraspWaypoint name="approach" arm_id="{arm_id}" waypoint="pregrasp" dry_run="{dry_run}" velocity_percent="{grasp_velocity_percent}" timeout_sec="{grasp_motion_timeout_sec}"/>
+        <GraspWaypoint name="grasp_pose" arm_id="{arm_id}" waypoint="grasp" dry_run="{dry_run}" velocity_percent="{grasp_velocity_percent}" timeout_sec="{grasp_motion_timeout_sec}"/>
+        <TaskGripper name="close_gripper" gripper="{grasp_gripper}" command="close" dry_run="{dry_run}" timeout_sec="{grasp_gripper_timeout_sec}"/>
+        <GraspWaypoint name="lift" arm_id="{arm_id}" waypoint="lift" dry_run="{dry_run}" velocity_percent="{grasp_velocity_percent}" timeout_sec="{grasp_motion_timeout_sec}"/>
+        <GraspHold name="hold_unverified" dry_run="{dry_run}" duration_sec="{grasp_hold_sec}"/>
+        <GraspConfirm name="confirm_grasp" dry_run="{dry_run}" timeout_sec="{grasp_confirmation_timeout_sec}"/>
+        <MoveJ name="return_object" arm_id="{arm_id}" dry_run="{dry_run}" joint_degrees="{grasp_return_joint_degrees}" velocity_percent="{grasp_velocity_percent}" timeout_sec="{grasp_motion_timeout_sec}"/>
+        <TaskGripper name="release_object" gripper="{grasp_gripper}" command="open" dry_run="{dry_run}" timeout_sec="{grasp_gripper_timeout_sec}"/>
+      </Sequence>
+    </TaskLease>
+  </BehaviorTree>
+</root>

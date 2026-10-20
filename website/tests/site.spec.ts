@@ -147,6 +147,7 @@ test("documentation routes render", async ({ page }) => {
     "development/behavior-tree-nodes",
     "development/gripper-control",
     "development/policy-bridge",
+    "development/grasping",
     "development/policy-task",
     "development/velocity-follow-test",
     "troubleshooting",
@@ -511,6 +512,7 @@ test("pages with the new doc blocks never scroll horizontally on a phone", async
     "development/production-operations",
     "development/recording-platform",
     "development/camera-calibration",
+    "development/grasping",
   ];
   for (const path of pages) {
     await page.goto(path);
@@ -532,45 +534,18 @@ test("docs-data.json carries the calibration contract from camera_calibration.ya
   );
 });
 
-test("hand-eye explainer plays, seeks by chapter and shows the production relative poses", async ({ page, request }) => {
+test("calibration manual describes independent wrist sessions without a shared-layout workflow", async ({ page }) => {
   await page.goto("development/camera-calibration");
-  const player = page.locator(".handeye");
-  await player.scrollIntoViewIfNeeded();
-  await expect(player).toHaveAttribute("data-state", "ready", { timeout: 90_000 });
-
-  // Chapter chips jump the playhead and swap the caption, formula and readout.
-  await player.getByRole("button", { name: "03 采样" }).click();
-  await expect(player.locator(".handeye-title")).toContainText("三臂同时采样");
-  await expect(player.locator(".handeye-readout")).toContainText("角点");
-  await player.getByRole("button", { name: "04 求解" }).click();
-  await expect(player.locator(".handeye-formula")).toContainText("T_base_tool_i");
-  await expect(player.locator(".handeye-readout")).toContainText("推算板位置离散度");
-
-  // The scrubber drives the same timeline; the last chapter prints the layout's real l -> m / l -> r poses.
-  await player.locator(".handeye-scrub").fill("97");
-  const layout = await (await request.get("three-robots.json")).json();
-  const transform = (id: string) => layout.robots.find((robot: { id: string }) => robot.id === id).transform;
-  const matrix = (pose: { x: number; y: number; z: number; roll: number; pitch: number; yaw: number }) => {
-    const [cr, sr, cp, sp, cy, sy] = [Math.cos(pose.roll), Math.sin(pose.roll), Math.cos(pose.pitch), Math.sin(pose.pitch), Math.cos(pose.yaw), Math.sin(pose.yaw)];
-    return [
-      [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr, pose.x],
-      [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr, pose.y],
-      [-sp, cp * sr, cp * cr, pose.z],
-    ];
-  };
-  const l = matrix(transform("l"));
-  const m = matrix(transform("m"));
-  // inverse(T_l) * T_m for a rigid transform: R_l^T (R_m) and R_l^T (p_m - p_l).
-  const difference = [0, 1, 2].map((row) => [0, 1, 2].reduce((sum, k) => sum + l[k][row] * (m[k][3] - l[k][3]), 0));
-  await expect(player.locator(".handeye-readout")).toContainText(`xyz ${difference.map((value) => value.toFixed(3)).join(", ")} m`);
-
-  // Picking another arm switches the camera picture-in-picture.
-  await player.getByRole("button", { name: "03 采样" }).click();
-  await player.locator(".handeye-cams").getByRole("button", { name: "m", exact: true }).click();
-  await expect(player.locator(".handeye-cams .mode-chip.active")).toHaveText("m");
-
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
+  const main = page.locator("main");
+  await expect(page.getByRole("heading", { level: 1, name: "单臂腕相机 ChArUco 手眼标定" })).toBeVisible();
+  await expect(main).toContainText("每次请求只处理一臂");
+  await expect(main).toContainText("另一臂或相机离线不影响当前会话");
+  await expect(main).toContainText("verified_for_grasp: false");
+  await expect(main).toContainText("不写回 three_robots.yaml");
+  await expect(main.locator(".handeye")).toHaveCount(0);
+  const diagram = main.locator(".mermaid svg").first();
+  await expect(diagram).toBeVisible({ timeout: 15_000 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(1);
 });
 
 test("behavior-tree node reference: explorer reads the code, simulator follows the decorators", async ({ page }) => {

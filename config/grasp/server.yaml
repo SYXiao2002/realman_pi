@@ -1,0 +1,13 @@
+# Standalone Python/CUDA service. Geometry needs verified, locally mounted
+# detector/SAM weights. Missing weights keep ready=false; no model is fetched.
+host: 0.0.0.0
+port: 8091
+enabled_backends: [geometry]
+device: cuda
+models_root: /models
+models_manifest: models.yaml
+object_policies: object_policies.yaml
+detection_confidence: 0.5
+# Server discards results exceeding this deadline; the GPU slot stays reserved
+# until the actual worker finishes. The robot bridge has its own task deadline.
+inference_timeout_s: 30.0

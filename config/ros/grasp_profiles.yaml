@@ -1,0 +1,64 @@
+# Arm selection is robot-side only; the algorithm receives camera/gripper geometry.
+# Null fields need physical measurement. No supplied profile authorizes motion.
+version: 1
+default_profile: right_wrist
+profiles:
+  right_wrist:
+    arm: r
+    base_frame: r/base_link
+    flange_frame: r/link_6
+    tool_name: tcpgrip  # Resolve actual TCP in realman_coordinates.yaml; no duplicate offset.
+    camera: camera_right
+    camera_serial: CV2856D0002E
+    mount_id: right_wrist_1
+    color_topic: /camera_right/color/image_raw
+    color_info_topic: /camera_right/color/camera_info
+    depth_topic: /camera_right/depth/image_raw
+    depth_info_topic: /camera_right/depth/camera_info
+    color_frame: camera_right_color_optical_frame
+    depth_frame: camera_right_depth_optical_frame
+    joint_topic: /r/joint_states
+    gripper: gripper_right
+    gripper_spec: binary_42d_right
+    calibration: right_wrist
+    # Approve only after measuring TCP/geometry, observing other arms parked,
+    # and validating the complete robot corridor, including the loaded return
+    # route and release pose (IK is not collision checking).
+    execution_verified: false
+    tool_geometry_verified: false
+    corridor_verified: false
+    observation_joint_degrees: null
+    return_joint_degrees: null
+    workspace_m: null  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
+    T_grasp_tcp: null  # Measured common closing-center frame -> active controller TCP.
+    approach_m: null
+    lift_m: null
+    velocity_percent: 5
+  left_wrist:
+    arm: l
+    base_frame: l/base_link
+    flange_frame: l/link_6
+    tool_name: tcpgrip
+    camera: camera_left
+    camera_serial: CV2856D0008H
+    mount_id: left_wrist_1
+    color_topic: /camera_left/color/image_raw
+    color_info_topic: /camera_left/color/camera_info
+    depth_topic: /camera_left/depth/image_raw
+    depth_info_topic: /camera_left/depth/camera_info
+    color_frame: camera_left_color_optical_frame
+    depth_frame: camera_left_depth_optical_frame
+    joint_topic: /l/joint_states
+    gripper: gripper_left
+    gripper_spec: binary_42d_left
+    calibration: left_wrist
+    execution_verified: false
+    tool_geometry_verified: false
+    corridor_verified: false
+    observation_joint_degrees: null
+    return_joint_degrees: null
+    workspace_m: null
+    T_grasp_tcp: null
+    approach_m: null
+    lift_m: null
+    velocity_percent: 5

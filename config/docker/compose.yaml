@@ -174,8 +174,9 @@ services:
       - ./config/web-control/joint-records:/opt/rm65_ws/config/web-control/joint-records:rw
       # Shared behavior-tree favorites written by the :8765 page.
       - ./config/web-control/behavior-trees:/opt/rm65_ws/config/web-control/behavior-trees:rw
-      # The directory mount lets the calibration node atomically replace the
-      # layout and create its .bak file. Node code writes only three_robots.yaml.
+      # The gripper manager atomically saves operator travel overrides here.
+      # Calibration writes results to logs; explicitly selected l/r sessions can
+      # update the authoritative right-arm layout through the writable mount.
       - ./config/ros:/opt/rm65_ws/config/ros:rw
       - ./logs:/opt/rm65_ws/logs
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -200,7 +201,6 @@ services:
       - start_web_control:=${REALMAN_START_WEB_CONTROL:-false}
       - start_bt_launcher:=${REALMAN_START_BT_LAUNCHER:-false}
       - start_camera_calibration:=${REALMAN_START_CAMERA_CALIBRATION:-false}
-      - update_layout_after_calibration:=${REALMAN_UPDATE_LAYOUT_AFTER_CALIBRATION:-true}
       - wait_for_joy_device:=${REALMAN_WAIT_FOR_JOY_DEVICE:-false}
       - joy_device_path:=${REALMAN_JOY_DEVICE:-auto}
       - joy_poll_interval:=${REALMAN_JOY_POLL_INTERVAL:-1.0}
@@ -253,9 +253,8 @@ services:
       # Localhost-only helper that lets the :8765 page start behavior trees.
       - start_bt_launcher:=${REALMAN_START_BT_LAUNCHER:-true}
       # Keep the camera-health publisher present so the Web calibration page
-      # can show all three ROS 2 image inputs during normal production bringup.
+      # can show the configured left/right wrist inputs during normal bringup.
       - start_camera_calibration:=true
-      - update_layout_after_calibration:=${REALMAN_UPDATE_LAYOUT_AFTER_CALIBRATION:-true}
       - joint_record_dir:=${REALMAN_JOINT_RECORD_DIR:-/opt/rm65_ws/config/web-control/joint-records}
 
   # Browser action console. It joins an existing ROS graph and serves the

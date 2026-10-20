@@ -1,0 +1,45 @@
+# Run from repository root:
+# docker buildx bake --allow=network.host -f config/docker/compose.grasp.yaml
+# Older Compose versions can also use `docker compose ... build`; recent
+# Buildx requires the explicit host-network entitlement for local proxies.
+# GRASP_MODELS_DIR=/path/to/verified/models docker compose --project-directory . \
+#   -f config/docker/compose.grasp.yaml up grasp_server
+# Deliberately separate from normal robot bringup; no ROS/DDS or USB devices.
+name: realman-grasp
+services:
+  grasp_server:
+    image: realman-grasp-server:local
+    build:
+      context: .
+      dockerfile: config/docker/grasp-server.Dockerfile
+      # The host's loopback proxy is reachable only on the host build network.
+      # Runtime networking remains the isolated Compose bridge below.
+      network: ${GRASP_BUILD_NETWORK:-host}
+      args:
+        GRASP_BASE_IMAGE: ${GRASP_BASE_IMAGE:-docker.m.daocloud.io/pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime@sha256:2b59b1b91885677814f78be1f8df48a25d5dc952eb6580eaecfefca510f9afd3}
+        UBUNTU_APT_MIRROR: ${UBUNTU_APT_MIRROR:-https://mirrors.aliyun.com/ubuntu}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.mirrors.ustc.edu.cn/simple}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    ports:
+      - '${GRASP_BIND_HOST:-127.0.0.1}:${GRASP_WS_PORT:-8091}:8091'
+    volumes:
+      - ./config/grasp:/opt/grasp/config/grasp:ro
+      - ${GRASP_MODELS_DIR:-./models/grasp}:/models:ro
+    read_only: true
+    # Allow an in-flight CUDA call to drain after SIGTERM before Docker kills it.
+    stop_grace_period: 35s
+    tmpfs:
+      - /tmp:size=512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

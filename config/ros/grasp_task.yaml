@@ -1,0 +1,17 @@
+# Behavior-tree task controls only. Geometry and robot identities stay in
+# grasp_profiles.yaml; inference/capture settings stay in grasp_bridge.yaml.
+version: 1
+profile: right_wrist
+# Pick an explicit supported class before live execution. null fails validation.
+target_label: null
+backend: geometry  # geometry/contact_graspnet; mock is isolated replay only.
+lease_ttl_sec: 5.0
+acquire_timeout_sec: 10.0
+motion_timeout_sec: 30.0
+plan_timeout_sec: 30.0
+# Existing 42D manager waits up to 20 seconds for an endpoint response.
+gripper_timeout_sec: 25.0
+hold_sec: 1.0
+# Task lease keeps renewing while the operator observes the held object.
+# Timeout/declined return/cancel never triggers an automatic gripper opening.
+confirmation_timeout_sec: 120.0

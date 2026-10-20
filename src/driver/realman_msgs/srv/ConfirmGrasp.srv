@@ -1,0 +1,13 @@
+# A short operator decision for the currently waiting grasp task. task_id is
+# correlation metadata shown in diagnostics, never the private task lease token.
+uint8 VERIFIED_GRASP=1
+uint8 FAILED_GRASP=2
+uint8 UNVERIFIED=3
+string task_id
+uint8 observed_outcome
+# true explicitly authorizes the previously validated return path and release
+# pose. false aborts this task without returning or opening the gripper.
+bool return_object
+---
+bool success
+string message

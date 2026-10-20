@@ -440,3 +440,13 @@ def test_interface_contract_tests_are_registered_and_built():
     assert "<test_depend>python3-pytest</test_depend>" in package
     assert "colcon test --packages-select" in dockerfile
     assert "realman_msgs" in dockerfile
+
+
+def test_grasp_confirmation_contract_requires_explicit_observation_and_return():
+    _assert_interface_contract(
+        ROOT / "srv/ConfirmGrasp.srv",
+        [["uint8 VERIFIED_GRASP=1", "uint8 FAILED_GRASP=2", "uint8 UNVERIFIED=3",
+          "string task_id", "uint8 observed_outcome", "bool return_object"],
+         ["bool success", "string message"]],
+    )
+    assert '"srv/ConfirmGrasp.srv"' in (ROOT / "CMakeLists.txt").read_text()
