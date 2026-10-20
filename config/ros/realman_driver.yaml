@@ -1,8 +1,10 @@
 # RealMan Python SDK joint-state driver parameters.
 #
-# This file is the authoritative starting point for l, m, and r driver instances.
-# The single-arm launch argument `namespace` selects one section; the three-arm
-# launch starts all sections together.
+# This file is the authoritative starting point for installed driver instances.
+# The multi-arm launch starts only the /l, /m, or /r/realman_driver sections
+# present here. Omit a section to skip an absent arm; the current deployment has
+# only left and right arms. The separate mock configuration retains all three.
+# The single-arm launch argument `namespace` explicitly selects one arm.
 # The l/m/r mapping follows the physical left-to-right layout. All addresses
 # are deployment inputs and must be reachable from the ROS 2 runtime host.
 /l/realman_driver:
@@ -10,7 +12,7 @@
     # RM65 model identifier. Must match the connected controller and URDF.
     robot_model: RM65-B
     # Left arm controller IPv4 address.
-    robot_ip: 192.168.30.123
+    robot_ip: 192.168.5.123
     # RealMan API2 control port; the official Python quick-start example uses 8080.
     robot_port: 8080
     # Required: ordinary motion completion uses API2 event callbacks available in triple mode.
@@ -40,36 +42,11 @@
     # JointState names must match the unprefixed RM65-B URDF joint names.
     joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
 
-/m/realman_driver:
-  ros__parameters:
-    robot_model: RM65-B
-    # Middle arm controller IPv4 address.
-    robot_ip: 192.168.30.125
-    robot_port: 8080
-    thread_mode: RM_TRIPLE_MODE_E
-    mock_mode: false
-    auto_connect: true
-    reconnect_interval: 5.0
-    state_publish_rate: 10.0
-    # Diagnostic: log joint angles around every velocity-session start, the controller's error
-    # flags, and a per-session movev send-interval summary. Costs a few extra SDK reads per start.
-    velocity_start_trace: true
-    # Right before an ordinary motion such as MoveJ, refresh the controller's
-    # velocity-passthrough target. off | init | init_zero_stop | canfd_current. Only
-    # canfd_current removed the stale-target pull at velocity-session start. The code
-    # default is canfd_current, but a driver built before that default changed still
-    # defaults to off, so keep it explicit here.
-    passthrough_reanchor_mode: canfd_current
-    # Pause (ms) between the vendor passthrough init and the first zero command of a session.
-    velocity_init_settle_ms: 0.0
-    coordinate_state_publish_rate: 1.0
-    joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
-
 /r/realman_driver:
   ros__parameters:
     robot_model: RM65-B
     # Right arm controller IPv4 address.
-    robot_ip: 192.168.30.124
+    robot_ip: 192.168.5.124
     robot_port: 8080
     thread_mode: RM_TRIPLE_MODE_E
     mock_mode: false

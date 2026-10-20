@@ -10,7 +10,7 @@ description: RealMan Python SDK 的 ROS 2 Humble 三臂回读、运动 Action、
 需要扩展 Action、理解 reservation/generation/lockout 状态机或查找逐项测试用例时，先看
 [睿尔曼 Action 开发与测试](./realman-action-development)；本页保留运行时 ROS 图、配置和真机放行清单。
 
-运动接口已在生产三臂上运行，但 mock 测试结果不能替代现场安全验证。新的控制器、固件、网络或 SDK 版本，以及任何改变运动路径的修改，都必须重新经过本页末尾的运行门槛。
+平台保留 `l/m/r` 三臂能力，当前生产只安装左右 `l/r`，中臂不启动真实驱动。mock 测试结果不能替代现场安全验证；新的控制器、固件、网络或 SDK 版本，以及任何改变运动路径的修改，都必须重新经过本页末尾的运行门槛。
 
 <Glance :items="[{ label: '命名空间', value: '/l  /m  /r' }, { label: '运动 owner', value: '每臂唯一' }, { label: '失效保护', value: 'watchdog 100 ms' }, { label: 'SDK', value: 'Robotic_Arm 1.1.6' }]" />
 
@@ -48,8 +48,8 @@ RealManSdkAdapter
 | `realman_robot_driver/coordinate_manager.py` | 工具/工作坐标期望状态、回读验证和 motion gate |
 | `realman_msgs/action`、`realman_msgs/srv` | ROS 2 Action 与坐标 Service 的公开 IDL |
 | `launch/realman_driver.launch.py` | 启动一台 namespaced 驱动 |
-| `launch/three_realman_drivers.launch.py` | 启动 `l`、`m`、`r` 三台驱动 |
-| `config/ros/realman_driver.yaml` | 三台实例的权威连接与运行参数 |
+| `launch/three_realman_drivers.launch.py` | 只启动配置中存在的 `l`、`m`、`r` 完整节点 section；当前生产为 `l/r` |
+| `config/ros/realman_driver.yaml` | 已安装实例的权威连接与运行参数，当前只有左右两臂 |
 | `config/ros/realman_driver_mock.yaml` | 不连接真机的自动化测试参数 |
 | `config/ros/realman_coordinates.yaml` | 三臂工具/工作坐标、四元数、负载和启动策略 |
 | `config/ros/realman_motion.yaml` | 普通运动与末端速度的逐臂安全上限 |
@@ -59,7 +59,7 @@ SDK 适配器保留厂商返回码。SDK 未安装且关闭 mock 时，连接返
 
 ## ROS 图
 
-三臂 launch 创建：
+多臂 launch 按 `realman_driver.yaml` 的完整节点名创建驱动；当前生产创建 `/l`、`/r`。下面列出每臂接口，`/m` 只有显式配置时才创建：
 
 ```text
 /l/realman_driver
@@ -87,7 +87,7 @@ SDK 适配器保留厂商返回码。SDK 未安装且关闭 mock 时，连接返
 ├── /l/coordinates/select_tool  realman_msgs/srv/SelectFrame
 └── /l/coordinates/select_work  realman_msgs/srv/SelectFrame
 
-/m/realman_driver         # 相同的 namespaced 接口
+/m/realman_driver         # 可选；当前生产未配置，不创建
 /r/realman_driver         # 相同的 namespaced 接口
 ```
 
@@ -262,12 +262,12 @@ ros2 topic pub --rate 20 /l/cartesian_velocity/command \
 
 ## 参数
 
-运行参数由根目录三个文件共同负责：`realman_driver.yaml` 包含 `/l/realman_driver`、`/m/realman_driver` 和 `/r/realman_driver` 三个完整节点名，坐标与运动上限分别由 `realman_coordinates.yaml` 和 `realman_motion.yaml` 负责。
+运行参数由根目录三个文件共同负责：`realman_driver.yaml` 按完整节点名配置实例，当前只包含 `/l/realman_driver` 和 `/r/realman_driver`。多臂 launch 只读取明确存在的 `l/m/r` section，省略 `/m/realman_driver` 即不创建中臂驱动；至少配置一臂，每段必须有 `ros__parameters` mapping。独立单臂 launch 的显式 `namespace` 入口不变；`realman_driver_mock.yaml` 保留三臂。坐标与运动上限分别由 `realman_coordinates.yaml` 和 `realman_motion.yaml` 负责，保留中臂配置不代表启用中臂驱动。
 
 | 参数 | 默认策略 | 约束 |
 | --- | --- | --- |
 | `robot_model` | `RM65-B` | 必须与控制器和 URDF 型号一致 |
-| `robot_ip` | `l=192.168.30.123`、`m=192.168.30.125`、`r=192.168.30.124` | 必须与现场控制器网络一致 |
+| `robot_ip` | 以 `config/ros/realman_driver.yaml` 的已配置臂为准 | 必须与现场控制器网络一致 |
 | `robot_port` | `8080` | 有效 TCP/SDK 端口范围 `1..65535` |
 | `thread_mode` | `RM_TRIPLE_MODE_E` | 当前必须为三线程；普通运动完成事件依赖 SDK callback |
 | `mock_mode` | `false` | `true` 时不导入 SDK，不访问任何控制器 |
@@ -335,7 +335,7 @@ source ./functions.zsh
 rm65_docker_driver_test
 ```
 
-独立启动真实三臂驱动：
+独立启动配置中的真实驱动（当前左右两臂）：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -349,12 +349,11 @@ ros2 launch realman_robot_driver three_realman_drivers.launch.py \
 
 ```bash
 ros2 topic echo /l/joint_states
-ros2 topic echo /m/joint_states
 ros2 topic echo /r/joint_states
 ros2 service call /r/status std_srvs/srv/Trigger {}
 ```
 
-`joint_states.position` 是弧度，不是睿尔曼 SDK 的角度制。三台驱动使用独立 SDK 句柄，分别对应 `l/m/r` 和上面的三个 IP。
+`joint_states.position` 是弧度，不是睿尔曼 SDK 的角度制。左右驱动使用独立 SDK 句柄，对应 `realman_driver.yaml` 中各自的地址；当前没有 `/m/realman_driver` 或中臂重连请求。
 
 ## 单臂 SDK 最小探针
 
@@ -393,7 +392,7 @@ docker compose build realman_driver_rviz
 docker compose run --rm realman_driver_rviz
 ```
 
-该服务启动三台驱动、三棵带前缀的 `robot_state_publisher` TF 树和 RViz 2，不启动手柄节点。RViz 的三个 RobotModel 分别使用 `/l/robot_description`、`/m/robot_description` 和 `/r/robot_description`，固定坐标系为 `world`。
+该服务按驱动配置启动实例（当前左右两臂），同时保留三棵带前缀的 `robot_state_publisher` 描述与 RViz 2，不启动手柄节点。RViz 的三个 RobotModel 分别使用 `/l/robot_description`、`/m/robot_description` 和 `/r/robot_description`，固定坐标系为 `world`；中臂是布局参考，没有实时驱动反馈。下方完整三臂链路验证使用独立 mock 配置。
 
 离线验证完整数据链路：
 
@@ -459,9 +458,9 @@ mock 普通运动会依次报告 active、inactive 和成功完成事件，因�
 真机验收必须由现场操作人员执行，本轮自动化验证不包含任何真实连接、运动、停止或坐标写入。按以下顺序逐级放行，任一步的 API2 状态非零、回读不一致或停止无法确认时立即停止后续步骤：
 
 1. 记录 Python、`Robotic_Arm`、控制器固件、控制层、规划层、算法和动力学版本；Docker 使用 `config/python/realman-sdk-requirements.txt` 固定客户端版本。
-2. 核对工业交换机侧网卡路由和三臂映射：左臂 `192.168.30.123`、中臂 `192.168.30.125`、右臂 `192.168.30.124`，端口均为 `8080`。无线远程链路不能替代工控机到机械臂局域网的有线可达性。
+2. 核对工业交换机侧网卡路由和 `realman_driver.yaml` 中已安装机械臂的地址与端口，当前只要求左右两臂。无线远程链路不能替代工控机到机械臂局域网的有线可达性。
 3. 逐臂运行“单臂 SDK 最小探针”，只创建句柄并读取关节；确认返回型号、六轴角度和资源释放，不启动 ROS 运动接口。
-4. 使用 `realman_driver_rviz` 只观察 `/l|m|r/joint_states`、连接状态、TF 和 RViz 姿态；核对厂商度数到 ROS 弧度的转换及左/中/右模型对应关系。
+4. 使用 `realman_driver_rviz` 只观察已配置臂的 `/l|r/joint_states`、连接状态、TF 和 RViz 姿态；核对厂商度数到 ROS 弧度的转换及左右模型对应关系。
 5. 对每臂调用 `coordinates/verify`，只读比对当前工具/工作坐标。启动连接时若可读但 mismatch，驱动会自动执行与 `coordinates/apply` 相同的写入、选择和回读流程；请先核对 `realman_coordinates.yaml` 中工具 payload、质心和位姿参数，再允许真机启动。
 6. 清空工作区、限制负载、确认碰撞设置，安排一名人员保持可触达现场急停。一次只允许一个 arm namespace 取得 ownership，先以低 `velocity_percent` 执行经人工确认可达的小幅 MOVEJ。
 7. 检查 Action 的 VALIDATING/SUBMITTING/EXECUTING 反馈、当前关节角、API2 状态以及最终 active-to-inactive 证据；随后单独验证 cancel 和 `/stop` 的最快受控停止，并在 cancel 结果后调用一次 `recover_motion`。这些接口都不是断电急停。

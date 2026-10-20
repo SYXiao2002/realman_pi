@@ -701,7 +701,7 @@ rm65_deploy_update() {
 rm65_project_help() {
   print -r -- "realman_pi Zsh functions"
   print -r -- "推荐统一入口: ./rm65 up | down | status | logs | sync"
-  print -r -- "  ./rm65 up                 一键启动 ROS2 彩色相机和 headless 三臂真机"
+  print -r -- "  ./rm65 up                 一键启动 ROS2 彩色相机和已配置真机（当前左右双臂）"
   print -r -- "  ./rm65 up desktop         一键启动生产图并显示 RViz"
   print -r -- "  ./rm65 up model           只显示离线三臂模型"
   print -r -- "  ./rm65 bt [tree-name|l|m|r|three|control]   从 config/behavior-trees 启动行为树；.xml 可省略"
@@ -721,7 +721,7 @@ rm65_project_help() {
   print -r -- "  rm65_docker_driver_test             只测三臂 mock 驱动，不访问真实控制器"
   print -r -- "  rm65_docker_driver_rviz             真实关节回读加 RViz，不启动输入节点"
   print -r -- "Bringup:"
-  print -r -- "  rm65_docker_bringup                 完整本地系统：三臂、真实驱动、RViz、Joy 和 Xbox 输入"
+  print -r -- "  rm65_docker_bringup                 完整本地系统：已配置真实驱动、模型、RViz、Joy 和 Xbox 输入"
   print -r -- "  rm65_docker_bringup_remote          远程 headless 目标：真实驱动和 ROS 图，不启动 RViz"
   print -r -- "Configurable bringup:"
   print -r -- "  rm65_docker_bringup_custom          前台运行 .env 配置的 realman_bringup_custom 组合"

@@ -20,11 +20,11 @@ rm65_project_help
 
 ## 推荐统一入口
 
-日常生产操作优先使用仓库根目录的 `./rm65`，它把 ROS 2 彩色相机和三臂机械臂的生命周期合并管理：
+日常生产操作优先使用仓库根目录的 `./rm65`，它把 ROS 2 相机和当前左右双臂、两只 42D 夹爪的生命周期合并管理：
 
 ```bash
 ./rm65 build              # 重建 realman_bringup_remote 与 realman_web_control；不改变容器状态
-./rm65 up                 # ROS 2 彩色相机 + 三臂真实驱动 + Web control + 录制/回放 + 相机健康诊断，无 RViz
+./rm65 up                 # ROS 2 相机 + 左右真实驱动 + 两只 42D + Web control + 录制/回放 + 相机健康诊断，无 RViz
 ./rm65 up desktop         # 同上，并启动远程 ROS 图 RViz
 ./rm65 up model           # 离线三臂模型 + RViz，不连接真机
 ./rm65 rviz2              # 在 :1 桌面前台显示四路相机 RGB
@@ -50,7 +50,7 @@ rm65_project_help
 [独立数据录制平台](./recording-platform)。
 
 ::: warning 驱动服务互斥
-`realman_bringup_remote` 是生产 ROS 图中唯一启动三台 `realman_driver` 的服务。不要在它运行时启动
+`realman_bringup_remote` 是生产 ROS 图中唯一启动真实 `realman_driver` 的服务，实例由 `realman_driver.yaml` 中存在的节点参数段决定，当前只有 `l/r`。不要在它运行时启动
 `realman_driver_rviz`；后者也会连接真实机械臂，导致同一命名空间出现重复驱动和多个
 `/<arm>/cartesian_velocity` Action Server，键盘速度指令可能因此被多个执行器同时消费。`./rm65 up`、
 `./rm65 up desktop` 和 `./rm65 up policy` 会在启动相机前检查该 Compose 服务，发现仍在运行就拒绝启动，
@@ -120,7 +120,7 @@ Ctrl-C。`./rm65 up` 不会替它启动 executor；只要 bringup 容器已运�
 | --- | --- | --- | --- | --- |
 | `rm65_docker_xbox_test` | 前台启动独立 Xbox 输入测试。 | SDL `game_controller_node`、`/input/joy`、`xbox_controller_node`；不启动三臂、驱动或 RViz。 | 先确认实体手柄、Linux input 权限、SDL 映射和按键边沿日志是否正常。 | `config/ros/xbox_controller.yaml`、[Xbox 手柄输入](./xbox-controller#独立实体手柄测试) |
 | `rm65_docker_driver_test` | 前台启动三臂 mock 驱动测试。 | `/l` `/m` `/r` 三个 `realman_driver` mock 实例；不访问真实控制器。 | 没有机械臂时验证 ROS topic/service、mock 连接和关节状态发布。 | `config/ros/realman_driver_mock.yaml`、[睿尔曼三臂驱动与运动控制](./realman-driver-scaffold#独立启动) |
-| `rm65_docker_driver_rviz` | 前台启动真实三臂驱动和 RViz。 | 三台真实 `realman_driver`、三臂描述/TF、RViz；不启动 Joy 或 Xbox 输入。 | 已连接控制器网络时，只观察真实关节回读和模型姿态，不引入操作输入。 | `config/ros/realman_driver.yaml`、[睿尔曼三臂驱动与运动控制](./realman-driver-scaffold) |
+| `rm65_docker_driver_rviz` | 前台启动配置中的真实驱动和 RViz。 | 当前左右两台 `realman_driver`、三臂模型描述/TF、RViz；不启动 Joy 或 Xbox 输入。 | 已连接控制器网络时，只观察真实关节回读和模型姿态，不引入操作输入。 | `config/ros/realman_driver.yaml`、[驱动与运动控制](./realman-driver-scaffold) |
 
 ## Bringup 固定入口
 

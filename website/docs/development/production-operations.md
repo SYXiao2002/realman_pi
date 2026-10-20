@@ -17,11 +17,11 @@ description: 生产机的容器布局、查询命令、用 rsync 或 git bundle 
 flowchart TB
   subgraph HOST["生产机（宿主）"]
     REPO["~/realman_pi（Git 工作区：rsync 同步或检出本地部署分支）"]
-    UDEV["udev 规则 → /dev/realman/gripper_*"]
+    UDEV["稳定串口别名 → /dev/tty_gripper_42d（左右共享）"]
     LOGS["~/realman_pi/logs/"]
   end
   subgraph C1["容器 realman_bringup_remote"]
-    DRV["三臂 realman_driver"]
+    DRV["左右双臂 realman_driver"]
     GM["gripper_manager"]
     RT["行为树 router（按需）"]
   end
@@ -41,6 +41,7 @@ flowchart TB
 - **ROS 栈只在容器里**：`/opt/rm65_ws`（安装空间、源码副本、`config/ros/*.yaml`）只存在于容器内部。宿主上 `ps` 能看到这些进程（以 root 运行），但路径在宿主上不存在。读配置和日志用 `docker exec` / `docker logs`。
 - **容器名**：`realman_pi-realman_bringup_remote-1`（驱动、夹爪、相机、router）、`realman_pi-realman_web_control-1`（`:8765`）和 `realman_pi-realman_recording-1`（数据录制与回放网页 `:8770`，`./rm65 up` 会一并启动，见[独立数据录制平台](./recording-platform)）。取决于部署，还可能有策略桥；以 `docker ps` 为准。
 - **配置是宿主文件**：`config/ros` 以可写方式挂进 `realman_bringup_remote`，`config` 以只读方式挂进 `realman_web_control`。所以改**宿主**上的 YAML，重启对应进程即可生效，不用重建镜像。
+- **当前硬件只有左右双臂和两只 42D**：`realman_driver.yaml` 只保留 `/l/realman_driver`、`/r/realman_driver`，多臂 launch 跳过不存在的中臂 section。`recording.yaml` 同样只订阅、预检左右双臂与两夹爪；`three_robots.yaml` 中的中臂仅是通用模型与标定参考，不要求其中臂连接或话题在线。
 - **ROS domain** 是 `65`（来自 `.env`）。
 
 ## 常用查询
@@ -140,7 +141,7 @@ docker exec realman_pi-realman_bringup_remote-1 cat /opt/rm65_ws/config/ros/grip
 
 逐项读回实际值，不要只看容器状态是不是 `Up`：
 
-- `/{l,m,r}/joint_states` 约 10 Hz，夹爪状态约 20 Hz，相机约 30 Hz（用 `ros2 topic hz` 看）。
+- 用 `ros2 topic hz` 核对 `/{l,r}/joint_states` 和相机输出频率；左右夹爪的轮询取自 `config/ros/gripper.yaml` 的 `poll_hz: 5.0`，实际受共享总线事务耗时限制。中臂未安装，不应有其驱动重连，也不要求中臂或中夹爪话题。
 - `:8765` 和 `:8770` 返回 200；`:8765` 页面引用的每个 `/assets/*` 也返回 200。
 - 用 `ros2 param dump` / `ros2 param get` 读回关键参数，例如 router 的限速和 `dry_run`、执行器的 `policy_task.task_names`。
 - 要跑策略时：`/policy/stats` 有输出，而且带 `prompt` 字段（见[行为树里的 policy 任务](./policy-task)）。
@@ -206,7 +207,7 @@ curl -s http://127.0.0.1:8765/api/layout | head -c 200
 
 ## 只重启一个组件（不整套重启）
 
-驱动容器里，`{l,m,r}_realman_driver` 是 PID 1（`ros2 launch`）的子进程，launch **不会自动拉起**它们，各进程互不影响。需要只重启一台臂的驱动或只重启夹爪 manager 时：
+驱动容器里，当前 `{l,r}_realman_driver` 是 PID 1（`ros2 launch`）的子进程，launch **不会自动拉起**它们，各进程互不影响。需要只重启一台已安装臂的驱动或只重启夹爪 manager 时：
 
 <Steps>
 
@@ -230,27 +231,15 @@ curl -s http://127.0.0.1:8765/api/layout | head -c 200
 - **不要** `nohup … >> /proc/1/fd/1`：PID 1 的标准输出是 tty，`nohup` 会悄悄把输出改到 `/opt/rm65_ws/nohup.out`，`docker logs` 就看不到了。
 - 手动拉起的进程**不再受 launch 管理**：下次整套重启才会恢复到 launch 管理。
 
-`realman_web_control` 只在启动时读一次 `gripper.yaml`。改了夹爪行程后，网页上的开合百分比和 3D 夹爪模型仍用旧端点，**必须同时重启 web 容器**。
+通过网页“行程设置”保存端点时，manager 发布 `/<name>/limits`，Web 自动更新开合百分比和模型，无需重启。手工编辑 `gripper.yaml` 或覆盖文件不会触发自动重载，需重启 manager 与 Web 进程。
 
 ## 夹爪
 
-**串口别名**：`/dev/realman/gripper_{right,left,mid}` 由宿主的 udev 规则按 USB 口号生成，容器里是这些设备节点的副本。规则按 USB 口号匹配，更换 USB 口后别名可能不再对应原来的夹爪，需要同步修改 udev 规则。
+**串口拓扑**：当前只有左右两个 42D 夹爪，共用 `/dev/tty_gripper_42d`，左地址 `1`、右地址 `2`，容器只映射一次；中臂没有夹爪。宿主设备路径可通过 `REALMAN_GRIPPER_42D_DEVICE` 覆盖，容器内路径固定。检查别名时同时核对物理适配器和设备地址，避免两个进程占用同一端口。
 
-**告警位**：`/<name>/alarm` 的含义（来自参考 SDK 的注释，**不是**厂商手册）：
+**42D 状态与边界**：左右夹爪只支持开／合，百分比和原始位置先经过阈值与滞回转换，相同端点不重复下发。`position` 是状态合成的兼容端点，`speed/current/alarm=0` 和 `torque_reached=false` 是占位值，不能判断真实静止、电流、故障或是否夹到物体。`enable=false` 清除软件使能状态和待发目标，不能停止已开始的动作，后续新运动请求仍会自动使能；`reset`、`calibrate`、`grasp_check` 返回不支持。连接及重连只读状态，不会自动开合或重放旧目标。
 
-| 位 | 含义 |
-| --- | --- |
-| `0x01` | 过温 |
-| `0x02` | 堵转 |
-| `0x04` | 超速 |
-| `0x08` | 初始化故障 |
-| `0x10` | 限位 |
-| `0x20` | 掉电 |
-
-- `gripper_manager` **不记录告警跳变**，没有历史，只有 live topic；需要事后追溯要自己录 topic。
-- 告警可能**锁存**：例如 `0x20` 在夹爪重新通电、能动之后依然是 `32`。键盘 router 和 Web 控制都会拒绝任何 `alarm != 0` 的夹爪，所以恢复供电后可能要对该夹爪执行一次 `reset`。
-
-**行程标定与网页覆盖**：`open_position` / `close_position` 必须贴着机械真实行程，否则"全开"只是半开。2026-09-28 的标定实测机械极限（设备单位）是：右 `8..8668`、左 `1..919`（左夹爪量级约为右的 1/10，单位待确认）、中 `0..9000`。曾经的配置（右 `4000/12000`、左 `400/949`）让"全开"只有约 55%；现在 `config/ros/gripper.yaml` 已是标定值（右 `50/8500`、左 `20/900`、中 `0/9000`，各留约 2% 余量），并已合入 `main`。
+**端点与网页覆盖**：左右 42D 保留 `gripper.yaml` 中原有 `open_position` / `close_position` 数字供 ROS、Web 和覆盖文件兼容，只表示开／闭坐标；调整它们不会改变 42D 实际行程，也不能用于物理标定。可选 Changingtek 驱动能力见[夹爪控制](./gripper-control#可选-changingtek-支持)，不属于当前部署要求。
 
 现场还可以在 Web 控制页的"行程设置"里在线改开位/闭位，结果保存在 `gripper.yaml` 同目录的 `gripper_overrides.yaml`（见[夹爪控制](./gripper-control)）。这个文件：
 
@@ -258,7 +247,7 @@ curl -s http://127.0.0.1:8765/api/layout | head -c 200
 - 由容器以 root 写入，宿主上手工改它需要 `sudo`；
 - 优先于 `gripper.yaml` 的默认值。想让某个行程值成为所有机器的新默认，要把它写回 `gripper.yaml` 并提交。
 
-`gripper_manager` 和 `realman_web_control` 在启动时读取 `gripper.yaml` 与覆盖文件，运行中通过 `/<name>/limits` 同步。改了宿主上的 YAML 后，需要重启这两个进程，网页上的开合百分比和 3D 夹爪模型才会用新端点。
+`gripper_manager` 和 `realman_web_control` 启动时读取 `gripper.yaml` 与覆盖文件；网页 `set_limits` 更新通过 `/<name>/limits` 实时传播。手工改宿主 YAML 后需重启这两个进程，配置重新加载后才会生效。
 
 ## 清理日志
 

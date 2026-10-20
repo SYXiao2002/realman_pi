@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import yaml
+
 from realman_recording.lerobot_schema import schema_from_parameters
 
 
@@ -80,3 +84,49 @@ def test_schema_does_not_fabricate_gripper_actions_when_unavailable():
     )
     assert schema.gripper_command_dim == 0
     assert "action.command.gripper" not in schema.features({"left": (240, 320, 3)})
+
+
+def test_production_config_records_only_the_two_installed_arms_and_grippers():
+    config = yaml.safe_load(
+        (Path(__file__).resolve().parents[4] / "config/ros/recording.yaml").read_text()
+    )
+    recorder = config["/recording_recorder"]["ros__parameters"]
+    bridge = config["/recording_web_bridge"]["ros__parameters"]
+    assert recorder["lerobot_repo_id"] == "realman/pi05-two-arm"
+    assert recorder["embodiment_id"] == "realman-rm65-b-two-arm-v1"
+    assert recorder["arm_namespaces"] == bridge["arm_namespaces"] == ["l", "r"]
+    assert recorder["arm_velocity_topics"] == bridge["arm_velocity_topics"] == [
+        "/l/cartesian_velocity/state", "/r/cartesian_velocity/state",
+    ]
+    assert recorder["base_frames"] == ["l/base_link", "r/base_link"]
+    assert recorder["ee_links"] == ["link_6", "link_6"]
+    expected_topics = ["/gripper_left/position", "/gripper_right/position"]
+    assert recorder["gripper_position_topics"] == expected_topics
+    for field in ("gripper_position_topics", "gripper_torque_topics", "gripper_alarm_topics"):
+        assert recorder[field] == bridge[field]
+        assert len(recorder[field]) == 2
+    assert set(recorder["preflight_required_topics"]) == {
+        "/l/joint_states", "/r/joint_states", *expected_topics,
+    }
+    schema = schema_from_parameters(
+        repo_id=recorder["lerobot_repo_id"], fps=recorder["export_target_fps"],
+        arms=recorder["arm_namespaces"], arm_action_topics=recorder["arm_action_topics"],
+        arm_velocity_topics=recorder["arm_velocity_topics"],
+        base_frames=recorder["base_frames"], ee_links=recorder["ee_links"],
+        embodiment_id=recorder["embodiment_id"],
+        cartesian_command_frames=recorder["cartesian_command_frames"],
+        gripper_position_topics=recorder["gripper_position_topics"],
+        gripper_action_topics=recorder["gripper_action_topics"],
+        camera_ids=recorder["camera_ids"],
+    )
+    features = schema.features({camera: (240, 320, 3) for camera in schema.camera_ids})
+    assert schema.arm_count == 2
+    assert features["observation.joint_position"]["shape"] == (12,)
+    assert features["action.command_action"]["shape"] == (12,)
+    assert features["observation.joint_position"]["names"] == [
+        f"{arm}.joint_{joint}" for arm in ("l", "r") for joint in range(1, 7)
+    ]
+    assert features["observation.gripper_position"] == {
+        "dtype": "float32", "shape": (2,), "names": ["gripper_left", "gripper_right"],
+    }
+    assert "action.command.gripper" not in features

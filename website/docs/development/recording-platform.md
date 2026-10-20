@@ -9,6 +9,8 @@ description: RealMan 驱动输出的隔离录制、预检、低清展示与 LeRo
 
 `realman_recording` 是一个**订阅式数据录制与回放** ROS 2 节点组：它只订阅已有的驱动与夹爪输出，不创建 `Robotic_Arm`/RealMan SDK 客户端，也不发布机械臂运动命令。`./rm65 up` 通过 `realman_recording` 容器随生产 ROS 图一起启动它（默认开启）；正常实时展示继续由 `realman_web_control` 提供。recording 自带网页仅用于录制与已导出 episode 的只读回放，不发起任何录制控制；上游系统通过 `/recording/manage` Service 控制录制生命周期，不能复用或代理 `realman_web_control` 的运动面板。
 
+当前生产只安装左右双臂和两只 42D。`config/ros/recording.yaml` 的 recorder 与 Web bridge 均配置 `arm_namespaces: [l, r]`，只订阅左右的关节、速度和动作流；PREPARE 的非相机必需话题只有左右 `joint_states` 和左右夹爪 `position`。中臂没有真实驱动，不参与录制或预检，也不补造中臂数据；三臂可视化布局仍可作为通用参考。
+
 录制和数据集转换是两个阶段：停止时只原子收尾原始 MCAP/JPEG 帧 session；转换由独立的 LeRobot worker 完成。`config/ros/recording.yaml` 的 `auto_export_on_stop`（默认 `true`）让**干净收尾**的 session 在 STOP 后自动采用并入队导出，由单个串行 worker 一次只转换一个；有 MCAP 或相机写错误的 `FAILED` session 永远不会自动导出。设为 `false` 恢复手动 `ADOPT`。转换占用的 CPU、GPU、图像解码或失败均不得减慢下一次 ROS 数据录制。
 
 MCAP 状态写入、ROS `Image` 有界 JPEG 录制、低清 JPEG 预览、夹爪/相机健康状态、Three.js/URDF 三臂展示、预检和预约控制已经接入。`ADOPT` 会在 ROS executor 外把完成 session 异步转换为 `lerobot==0.4.4` 的 canonical v3 episode；失败会持久化为 `FAILED`，不会伪造成功的数据集。
@@ -111,16 +113,18 @@ session manifest、相机 `media-index.json` 和 LeRobot `lerobot-v3.json` recei
 
 - `recording_root` 是运行时 session 根目录；容器默认 `/data/realman-recordings`；
 - `max_state_queue` 是有界内存队列容量，满时必须计入丢失而不能阻塞订阅回调；
-- `arm_namespaces` 与夹爪 topic 列表决定订阅集合；
+- `arm_namespaces` 与夹爪 topic 列表决定订阅集合；当前为 `[l, r]` 与左右两个夹爪，`arm_action_topics`、`arm_velocity_topics`、`base_frames`、`ee_links` 和命令 frame 均与双臂顺序一致；
 - `preflight_required_topics` 决定非相机的 PREPARE 硬门限；可按任务加入力控、报警或 action topic，未列出的录制 topic 不会阻止开始；
 - `preflight_alignment_trigger_sec` 是仅用于请求离线对齐的 receipt-walltime 差阈值；`alignment_enabled` 关闭时仍保留检测结论，但不请求后处理；
 - `camera_ids` 和 `camera_image_topics` 必须一一对应；后者必须是 `sensor_msgs/msg/Image` 的绝对 topic 名称；
 - `web_state_hz` 是网页快照上限，不是采样或图像帧率。
 - `preflight_max_age_sec`、`preflight_valid_sec` 和 `min_free_space_bytes` 是开始录制前的硬性预检阈值；
-- `cartesian_command_frames` 必须与上游 `TwistStamped.header.frame_id` 一致；当前三臂控制器使用
-  `l/m/r/work/cell`，若控制器切换 base/tool frame，必须同步修改配置，导出器会拒绝混用；
+- `cartesian_command_frames` 必须与上游 `TwistStamped.header.frame_id` 一致；当前左右臂的 Pika 输入使用
+  `l/work/pikabase`、`r/work/pikabase`，若控制器切换 base/tool frame，必须同步修改配置，导出器会拒绝混用；
 - `preview_*` 是 Web 独立预览限制，`preview_enabled=true` 才启动低清 JPEG 重压缩 worker；
 - LeRobot Web 回放已接入；Rerun 离线回放暂缓，不影响实时展示、原始数据录制或 LeRobot 导出。
+
+当前双臂 schema 的机械臂动作是 `12D`（左右各六轴），关节加夹爪状态是 `14D`（12 个关节位置 + 两个夹爪位置）；`gripper_action_topics` 未配置时不把夹爪状态复制成动作。`lerobot_repo_id: realman/pi05-two-arm` 与 `embodiment_id: realman-rm65-b-two-arm-v1` 为双臂数据使用独立标识，避免追加到旧三臂数据集。旧三臂 episode 保留原 schema，不应通过补零中臂来混用。
 
 默认随 `./rm65 up` 一起启动（`realman_recording` 容器）；回放页在 `http://127.0.0.1:8770/`。Compose 将仓库
 `recordings/` 挂载为容器 `/data/realman-recordings`，同时保留 `logs/` 挂载。网页默认绑定 `127.0.0.1:8770`，
@@ -149,19 +153,19 @@ docker compose up realman_recording
 
 1. `state_archive.py`（已接入）：用 `rosbag2_py` 的 `SequentialWriter` 以 `storage_id="mcap"` 建 topic、序列化消息并在收尾时关闭 writer；bag 记录时间取 receipt wall-clock 纳秒。session manifest 的成对 wall/monotonic 起始锚点供导出换算媒体时间轴；没有 `header.stamp` 的话题只可使用 receipt 时间。
 2. `camera_workers.py`（已接入）：每路 ROS `Image` 回调只把原始消息放入独立有界队列，JPEG 编码和落盘均在 archive worker 中执行；STOP 时按每帧 receipt 及每路 `accepted/dropped/errors` 统计写入 `media-index.json`。低清预览使用另一个限 FPS、限分辨率、只保留最新 JPEG 的 worker。录制平台不支持 RTSP/ffmpeg 输入。
-3. `web_server.py` 与 `static/index.html`（已接入）：预览使用独立 endpoint；只读 Three.js/URDF 三臂 viewer 已实现（参考 web_control 的 urdf-loader 方案，把 `/l|m|r/joint_states` 实时套到 URDF 模型）。回放页只读取已完成的 LeRobot v3，前端源在 `web/`，经 `npm run build:recording`（Vite，`config/recording/vite.config.mjs`）构建到 `static/`。
-4. `lerobot_exporter.py`：ADOPT 后在 ROS executor 外读取 MCAP/JPEG，以配置的 SYSTEM_TIME 网格对齐，使用 `lerobot==0.4.4` 追加 canonical v3 episode。它保存关节位置/派生速度、URDF FK EE pose/velocity、夹爪位置、真实 Cartesian command 和 quality；不会把 π0.5 的 state/action 向量当作原始事实。某一臂的 `arm_action_topics` 流在整段 episode 内没有样本（从未被下发指令）时，导出器按「指令速度恒为零」补齐该臂 6D 动作，而不是拒绝导出：手动录制三臂皆空、双主臂遥操作时非遥操作臂皆空都据此通过；关节/夹爪/实测速度等状态流仍是硬性必需，缺失依旧报错。集合导出目录会按 `repo_id` 选择稳定子目录，已初始化的 `meta/info.json` 则原地续写。训练读取图像时应显式选择 `video_backend=\"pyav\"`；当前容器已验证 SDK reload 和 π0.5 adapter smoke，OpenPI one-batch 仍待训练环境。
+3. `web_server.py` 与 `static/index.html`（已接入）：预览使用独立 endpoint；只读 Three.js/URDF viewer 支持通用三臂模型，当前把 `/l|r/joint_states` 实时套到左右模型，中臂只保留布局参考。回放页只读取已完成的 LeRobot v3，前端源在 `web/`，经 `npm run build:recording`（Vite，`config/recording/vite.config.mjs`）构建到 `static/`。
+4. `lerobot_exporter.py`：ADOPT 后在 ROS executor 外读取 MCAP/JPEG，以配置的 SYSTEM_TIME 网格对齐，使用 `lerobot==0.4.4` 追加 canonical v3 episode。它保存关节位置/派生速度、URDF FK EE pose/velocity、夹爪位置、真实 Cartesian command 和 quality；不会把 π0.5 的 state/action 向量当作原始事实。已配置机械臂的 `arm_action_topics` 流在整段 episode 内没有样本（从未被下发指令）时，导出器按「指令速度恒为零」补齐该臂 6D 动作，而不是拒绝导出：手动录制双臂动作皆空、单臂遥操作时另一臂动作流为空都据此通过；已配置的关节/夹爪/实测速度等状态流仍是硬性必需，缺失依旧报错。未配置的中臂不会生成状态或动作维度。集合导出目录会按 `repo_id` 选择稳定子目录，已初始化的 `meta/info.json` 则原地续写。训练读取图像时应显式选择 `video_backend=\"pyav\"`；当前容器已验证 SDK reload 和 π0.5 adapter smoke，OpenPI one-batch 仍待训练环境。
 5. `lerobot_web_replay.py`：提供只读 LeRobot episode catalog 和按需图像解码；默认最多缓存 4 个空闲 dataset 句柄，按 LRU 淘汰；同一 episode 的 SDK 读取经独立锁串行化，正在使用的句柄固定到读取结束。高并发时活跃句柄可令缓存暂时超过 4 个，读操作结束后重新收敛。Web handler 将 SDK 读取和 JPEG 解码移到工作线程，避免慢回放请求阻塞实时快照；`replay.py`（已并入 `realman_recording` 包）仍是后续 Rerun 回放实验骨架，当前不作为验收路径。
 6. 已在工控机临时 recording 容器完成 colcon、recorder/Web bridge 启动、`/healthz`、空数据集 `/api/lerobot`、失败 PREPARE 边界和 Domain 65 下 3 秒 state-only MCAP 录制（819 条消息、无 drop/write error）；另有隔离 ROS graph 的合成 Service→MCAP→DISCARD 集成测试、SIGKILL 活跃 recorder 后由新 recorder ROS 节点恢复 manifest 的进程级测试，以及用 LeRobot SDK fixture 完成 HTTP list/summary/frame/JPEG 回读。WebSocket 慢客户端自动回归使用独立 asyncio loop 和阻塞 client，验证 producer 非阻塞、快照合并及超时清理。待真机验收包括四路相机成功录制和真实 episode ADOPT/导出/回放；待故障注入包括真实磁盘耗尽（当前仅有 writer `OSError` 注入）。
 
 录制包由基础镜像 `rm65-humble-rviz:local` 直接构建：`config/docker/ros2-humble-rviz.Dockerfile` 已把
 `realman_recording` / `realman_recording_msgs` 加入 colcon 构建清单，并安装 ffmpeg、MCAP storage
 plugin、CPU PyTorch、LeRobot、Pillow 与 PyArrow。没有独立的 `rm65-recording` overlay 镜像；
-`./rm65 up` 会把录制 recorder 与回放网页随三臂驱动、Web control 一起启动：
+`./rm65 up` 会把录制 recorder 与回放网页随左右双臂驱动、Web control 一起启动：
 
 ```bash
 ./rm65 build    # 重建 rm65-humble-rviz:local（含录制包与全部依赖）
-./rm65 up       # 启动三臂驱动、Web control、录制 recorder + 回放网页（127.0.0.1:8770）
+./rm65 up       # 启动左右双臂驱动、Web control、录制 recorder + 回放网页（127.0.0.1:8770）
 ```
 
 启动前用 `ros2 bag list storage | grep -x mcap` 检查插件；回放/导出环境还需确认 Python 能导入
@@ -182,7 +186,7 @@ node_modules/.bin/playwright test --config ../config/recording/playwright.config
 | --- | --- | --- |
 | 图像（RGB） | 由 `config/ros/cameras_ros2.yaml` 设置 | 基准（anchor），导出帧时间轴；多路相机不会合并成更高频率。`config/ros/recording.yaml` 默认以 `orbbec-left`、`orbbec-right`、`orbbec-global`、`orbbec-global2` 对应左 / 右腕部与后 / 前全局相机四路 RGB。 |
 | 机械臂（State/Action） | 约 10 Hz（当前驱动） | 线性插值；仅在相邻样本间隔不超过 `max_gap_ns` 时允许。 |
-| 夹爪（Gripper） | 约 20 Hz（当前驱动） | 开关量默认 `FORWARD_FILL`（最后一个因果状态）；可显式选 `NEAREST`；连续力控夹爪用线性插值。 |
+| 夹爪（Gripper） | 由 `config/ros/gripper.yaml` 的 `poll_hz: 5.0` 设定，实际受总线事务限制 | 左右 42D 开关量默认 `FORWARD_FILL`（最后一个因果状态）；可显式选 `NEAREST`；连续力控夹爪用线性插值。 |
 
 所有 anchor 和样本时间戳均为 ROS 2 `SYSTEM_TIME` wall-time 纳秒，必须非空且严格递增；重复、乱序、非整数时间戳会拒绝导出。线性流要求每个样本具有相同的有限数值维度，避免关节向量静默截断。`max_gap_ns` 由 exporter 按数据流配置：超过间隔的插值或保持会失败，调用方必须舍弃该图像帧或把它显式标为缺失，而不能伪造训练观测。
 
@@ -214,9 +218,8 @@ ROS_DOMAIN_ID=65 recording_runtime_probe --duration-sec 5 \
   --image-topic /camera_right/color/image_raw \
   --image-topic /camera_global/color/image_raw \
   --image-topic /camera_global2/color/image_raw \
-  --arm-topic /l/joint_states --arm-topic /m/joint_states --arm-topic /r/joint_states \
+  --arm-topic /l/joint_states --arm-topic /r/joint_states \
   --gripper-topic /gripper_left/position \
-  --gripper-topic /gripper_mid/position \
   --gripper-topic /gripper_right/position \
   --device-status-topic /camera_left/device_status \
   --device-status-topic /camera_global/device_status \
@@ -225,6 +228,8 @@ ROS_DOMAIN_ID=65 recording_runtime_probe --duration-sec 5 \
 ```
 
 输出为 JSON，包含 `/recording/manage` 是否可用、最近的 `RecordingStatus`、每个 topic 的样本数和接收频率；服务不可用时退出码为 `2`。实际 topic 名称应以 `ros2 topic list` 和 `config/ros/recording.yaml` 为准。该探针不能替代 PREPARE：PREPARE 仍负责新鲜度、连接状态、磁盘、MCAP backend 和配置化 `preflight_required_topics` 的准入判断。
+
+左右 42D 的 `position` 是根据开闭状态合成的兼容坐标，录制后也不能作为连续行程测量；未知状态保留上次位置，尚无已知状态时使用中点占位。当前只录制左右双臂和两个夹爪；中间臂及夹爪均未安装，`config/ros/recording.yaml` 的订阅与预检列表均不要求任何中臂话题。详见[夹爪控制](./gripper-control)。
 
 `--device-status-topic` 仅用于 Orbbec 的可选诊断，输出每路 `device_online`、
 `connection_type` 和 `color_frame_rate_cur`；是否提供该 topic 以宿主机安装的 `orbbec_camera` 版本为准。

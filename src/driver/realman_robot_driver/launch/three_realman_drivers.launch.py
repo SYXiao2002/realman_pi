@@ -1,6 +1,9 @@
 import os
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -10,6 +13,30 @@ from launch_ros.actions import Node
 
 
 ROBOT_NAMESPACES = ("l", "m", "r")
+
+
+def _configured_namespaces(config_file):
+    """Only create drivers explicitly configured for installed arms."""
+    document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    if not isinstance(document, Mapping):
+        raise ValueError(f"Driver configuration must be a mapping: {config_file}")
+    namespaces = []
+    for namespace in ROBOT_NAMESPACES:
+        key = f"/{namespace}/realman_driver"
+        if key not in document:
+            continue
+        section = document[key]
+        if not isinstance(section, Mapping) or not isinstance(
+            section.get("ros__parameters"), Mapping
+        ):
+            raise ValueError(f"{key} must contain a ros__parameters mapping: {config_file}")
+        namespaces.append(namespace)
+    if not namespaces:
+        raise ValueError(
+            f"Driver configuration must contain at least one /l, /m, or /r "
+            f"realman_driver section: {config_file}"
+        )
+    return tuple(namespaces)
 
 
 def _launch_nodes(context):
@@ -37,7 +64,7 @@ def _launch_nodes(context):
                 },
             ],
         )
-        for namespace in ROBOT_NAMESPACES
+        for namespace in _configured_namespaces(config_file)
     ]
 
 
@@ -62,7 +89,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "config_file",
                 default_value=str(default_config),
-                description="Annotated l/m/r RealMan driver parameters under root config/ros.",
+                description="Driver parameters under root config/ros; omitted l/m/r sections are skipped.",
             ),
             DeclareLaunchArgument(
                 "coordinates_config_file",

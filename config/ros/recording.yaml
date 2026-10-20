@@ -9,31 +9,33 @@
     lerobot_export_dir: /data/realman-recordings/lerobot
     # A full queue records a drop metric instead of blocking driver subscription callbacks.
     max_state_queue: 10000
-    arm_namespaces: [l, m, r]
+    # Only the installed left/right arms are required; no middle arm is present.
+    arm_namespaces: [l, r]
     # Controller-side Cartesian command streams. They are observations only; the recorder
     # never publishes to them. Configure each external teleoperation source explicitly.
-    arm_action_topics: [/l/cartesian_velocity/command, /m/cartesian_velocity/command, /r/cartesian_velocity/command]
-    # Driver-published CartesianVelocityState in left/middle/right order. It preserves
+    arm_action_topics: [/l/cartesian_velocity/command, /r/cartesian_velocity/command]
+    # Driver-published CartesianVelocityState in left/right order. It preserves
     # controller intent and actual measured speed for offline export; no FK-difference
     # estimate is substituted when this stream is available.
-    arm_velocity_topics: [/l/cartesian_velocity/state, /m/cartesian_velocity/state, /r/cartesian_velocity/state]
-    # Optional actual gripper command streams, in left/middle/right order.  Leave
+    arm_velocity_topics: [/l/cartesian_velocity/state, /r/cartesian_velocity/state]
+    # Optional actual gripper command streams, in left/right gripper order. Leave
     # empty until the upstream gripper interface exposes a command topic: the
-    # exporter then writes an honest 18D arm-only action instead of copying state.
+    # exporter then writes an honest 12D arm-only action instead of copying state.
     gripper_action_topics: ['']
     # One long-lived v3 dataset, not a v2-style dataset per recorded session.
-    lerobot_repo_id: realman/pi05-three-arm
+    # A separate dataset identity prevents appending two-arm data to old three-arm data.
+    lerobot_repo_id: realman/pi05-two-arm
     # Canonical embodiment metadata.  The exporter resolves this URDF beneath the
     # installed rm65_description share directory, hashes it, and uses it only for
     # offline FK; the recorder never invokes the RealMan SDK.
-    embodiment_id: realman-rm65-b-three-arm-v1
+    embodiment_id: realman-rm65-b-two-arm-v1
     urdf_package: rm65_description
     urdf_relative_path: urdf/RM65-B.urdf
     # This is the un-namespaced link in the URDF, unlike base_frames below which
     # identify each physical arm's external reference frame.
     urdf_base_link: base_link
-    base_frames: [l/base_link, m/base_link, r/base_link]
-    ee_links: [link_6, link_6, link_6]
+    base_frames: [l/base_link, r/base_link]
+    ee_links: [link_6, link_6]
     joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
     # Cartesian commands use metres/s and radians/s. The Pika teleop router publishes
     # these TwistStamped commands in each arm's pika base work frame (pikabase), not
@@ -41,19 +43,20 @@
     # agree with this configured convention; changing the controller's active work
     # profile requires updating this list as one unit.
     cartesian_command_representation: velocity
-    cartesian_command_frames: [l/work/pikabase, m/work/pikabase, r/work/pikabase]
+    cartesian_command_frames: [l/work/pikabase, r/work/pikabase]
     # Point this at the immutable result from realman_camera_calibration after a
     # solved hand-eye calibration. Empty keeps 2D data recordable but marks its
     # geometric calibration provenance as UNAVAILABLE.
     calibration_snapshot_path: ""
     calibration_version: ""
-    # Keep raw gripper topics intact; recorder assigns ROS 2 SYSTEM_TIME receipt timestamps.
-    gripper_position_topics: [/gripper_left/position, /gripper_mid/position, /gripper_right/position]
-    gripper_torque_topics: [/gripper_left/torque_reached, /gripper_mid/torque_reached, /gripper_right/torque_reached]
-    gripper_alarm_topics: [/gripper_left/alarm, /gripper_mid/alarm, /gripper_right/alarm]
+    # Only l/r have grippers. Keep their raw topics in left/right order; recorder
+    # assigns ROS 2 SYSTEM_TIME receipt timestamps. No middle-arm data is synthesized.
+    gripper_position_topics: [/gripper_left/position, /gripper_right/position]
+    gripper_torque_topics: [/gripper_left/torque_reached, /gripper_right/torque_reached]
+    gripper_alarm_topics: [/gripper_left/alarm, /gripper_right/alarm]
     # PREPARE gates only these task-critical observations. Do not add optional
     # torque/alarm/action streams here unless the selected task truly needs them.
-    preflight_required_topics: [/l/joint_states, /m/joint_states, /r/joint_states, /gripper_left/position, /gripper_mid/position, /gripper_right/position]
+    preflight_required_topics: [/l/joint_states, /r/joint_states, /gripper_left/position, /gripper_right/position]
     # Subscribe directly to camera image_raw ROS topics and keep receipt timestamps
     # in the ROS 2 SYSTEM_TIME domain used by the state archive. Topic names must be
     # confirmed with `ros2 topic list`. The four entries are left wrist, right wrist,
@@ -116,11 +119,12 @@
     # Keep preview camera IDs and topics paired with the recorder configuration above.
     camera_ids: [orbbec-left, orbbec-right, orbbec-global, orbbec-global2]
     camera_image_topics: [/camera_left/color/image_raw, /camera_right/color/image_raw, /camera_global/color/image_raw, /camera_global2/color/image_raw]
-    arm_namespaces: [l, m, r]
+    arm_namespaces: [l, r]
     # Read-only driver telemetry paired with arm_namespaces. The dashboard plots
     # commanded_* against measured_* and shows the latter in 3D; vectors are in each
     # arm's measured_frame_id (normally <arm>/base_link), with m/s and rad/s units.
-    arm_velocity_topics: [/l/cartesian_velocity/state, /m/cartesian_velocity/state, /r/cartesian_velocity/state]
-    gripper_position_topics: [/gripper_left/position, /gripper_mid/position, /gripper_right/position]
-    gripper_torque_topics: [/gripper_left/torque_reached, /gripper_mid/torque_reached, /gripper_right/torque_reached]
-    gripper_alarm_topics: [/gripper_left/alarm, /gripper_mid/alarm, /gripper_right/alarm]
+    arm_velocity_topics: [/l/cartesian_velocity/state, /r/cartesian_velocity/state]
+    # Match the recorder's two installed grippers, in left/right order.
+    gripper_position_topics: [/gripper_left/position, /gripper_right/position]
+    gripper_torque_topics: [/gripper_left/torque_reached, /gripper_right/torque_reached]
+    gripper_alarm_topics: [/gripper_left/alarm, /gripper_right/alarm]

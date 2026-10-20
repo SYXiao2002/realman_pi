@@ -7,6 +7,8 @@ description: 三臂、RViz 2、输入节点、远程调试和 ROS 2 运行日志
 
 `realman_bringup` 是系统编排包。它按参数组合三臂描述、RealMan 只读状态驱动、RViz 2、标准 Joy 设备节点和 C++ 输入处理节点，不拥有机械臂 URDF、Xbox 按键语义或 TF 布局数值。
 
+当前生产只安装左右双臂和两只 42D，`realman_driver.yaml` 只配置 `/l/realman_driver`、`/r/realman_driver`。多臂驱动 launch 只创建文件中明确存在的 `l/m/r` 完整节点 section；省略中臂便不创建其驱动或重连定时器。`three_robots.yaml` 仍保留通用三臂描述和标定参考，模型存在不表示真实机械臂已启用。
+
 手柄设备和按键处理的详细契约见 [Xbox 手柄输入](./xbox-controller)，三臂位姿与 TF 契约见[三臂配置驱动可视化](./three-arm-visualization)。
 
 ## 所有权边界
@@ -24,7 +26,7 @@ description: 三臂、RViz 2、输入节点、远程调试和 ROS 2 运行日志
 ## 统一生产入口
 
 推荐从仓库根目录执行 `./rm65 up`。该命令先在宿主机通过二进制 `orbbec_camera` 包启动四路 Orbbec RGB，以及配置开启的 `camera_right`、`camera_global` 原始深度；等待四路彩色和两路深度都实际出帧，再启动 Docker
-中的 `realman_bringup_remote`（三臂真实驱动、headless、`restart: unless-stopped`），因此标定和
+中的 `realman_bringup_remote`（当前左右真实驱动、headless、`restart: unless-stopped`），因此标定和
 机械臂节点加入同一个 ROS 2 图。相机启动失败时会清理已启动的相机并且不会启动 Docker。若相机已就绪但
 Compose 启动失败，`./rm65 up` 返回失败并保留相机流，便于继续查看画面和诊断；确认要结束本次运行时执行
 `./rm65 down`，它会停止 Compose 服务，再等待受管相机 launch 逐个退出并释放 USB 设备。
@@ -70,7 +72,7 @@ CLI 不依赖当前 shell 的 Compose project 名；它通过 `realman_bringup_r
 
 ### 驱动与远程 RViz 的边界
 
-生产运行时只允许 `realman_bringup_remote` 持有三台真实 `realman_driver`。历史的
+生产运行时只允许 `realman_bringup_remote` 持有已配置的真实 `realman_driver`（当前 `l/r`）。历史的
 `realman_driver_rviz` 服务也会启动驱动，因此不能和生产服务并行运行；否则每个机械臂命名空间可能出现
 重复驱动和多个 Cartesian Velocity Action Server，导致一个轴的速度输入被重复执行或表现为其他轴联动。
 
@@ -99,7 +101,7 @@ ros2 launch realman_bringup system.launch.py \
 | `start_controller` | `true` | `/input/xbox_controller`，处理 Joy 按键边沿 |
 | `use_gui` | `false` | 仅在 `start_driver:=false` 时选择假关节状态的 GUI 版本 |
 | `use_rviz` | `true` | 使用三臂 RViz 配置启动 `rviz2` |
-| `start_driver` | `true` | 启动三台真实关节状态驱动，并禁用三臂假关节状态源 |
+| `start_driver` | `true` | 启动驱动配置中明确存在的臂（生产当前 `l/r`），并禁用三臂假关节状态源 |
 | `driver_config_file` | `config/ros/realman_driver.yaml` | 指定根目录下的真实或 mock 驱动配置 |
 | `coordinates_config_file` | `config/ros/realman_coordinates.yaml` | 指定 BASE/WORK/TOOL 坐标配置 |
 | `motion_config_file` | `config/ros/realman_motion.yaml` | 指定运动速度、加速度和 watchdog 限制 |
@@ -157,7 +159,7 @@ realman_bringup/system.launch.py
 | `realman_bringup_custom` | `.env` 参数化组合 | 可选 X11 | 按 `.env` 开关映射并启动 |
 | `realman_remote_rviz` | 只在本机显示远程 ROS 图 | 需要 X11 | 不启动驱动或手柄 |
 | `xbox_controller_test` | 独立手柄测试 | 不需要 X11 | 等待并读取 `${REALMAN_JOY_DEVICE:-auto}` |
-| `realman_driver_rviz` | 三臂真实关节回读与 RViz | 需要 X11 | 不启动手柄 |
+| `realman_driver_rviz` | 配置中机械臂的真实关节回读与 RViz，当前 `l/r` | 需要 X11 | 不启动手柄 |
 | `realman_driver_test` | 三臂 mock 驱动测试 | 不需要 X11 | 不访问真机 |
 
 完整本地启动：
@@ -469,7 +471,7 @@ ros2 run tf2_ros tf2_echo world m/world
 ros2 run tf2_ros tf2_echo world r/link_6
 ```
 
-预期能看到三组 namespaced 节点；`world -> m/world` 的 yaw 是 `pi`，`world -> r/link_6` 可连续查询。Xbox 的模拟 Joy 验证见 [Xbox 手柄输入](./xbox-controller#无设备验证)。
+预期能看到三组 namespaced 模型/TF 节点及左右两组真实驱动；`m` 没有真实关节反馈。`world -> m/world` 是布局静态变换，`world -> r/link_6` 可随真实关节状态连续查询。Xbox 的模拟 Joy 验证见 [Xbox 手柄输入](./xbox-controller#无设备验证)。
 
 ## 构建与验证
 
@@ -485,7 +487,6 @@ ros2 launch realman_bringup system.launch.py \
 
 ```bash
 ros2 topic echo /l/joint_states
-ros2 topic echo /m/joint_states
 ros2 topic echo /r/joint_states
 ros2 service call /r/status std_srvs/srv/Trigger '{}'
 ```
