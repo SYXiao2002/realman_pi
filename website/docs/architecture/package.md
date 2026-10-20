@@ -21,7 +21,7 @@ realman_pi/
 ├── src/
 │   ├── behavior/             realman_bt（执行器与 router）、realman_bt_mock
 │   ├── driver/               realman_robot_driver、realman_msgs、realman_web_control、xbox_controller_driver
-│   ├── gripper/              gripper_ros2、gripper_ros2_msgs（Changingtek 夹爪）
+│   ├── gripper/              gripper_ros2、gripper_ros2_msgs（左右 42D，保留可选 Changingtek 支持）
 │   ├── policy_bridge/        VLA 策略 WebSocket ⇄ ROS 2 协议桥
 │   ├── recording/            数据录制与回放：realman_recording、realman_recording_msgs
 │   ├── realman_bringup/      系统 launch 编排
@@ -47,7 +47,7 @@ realman_pi/
 | 包 | 语言 | 职责 | 主要入口 |
 | --- | --- | --- | --- |
 | `realman_msgs` | IDL | Action / Service / Msg：运动、坐标、输入模式、标定 | — |
-| `realman_robot_driver` | Python | 三臂连接、回读、运动协调、速度/位姿 session、坐标管理、IK、`controller_info` | `three_realman_drivers.launch.py`、`realman_driver_node` |
+| `realman_robot_driver` | Python | 按配置创建机械臂连接，生产为 `l/r`；回读、运动协调、速度/位姿 session、坐标管理、IK、`controller_info` | `three_realman_drivers.launch.py`、`realman_driver_node` |
 | `realman_web_control` | Python | 浏览器 ⇄ ROS 桥、URDF 影子、键盘 lease、标定页 | `web_control.launch.py`、`web_control_node` |
 | `realman_bt` | C++ / Python | 行为树执行器、输入模式、`keyboard_control_router`、`pika_control_router` | `control_router.launch.py`、`arm_move.launch.py` |
 | `realman_bt_mock` | Python | 无硬件 mock 图 | `behavior_tree_mock.launch.py` |
@@ -78,15 +78,15 @@ Compose 使用 host network 与 host IPC；`./config` 以只读方式挂到 `/op
 
 - 容器从 `.env` 读取 `ROS_DOMAIN_ID`、`ROS_LOCALHOST_ONLY`、`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`。host network 下，同网络的 Humble 主机可加入该 ROS 图；防火墙必须放行 DDS UDP。
 - 带 RViz 的服务额外挂载 `/tmp/.X11-unix` 与 `$XAUTHORITY`；`realman_bringup_remote`、`realman_web_control` 不需要显示变量。
-- `realman_bringup_remote` 额外映射 `/dev/realman/gripper_{right,left,mid}` 稳定别名，不要把易变的 `/dev/ttyUSB*` 写进生产配置。
+- `realman_bringup_remote` 只映射左右共用的 `/dev/tty_gripper_42d` 稳定别名；中臂无夹爪，不要把易变的 `/dev/ttyUSB*` 写进生产配置。
 - Bringup 设置 `RCUTILS_COLORIZED_OUTPUT=1` 和 `ROS_LOG_DIR`，每次运行在 `logs/YYYYMMDD_HHMMSS/` 保存官方节点日志。规范见 `ros2-logging-conventions` skill。
 
 ## 运行节点（描述与关节状态）
 
 ```text
-RealMan SDK ──▶ /l|m|r/realman_driver
+RealMan SDK ──▶ /l|r/realman_driver
                          │
-                         └── /l|m|r/joint_states ──▶ /l|m|r/robot_state_publisher
+                         └── /l|r/joint_states ──▶ /l|r/robot_state_publisher
                                                                │
                                              /tf + /tf_static  │
                                                                ▼
@@ -95,7 +95,7 @@ RealMan SDK ──▶ /l|m|r/realman_driver
 /l|m|r/robot_state_publisher ── /l|m|r/robot_description ──▶ rviz2
 ```
 
-`system.launch.py` 默认启动三台真实驱动，并让每个 namespaced `robot_state_publisher` 只订阅对应驱动的 `joint_states`；设置 `start_driver:=false` 才改用 `joint_state_publisher`（模型查看模式）。
+`system.launch.py` 根据 `realman_driver.yaml` 中实际存在的 `/l|m|r/realman_driver` 参数段创建真实驱动，当前生产仅启动 `l/r`。三组 `robot_state_publisher` 仍来自模型布局；`start_driver:=true` 时全部禁用假关节源，只有左右模型能收到对应驱动的 `joint_states`，中臂保留模型参考且无真实反馈。设置 `start_driver:=false` 才改用 `joint_state_publisher`（模型查看模式）。
 
 ## 描述包资源
 

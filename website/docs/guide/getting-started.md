@@ -8,7 +8,7 @@ description: 用 ./rm65 启动生产运行时、打开 Web 控制台，或在没
 本页按"你手上有什么"组织。先看[系统架构总览](../architecture/overview)了解各组件，再选一条路径：
 
 <Cards>
-<Card kicker="01" title="运行三臂真实系统" href="#启动生产运行时">相机 + 驱动 + Web 控制 + 数据录制，一条 ./rm65 up。</Card>
+<Card kicker="01" title="运行双臂生产系统" href="#启动生产运行时">左右机械臂、两只 42D、相机 + Web 控制 + 数据录制，一条 ./rm65 up。</Card>
 <Card kicker="02" title="键盘 / Pika / 策略控制" href="#启动行为树">先运行生产运行时，再启动行为树输入路由。</Card>
 <Card kicker="03" title="没有机器人" href="#离线模型与-mock">看三臂模型，或跑 mock 驱动。</Card>
 <Card kicker="04" title="查看相机画面" href="/guide/cameras">四路彩色画面与 RViz。</Card>
@@ -22,7 +22,7 @@ description: 用 ./rm65 启动生产运行时、打开 Web 控制台，或在没
 | --- | --- |
 | 操作系统 | Linux（生产为工控机）；仅查看模型时可用任意提供 X11/XWayland 的桌面 |
 | 容器运行时 | Docker Engine 与 Docker Compose v2 |
-| 机器人网络 | 工控机经工业交换机有线直连三台控制器：`l=192.168.30.123`、`m=192.168.30.125`、`r=192.168.30.124`，端口 `8080`（见 `config/ros/realman_driver.yaml`）。无线链路不能替代这一跳 |
+| 机器人网络 | 工控机经工业交换机有线直连左右两台控制器，地址和端口以 `config/ros/realman_driver.yaml` 为准；当前没有中间臂。无线链路不能替代这一跳 |
 | 相机 | 宿主机 USB（Orbbec Gemini 335L ×2、Gemini 305 ×2），宿主机安装 `orbbec_camera` 二进制 ROS 2 包，详见[相机](./cameras) |
 | 显示变量 | **只有**带 RViz 的服务需要 `DISPLAY` 和可读的 `XAUTHORITY`；`./rm65 up` 的默认生产模式不需要 |
 | 项目目录 | 在包含 `docker-compose.yml` 的仓库根目录执行命令 |
@@ -52,11 +52,13 @@ RViz，生产机不需要桌面：
 <Steps>
 
 1. **宿主机四路 Orbbec RGB + 两路 depth**——按串号分别执行 `ros2 launch orbbec_camera`，右腕与后全局相机由配置额外开启原始深度；所有启用流首帧确认失败则不启动 Docker。
-2. **`realman_bringup_remote`**——三臂真实驱动、TF、标定健康诊断、夹爪 manager。
+2. **`realman_bringup_remote`**——左右真实驱动、TF、标定健康诊断、左右 42D 的夹爪 manager。
 3. **`realman_web_control`**——`:8765` 控制页。
 4. **`realman_recording`**——数据录制与回放网页 `http://127.0.0.1:8770/`，见[独立数据录制平台](../development/recording-platform)。
 
 </Steps>
+
+生产驱动清单由 `config/ros/realman_driver.yaml` 决定：多臂 launch 只启动文件中存在的 `/l/realman_driver`、`/m/realman_driver`、`/r/realman_driver` section。当前只有 `l/r`，因此不创建中臂驱动，也不重连中臂。`three_robots.yaml` 的三臂布局仍用于通用模型和标定参考；录制订阅与预检独立由 `recording.yaml` 配置，当前同样只要求左右双臂和两只夹爪。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -78,7 +80,7 @@ docker compose exec realman_bringup_remote bash -lc '
 '
 ```
 
-`/l|m|r/status` 报告连接和 `last_error`；`/l|m|r/connected` 只表示连接生命周期。比对两台控制器配置时用 `/l/controller_info` 与 `/r/controller_info`（只读）。ROS domain 来自 `.env`，笔记本上的调试终端必须使用相同的值。
+`/l|r/status` 报告连接和 `last_error`；`/l|r/connected` 只表示连接生命周期。比对两台控制器配置时用 `/l/controller_info` 与 `/r/controller_info`（只读）。ROS domain 来自 `.env`，笔记本上的调试终端必须使用相同的值。
 
 ::: warning 行为树默认不运行
 `./rm65 up` 只拥有长期的 driver 和 Web 服务，不启动行为树。键盘、Pika、策略输入需要另行[启动行为树](#启动行为树)，并且默认处于 dry-run。
@@ -102,7 +104,7 @@ docker compose ps realman_web_control
 http://<industrial-host>:8765/
 ```
 
-页面会显示三臂连接状态、当前坐标面板、实时关节角和 URDF，并按当前激活参考系直接发
+页面保留三臂布局参考；当前真实控制只选择 `L/R`，`M` 没有驱动，显示离线不属于生产故障。左右臂的连接状态、当前坐标面板、实时关节角和 URDF 按驱动反馈更新，并按当前激活参考系直接发
 `MOVEJ`、`MOVEL`、`MOVEP` 或速度 Action，不再需要 token 输入。也可以使用 Zsh 快捷函数：
 
 ```zsh
@@ -362,10 +364,10 @@ docker compose config --quiet
 | 函数 | 启动内容 |
 | --- | --- |
 | `rm65_docker_bringup_model` | 三臂描述、TF 和 RViz；不连接真机 |
-| `rm65_docker_bringup_hardware` | 三台真实驱动和 RViz；不启动输入 |
-| `rm65_docker_bringup_headless` | 三台真实驱动和 Xbox 处理；无 GUI |
+| `rm65_docker_bringup_hardware` | 配置中的真实驱动（当前 `l/r`）和 RViz；不启动输入 |
+| `rm65_docker_bringup_headless` | 配置中的真实驱动（当前 `l/r`）和 Xbox 处理；无 GUI |
 | `rm65_docker_bringup_input` | 只测试 Joy/Xbox 输入，并等待设备出现 |
-| `rm65_docker_bringup_web` | 三台真实驱动和 Web 控制；不启动 RViz |
+| `rm65_docker_bringup_web` | 配置中的真实驱动（当前 `l/r`）和 Web 控制；不启动 RViz |
 
 需要后台运行或查看日志时，使用：
 

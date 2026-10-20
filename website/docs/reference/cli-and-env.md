@@ -12,7 +12,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | 命令 | 作用 |
 | --- | --- |
 | `./rm65 build [service ...]` | 默认重建 `realman_bringup_remote` 与 `realman_web_control`，可指定如 `rm65_rviz`；使用 Bake 显式授权 `network.host` 并载入本机镜像，不改变容器状态 |
-| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 三臂真实驱动 + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
+| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 左右真实驱动和两只 42D + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
@@ -24,6 +24,8 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `./rm65 camera` | 旧 RTSP/TCP 相机助手（已弃用，与 ROS 2 相机互斥） |
 
 `./rm65 up` 在 `realman_driver_rviz` 仍运行时拒绝启动：两个服务都会连真机，会让同一 namespace 出现重复驱动和多个 `cartesian_velocity` Action server。`./rm65 up` 的内置 usage 文本目前没有列出 `policy`，以本表为准。
+
+生产多臂驱动只启动 `config/ros/realman_driver.yaml` 中存在的完整节点 section，当前是 `/l/realman_driver`、`/r/realman_driver`；省略 `/m/realman_driver` 即不启动中臂。通用三臂布局、mock 和 `bt m|three` 入口仍保留，涉及中臂的真实任务需要相应硬件与配置，不能直接用于当前双臂部署。
 
 相机串号、彩色/深度分辨率与帧率、逐机 `enable_depth` 由 `config/ros/cameras_ros2.yaml` 和可选本地覆盖决定，见[相机指南](../guide/cameras)。修改后先执行 `bash start_sensors.sh stop` 再 `./rm65 up`；重复 `up` 复用当前相机进程，不会热更新配置。专项入口 `rm65_camera_ros2 color` 使用同一配置；显式 `depth` 切换为全部已启用设备的 depth-only 模式。
 
@@ -59,7 +61,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `REALMAN_START_ROBOTS` `START_DRIVER` `START_JOY_DRIVER` `START_CONTROLLER` `START_WEB_CONTROL` | `realman_bringup_custom` 透传给 `system.launch.py` 的开关 |
 | `REALMAN_USE_RVIZ` / `REALMAN_USE_GUI` | RViz 与关节状态 GUI |
 | `REALMAN_DRIVER_CONFIG_FILE` `COORDINATES_` `MOTION_` `WEB_CONTROL_` `CAMERA_CALIBRATION_` `…_CONFIG_FILE` | 覆盖对应 YAML 的**容器内路径**；`*mock.yaml` 会让 `./rm65` 自动关闭夹爪 |
-| `REALMAN_START_GRIPPER`、`REALMAN_GRIPPER_{RIGHT,LEFT,MID}_DEVICE` | 夹爪 manager 开关与宿主设备路径（默认 `/dev/realman/gripper_*`） |
+| `REALMAN_START_GRIPPER`、`REALMAN_GRIPPER_42D_DEVICE` | manager 开关；左右共享宿主设备（默认 `/dev/tty_gripper_42d`），容器内只映射一次；中臂无夹爪 |
 | `REALMAN_JOY_DEVICE`、`REALMAN_WAIT_FOR_JOY_DEVICE`、`REALMAN_JOY_POLL_INTERVAL` | Xbox 手柄设备与等待策略 |
 | `REALMAN_RECORDING_ROOT`、`REALMAN_START_RECORDING_WEB` | 录制 session 根目录（容器内默认 `/data/realman-recordings`，宿主挂载仓库 `recordings/`）与是否启动回放网页（默认 `true`） |
 | `PIP_INDEX_URL`、`PYTORCH_INDEX_URL`、`HTTP_PROXY`、`HTTPS_PROXY` | 构建镜像时 pip 阶段的包源（默认国内镜像，见[系统 Bringup：国内镜像](../development/system-bringup#国内镜像与官方源切换)）与代理；构建使用宿主网络（`network: host`），因为生产机的 systemd-resolved DNS 在桥接网络里不可达 |

@@ -5,7 +5,7 @@ description: 在笔记本或桌面机上显示生产机的 ROS 图：RViz-only �
 
 # 远程 RViz
 
-真实机械臂驱动运行在连接工业交换机的工控机上（`realman_bringup_remote`，headless、自动重启）。需要图形界面时，让桌面机只运行 RViz-only 的 `realman_remote_rviz`，并使用**同一个** `ROS_DOMAIN_ID`。桌面机**不能**使用 `realman_driver_rviz` 去直接连接 `192.168.30.x` 控制器——那会产生重复驱动。
+真实机械臂驱动运行在连接工业交换机的工控机上（`realman_bringup_remote`，headless、自动重启）。当前生产为 `l/r` 两台真实驱动，`m` 仅保留模型参考。需要图形界面时，让桌面机只运行 RViz-only 的 `realman_remote_rviz`，并使用**同一个** `ROS_DOMAIN_ID`。桌面机**不能**使用 `realman_driver_rviz` 去直接连接控制器——那会产生重复驱动。
 
 ## 在本机显示远程机械臂
 
@@ -53,7 +53,7 @@ rm65_docker_remote_rviz_stop
 
 下面的函数只在有图形桌面的笔记本上运行。真实机械臂驱动仍应在连接工业交换机的工控机上
 运行 `realman_bringup_remote`；笔记本不能使用 `realman_driver_rviz` 去直接连接
-`192.168.30.x` 控制器。所有函数的可选 `domain` 参数必须与工控机一致，取值范围是 `0` 到
+`realman_driver.yaml` 中的真实控制器。所有函数的可选 `domain` 参数必须与工控机一致，取值范围是 `0` 到
 `232`；省略时使用当前环境或 `.env` 中的 `ROS_DOMAIN_ID`。
 
 | 函数 | 使用方式 | 生命周期和适用场景 |
@@ -83,6 +83,6 @@ rm65_docker_remote_rviz_status
 | 现象 | 检查方向 |
 | --- | --- |
 | `no readable Xauthority file` | 从当前图形桌面终端加载 `functions.zsh`，确认 `DISPLAY` 和 `XAUTHORITY` 指向当前会话。 |
-| RViz 窗口出现但没有 `/l`、`/m`、`/r` 数据 | 工控机和笔记本的 `ROS_DOMAIN_ID` 是否相同，且两端 `ROS_LOCALHOST_ONLY=0`、DDS UDP/组播未被防火墙阻断。 |
+| RViz 窗口出现但没有 `/l`、`/r` 数据 | 工控机和笔记本的 `ROS_DOMAIN_ID` 是否相同，且两端 `ROS_LOCALHOST_ONLY=0`、DDS UDP/组播未被防火墙阻断；当前 `m` 没有真实关节反馈。 |
 | `socket connect err` 或 `invalid robot handle` 出现在笔记本 | 误用了 `realman_driver_rviz`；笔记本应使用 `realman_remote_rviz`，SDK 连接只在工控机完成。 |
 | `permission denied while trying to connect to the Docker API` | 当前用户没有 Docker socket 权限；先修复 Docker 用户组或使用有权限的终端，再重试函数。 |

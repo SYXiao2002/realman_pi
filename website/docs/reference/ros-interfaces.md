@@ -7,7 +7,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 
 本页是**速查表**：每一行只回答"接口叫什么、类型是什么、谁拥有它"，字段语义、单位、安全约束和失败方式见链接的专题页。接口以代码为准；新增或修改接口时，同一次提交必须更新本页和对应专题页。
 
-约定：`<arm>` 为 `l`、`m`、`r`（左/中/右）；Action、Service、Topic 全部带该 namespace。`msg`/`srv`/`action` 类型来自 [`src/driver/realman_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/driver/realman_msgs) 和 [`src/gripper/gripper_ros2_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/gripper/gripper_ros2_msgs)。
+约定：通用 `<arm>` 支持 `l`、`m`、`r`（左/中/右），当前生产只启用 `l/r`；`m` 保留为模型/标定参考，没有真实驱动接口。Action、Service、Topic 全部带该 namespace。驱动实例由 `realman_driver.yaml` 中存在的完整节点 section 决定。`msg`/`srv`/`action` 类型来自 [`src/driver/realman_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/driver/realman_msgs) 和 [`src/gripper/gripper_ros2_msgs/`](https://github.com/QingTianRobot/realman_pi/tree/main/src/gripper/gripper_ros2_msgs)。
 
 ## 机械臂驱动 `/<arm>/realman_driver`
 
@@ -57,18 +57,18 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 
 ## 夹爪 `gripper_manager`
 
-拥有者：`gripper_ros2`，独占串口。契约：[Changingtek 夹爪控制](../development/gripper-control)。`<name>` 为 `gripper_right`、`gripper_left`、`gripper_mid`。
+拥有者：`gripper_ros2`，独占串口。契约：[夹爪控制](../development/gripper-control)。生产配置的 `<name>` 为 `gripper_left`、`gripper_right`，左右共用 42D 总线；中臂无夹爪、无对应接口。
 
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
-| `/<name>/open` `close` `reset` `grasp_check` `calibrate` | `std_srvs/Trigger` | 同步动作 |
-| `/<name>/enable` | `std_srvs/SetBool` | 使能 / 失能 |
+| `/<name>/open` `close` `reset` `grasp_check` `calibrate` | `std_srvs/Trigger` | 同步动作；42D 不支持 reset/calibrate/grasp_check，返回失败 |
+| `/<name>/enable` | `std_srvs/SetBool` | 42D 为串口模式准备 / 软件命令门控，失能不表示硬件停止 |
 | `/<name>/percentage` | `gripper_ros2_msgs/GripperPercentage` | 一次性同步目标（`0..1`） |
-| `/<name>/percentage/command` | `std_msgs/Float32`（订阅） | 非阻塞连续目标；流式触发被限制为 4 Hz |
+| `/<name>/percentage/command` | `std_msgs/Float32`（订阅） | 非阻塞目标；左右 42D 按阈值/回差转为开闭并去重 |
 | `/<name>/set_limits` | `gripper_ros2_msgs/SetGripperLimits` | 校验、保存并立即应用开位/闭位（写入 `gripper_overrides.yaml`） |
-| `/<name>/move_raw` | `gripper_ros2_msgs/MoveGripperRaw` | 点动到 `min..max` 内的原始位置，越界拒绝 |
+| `/<name>/move_raw` | `gripper_ros2_msgs/MoveGripperRaw` | `min..max` 内的原始目标，越界拒绝；42D 仍转为开/闭 |
 | `/<name>/limits` | `gripper_ros2_msgs/GripperLimits`（发布） | 当前生效的开/闭位与 `min/max`；reliable + transient-local；Web 与策略桥订阅它 |
-| `/<name>/position` `speed` `current` `torque_reached` `alarm` `connected` | `Float64` / `Int32` / `Int32` / `Bool` / `Int32` / `Bool` | 反馈；只有 `connected=true` 才表示 Modbus 反馈在成功 |
+| `/<name>/position` `speed` `current` `torque_reached` `alarm` `connected` | `Float64` / `Int32` / `Int32` / `Bool` / `Int32` / `Bool` | 每设备反馈；42D position 为状态合成端点，speed/current/alarm 为 0、torque_reached 为 false 占位；connected 表示该地址状态读取成功 |
 
 ## Web 控制 `realman_web_control`
 

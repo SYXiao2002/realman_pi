@@ -43,6 +43,12 @@ docker buildx bake -f docker-compose.yml --allow network.host --load rm65_rviz
 
 ## 机械臂与运动
 
+### 8765 页面能打开，但机械臂和夹爪都无法控制
+
+页面由独立的 `realman_web_control` 容器提供，能打开页面或显示 `CONTROL READY` 只说明 Web 连接允许写入，不代表机械臂 Action 和夹爪服务已就绪。先用 `docker compose ps -a` 与 `docker compose logs --tail=100 realman_bringup_remote` 确认硬件容器实际运行，再检查 `/l/status`、`/r/status` 和左右夹爪的 `connected`。若容器因缺失串口设备而启动失败，机械臂与夹爪接口会一起缺失；当前部署只应映射左右共用的 `/dev/tty_gripper_42d`，不要求中臂夹爪设备。
+
+当前生产只有 `l/r` 真实机械臂，页面的 `M` 槽位离线、没有 `/m/realman_driver` 或 `/m/joint_states` 属于预期。机械臂一次性运动还需选中已连接的 `L/R`；键盘入口另需输入路由器和 `ACTIVE/keyboard` 模式，见下文。
+
 ### 某只臂 `connected=false` 或没有 `joint_states`
 
 1. 调 `/<arm>/status`，看 `last_error`；`connected` 只表示连接生命周期。
@@ -102,7 +108,9 @@ ros2 service call /l/coordinates/select_work realman_msgs/srv/SelectFrame "{name
 
 ### 夹爪不动或显示离线
 
-`gripper_manager` 独占串口。串口 `connect()` 成功只表示文件已打开，只有 `/<name>/connected=true` 才表示 Modbus 反馈在成功。依次检查：宿主机别名 `/dev/realman/gripper_{right,left,mid}` 存在 → 容器内同名路径存在 → `ros2 topic echo /gripper_right/connected` → 无 `alarm`。告警可能锁存（如掉电位 `0x20` 在恢复供电后仍保持），键盘和 Web 控制会拒绝 `alarm != 0` 的夹爪，需要对该夹爪执行一次 `reset`；告警位含义见[生产运维手册](./development/production-operations#夹爪)。连续目标被限制为 `4 Hz`（实测 20 Hz 触发夹爪不动），所以高频目标不会更快。详见[夹爪控制](./development/gripper-control)。
+`gripper_manager` 独占串口。串口 `connect()` 成功只表示文件已打开，`/<name>/connected=true` 才表示设备状态读取成功。依次检查宿主和容器内 `/dev/tty_gripper_42d` 存在，再分别读取左右的 `connected`；中臂无夹爪。左右 42D 共享端口，左地址 `1`、右地址 `2`；百分比和原始位置会转换为全开／全闭，相同端点不重复下发，高频中间值不会产生连续位置。
+
+42D 的位置是合成端点，`speed/current/alarm=0`、`torque_reached=false` 为兼容占位，不能证明真实静止、无故障或是否夹到物体；`reset`、`calibrate`、`grasp_check` 不支持。网页“行程设置”通过 `limits` 实时同步，手工改 YAML 则需重启 manager 与 Web。详见[夹爪控制](./development/gripper-control)。
 
 ## 相机
 

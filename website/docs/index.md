@@ -5,7 +5,7 @@ aside: false
 footer: false
 pageClass: rm-home-page
 title: RealMan RM65 ROS 2
-description: 三台 RealMan RM65 机械臂的 ROS 2 Humble 控制平台：驱动、遥操作、行为树、夹爪、相机标定与策略桥接。
+description: RealMan RM65 多臂 ROS 2 Humble 控制平台：当前生产为左右双臂与两只 42D 夹爪，集成遥操作、行为树、相机标定与策略桥接。
 ---
 
 <script setup>
@@ -19,9 +19,9 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
     <RobotViewer />
     <div class="rm-hero-inner">
       <div class="hero-copy">
-        <p class="hero-kicker">ROS 2 Humble / 三臂控制平台</p>
+        <p class="hero-kicker">ROS 2 Humble / 多臂控制平台</p>
         <h1>RealMan RM65</h1>
-        <p class="hero-lead">三台 RM65 机械臂的驱动、键盘 / Pika / 策略遥操作、行为树编排、夹爪、相机标定，运行在同一个可复现的 Docker 环境里。右侧场景由 <code>config/ros/three_robots.yaml</code> 实时构建。</p>
+        <p class="hero-lead">左右两台 RM65 与两只 42D 夹爪，集成键盘 / Pika / 策略遥操作、行为树编排和相机标定，运行在同一个可复现的 Docker 环境里。右侧三臂模型由 <code>config/ros/three_robots.yaml</code> 构建，中臂保留为显示与标定参考。</p>
         <div class="hero-actions">
           <a class="rm-action primary" :href="withBase('/guide/getting-started')">快速开始</a>
           <a class="rm-action" :href="withBase('/architecture/overview')">系统架构</a>
@@ -32,8 +32,8 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
 
   <section class="signal-band" aria-label="项目状态">
     <div class="signal-inner">
-      <div class="signal-item"><span class="signal-value">3</span><span class="signal-label">机械臂数量</span></div>
-      <div class="signal-item"><span class="signal-value">l / m / r</span><span class="signal-label">命名空间</span></div>
+      <div class="signal-item"><span class="signal-value">2</span><span class="signal-label">生产机械臂</span></div>
+      <div class="signal-item"><span class="signal-value">l / r</span><span class="signal-label">生产命名空间</span></div>
       <div class="signal-item"><span class="signal-value">7</span><span class="signal-label">输入模式</span></div>
     </div>
   </section>
@@ -48,10 +48,10 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
         <p>每一项都有独立的契约页面：接口、配置来源、安全边界和验证方式。</p>
       </div>
       <div class="model-grid">
-        <article class="model-item featured"><h3>驱动与运动</h3><p>三臂 SDK 驱动、可取消的 MoveJ/MoveL、连续轨迹、笛卡尔速度与位姿 session；每臂唯一运动 owner、watchdog 和坐标 motion gate。</p><a class="section-link" :href="withBase('/development/realman-driver-scaffold')">驱动与运动控制 →</a></article>
+        <article class="model-item featured"><h3>驱动与运动</h3><p>按配置启用多臂 SDK 驱动，生产为左右双臂；可取消的 MoveJ/MoveL、连续轨迹、笛卡尔速度与位姿 session，每臂唯一运动 owner、watchdog 和坐标 motion gate。</p><a class="section-link" :href="withBase('/development/realman-driver-scaffold')">驱动与运动控制 →</a></article>
         <article class="model-item"><h3>遥操作输入</h3><p>Web 键盘、Pika 位置 / 速度 / Mixed、Xbox 手柄；统一由输入模式路由选择控制权。</p><a class="section-link" :href="withBase('/development/pika-teleop')">Pika 遥操作 →</a></article>
         <article class="model-item"><h3>行为树编排</h3><p>常驻输入路由器与分阶段 MoveJ 任务树，只读运行监视器，终态归档。</p><a class="section-link" :href="withBase('/development/behavior-tree-control')">行为树控制权 →</a></article>
-        <article class="model-item"><h3>夹爪</h3><p>Changingtek Modbus RTU 多串口并行驱动，键盘与 Pika 连续目标。</p><a class="section-link" :href="withBase('/development/gripper-control')">夹爪控制 →</a></article>
+        <article class="model-item"><h3>夹爪</h3><p>左右两个 42D 共用串口，百分比适配开闭；中臂不装夹爪。</p><a class="section-link" :href="withBase('/development/gripper-control')">夹爪控制 →</a></article>
         <article class="model-item"><h3>相机与标定</h3><p>两路 Orbbec 腕部相机 + 两路 Orbbec 全局相机，ChArUco 手眼标定与相对位姿求解。</p><a class="section-link" :href="withBase('/development/camera-calibration')">手眼标定 →</a></article>
         <article class="model-item"><h3>VLA 策略桥</h3><p>OpenPI WebSocket 与 ROS 2 的纯协议转换，滚动时域与模式门控。</p><a class="section-link" :href="withBase('/development/policy-bridge')">策略桥接 →</a></article>
       </div>
@@ -84,7 +84,7 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
           <p class="section-kicker">Transform graph</p>
           <h2>三臂场景与以 world 为根的 TF</h2>
         </div>
-        <p>布局来自标定结果 <code>config/ros/three_robots.yaml</code>；静态变换把三台机械臂接入同一个 <code>world</code>，每条分支再由六个旋转关节延伸到对应的 <code>link_6</code>。</p>
+        <p>模型布局来自标定结果 <code>config/ros/three_robots.yaml</code>；三条模型分支接入同一个 <code>world</code>，中臂保留为参考。生产真实关节状态来自左右双臂驱动。</p>
       </div>
       <TfExplorer />
       <a class="section-link" :href="withBase('/architecture/tf-tree')">查看 TF 细节 →</a>
@@ -94,7 +94,7 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
 
   <section class="rm-final">
     <div class="section-inner">
-      <div><h2>在工控机上执行 ./rm65 up</h2><p>一条命令启动 ROS 2 相机、三臂驱动和 Web 控制台；行为树与遥操作输入按需另行启动，默认 dry-run。</p></div>
+      <div><h2>在工控机上执行 ./rm65 up</h2><p>一条命令启动 ROS 2 相机、左右双臂驱动、两只夹爪和 Web 控制台；行为树与遥操作输入按需另行启动，默认 dry-run。</p></div>
       <a class="rm-action" :href="withBase('/guide/getting-started')">查看启动步骤</a>
     </div>
   </section>

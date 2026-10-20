@@ -1,11 +1,11 @@
 # realman_pi
 
-ROS 2 Humble 控制平台，面向三台 RealMan RM65 机械臂（左 `l`、中 `m`、右 `r`）：
+ROS 2 Humble 控制平台，支持 RealMan RM65 多臂控制。当前生产只连接左 `l`、右 `r` 两台机械臂；中 `m` 保留为通用三臂模型与标定参考，不启动真实驱动：
 
-- **驱动与运动**：RealMan Python SDK 三臂驱动，可取消的 MoveJ / MoveL / 连续轨迹，笛卡尔速度与位姿 session，坐标 motion gate，断线原地重连。
+- **驱动与运动**：RealMan Python SDK 多臂驱动，按配置启用当前左右双臂；可取消的 MoveJ / MoveL / 连续轨迹，笛卡尔速度与位姿 session，坐标 motion gate，断线原地重连。
 - **遥操作**：Web 键盘、Pika 手持设备（位置 / 速度 / Mixed）、Xbox 手柄，由行为树输入模式统一选择控制权。
 - **行为树**：常驻输入路由器、分阶段 MoveJ 任务树、只读运行监视器。
-- **末端与感知**：Changingtek 夹爪（Modbus RTU）、三路 Orbbec 腕部相机 + RealSense D435、ChArUco 手眼标定。
+- **末端与感知**：左右两个 42D 开合夹爪共用串口；两路 Orbbec 腕部相机 + 两路 Orbbec 全局相机、ChArUco 手眼标定。
 - **策略**：OpenPI WebSocket ⇄ ROS 2 的 VLA 策略桥。
 - **数据**：只订阅驱动输出的录制平台（MCAP/JPEG、预检、LeRobot v3 导出）和 Web 回放整理页。
 - **底座**：RM65 URDF、三臂 TF 与 RViz 2；Web 控制台带 URDF 影子。
@@ -26,11 +26,11 @@ ROS 2 Humble 控制平台，面向三台 RealMan RM65 机械臂（左 `l`、中 
 
 ## 快速开始
 
-在连接三台控制器（`192.168.30.123/125/124`，端口 `8080`）的工控机上，从仓库根目录：
+在连接左右两台控制器的工控机上，从仓库根目录执行。地址和端口以 `config/ros/realman_driver.yaml` 为准；多臂 launch 只启动该文件中存在的驱动 section，当前省略中臂：
 
 ```bash
 ./rm65 build          # 首次或代码更新后：重建驱动与 Web 控制镜像
-./rm65 up             # ROS 2 彩色相机 + 三臂驱动 + Web 控制台（:8765）+ 数据录制/回放（:8770），默认无 RViz
+./rm65 up             # ROS 2 彩色相机 + 左右双臂驱动 + Web 控制台（:8765）+ 数据录制/回放（:8770），默认无 RViz
 ./rm65 status         # 查看相机与服务状态
 ./rm65 logs
 ./rm65 down

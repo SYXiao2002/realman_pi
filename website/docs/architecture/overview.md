@@ -5,9 +5,9 @@ description: realman_pi 的运行拓扑、控制权所有权、数据流和各�
 
 # 系统架构总览
 
-realman_pi 是一套面向**三台 RealMan RM65 机械臂**（左 `l`、中 `m`、右 `r`）的 ROS 2 Humble 控制平台。它把硬件驱动、坐标与安全、多种人机输入（Web、键盘、Pika 手持设备、VLA 策略）、夹爪、相机与标定，以及行为树编排组合成同一套生产系统；机械臂与服务运行于 Docker，相机 ROS 2 驱动运行于连接 USB 的宿主机。机器人描述（URDF、TF、RViz）是它的底座，不是它的主题。
+realman_pi 是一套 RealMan RM65 多臂 ROS 2 Humble 控制平台，当前生产硬件为**左 `l`、右 `r` 两台机械臂及两只 42D 夹爪**。通用模型布局保留中间 `m` 作为显示与标定参考，当前不启动中臂真实驱动。平台把硬件驱动、坐标与安全、多种人机输入（Web、键盘、Pika 手持设备、VLA 策略）、夹爪、相机与标定，以及行为树编排组合成同一套生产系统；机械臂与服务运行于 Docker，相机 ROS 2 驱动运行于连接 USB 的宿主机。
 
-<Glance :items="[{ label: '机械臂', value: 'l / m / r' }, { label: '运行环境', value: 'ROS 2 Humble · Docker' }, { label: '生产入口', value: './rm65 up' }, { label: '默认安全态', value: 'dry-run' }]" />
+<Glance :items="[{ label: '生产机械臂', value: 'l / r' }, { label: '运行环境', value: 'ROS 2 Humble · Docker' }, { label: '生产入口', value: './rm65 up' }, { label: '默认安全态', value: 'dry-run' }]" />
 
 ## 系统一览
 
@@ -28,19 +28,19 @@ flowchart TB
   BT -->|"percentage/command"| GM
   CAM["宿主机 rm65_camera_ros2<br/>Orbbec RGB ×4"] -->|"/camera_*/color/*"| CAL
   subgraph REMOTE["Docker：realman_bringup_remote（常驻）"]
-    DRV["/l /m /r realman_driver"]
+    DRV["/l /r realman_driver"]
     GM["gripper_manager"]
     CAL["camera_calibration"]
     TF["robot_state_publisher ×3"]
   end
-  DRV -->|"RealMan SDK"| ARM[("三台控制器 192.168.30.x:8080")]
-  GM -->|"Modbus RTU"| GRIP[("Changingtek 夹爪")]
+  DRV -->|"RealMan SDK"| ARM[("左右两台控制器<br/>地址见 realman_driver.yaml")]
+  GM -->|"Modbus RTU"| GRIP[("左右两个 42D 共用串口<br/>中臂无夹爪")]
   DRV -->|"joint_states"| TF
   DRV -.->|"只读订阅"| REC
   CAM -.->|"图像"| REC
 ```
 
-生产入口只有一个：`./rm65 up`（宿主机相机 → Docker 服务），行为树按需另行 `./rm65 bt control`。详见 [CLI 与环境变量](../reference/cli-and-env)。
+生产入口只有一个：`./rm65 up`（宿主机相机 → Docker 服务），行为树按需另行 `./rm65 bt control`。真实驱动只为 `realman_driver.yaml` 中存在的 `/l|m|r/realman_driver` 参数段创建节点；当前配置只有 `l/r`，三组模型与 TF 不代表有三台真实控制器。详见 [CLI 与环境变量](../reference/cli-and-env)。
 
 ## 分层与所有权
 
@@ -106,13 +106,13 @@ sequenceDiagram
 
 | 路径 | 角色 | 开发者页面 |
 | --- | --- | --- |
-| `src/driver/realman_robot_driver` | 三臂驱动：SDK 适配、运动协调、速度/位姿 session、坐标管理、IK | [驱动与运动控制](../development/realman-driver-scaffold)、[Action 开发](../development/realman-action-development) |
+| `src/driver/realman_robot_driver` | 多臂驱动：SDK 适配、运动协调、速度/位姿 session、坐标管理、IK；生产启用 `l/r` | [驱动与运动控制](../development/realman-driver-scaffold)、[Action 开发](../development/realman-action-development) |
 | `src/driver/realman_msgs` | 对外 IDL：Action / Service / Msg | [接口总表](../reference/ros-interfaces) |
 | `src/driver/realman_web_control` | 浏览器 ⇄ ROS 桥与前端 | [Web 控制](../development/realman-web-control) |
 | `src/driver/xbox_controller_driver` | Xbox 按键边沿 | [Xbox 手柄](../development/xbox-controller) |
 | `src/behavior/realman_bt` | 行为树执行器、输入模式、键盘/Pika router | [行为树控制权](../development/behavior-tree-control)、[Pika](../development/pika-teleop)、[行为树 Demo](../development/behavior-tree-motion) |
 | `src/behavior/realman_bt_mock` | 无硬件 mock 图，用于测试行为树 | [测试与验证](../development/testing) |
-| `src/gripper/gripper_ros2` `gripper_ros2_msgs` | Changingtek 夹爪（Modbus RTU / RS-485） | [夹爪控制](../development/gripper-control) |
+| `src/gripper/gripper_ros2` `gripper_ros2_msgs` | 左右 42D 二值适配（Modbus RTU / RS-485）；可选 Changingtek 驱动 | [夹爪控制](../development/gripper-control) |
 | `src/recording/realman_recording`、`realman_recording_msgs` | **只订阅**驱动与夹爪输出的数据录制：MCAP/JPEG 录制、预检、LeRobot v3 导出、Web 回放与整理 | [独立数据录制平台](../development/recording-platform) |
 | `src/policy_bridge` | VLA 策略 WebSocket ⇄ ROS 2 纯协议桥 | [策略桥接](../development/policy-bridge) |
 | `src/sensor/realman_camera_calibration` | ChArUco 手眼标定节点 | [手眼标定](../development/camera-calibration) |

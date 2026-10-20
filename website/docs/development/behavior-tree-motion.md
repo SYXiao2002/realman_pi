@@ -333,7 +333,7 @@ python3 docker/bt_runtime_result.py logs/behavior-trees/<run-id>/runtime.json
 
     REALMAN_BT_DRY_RUN=false ./rm65 bt r
 
-三臂真实运动命令为：
+以下命令用于已配置并连接完整三臂硬件的部署；当前生产只有 `l/r`，不适用 `m` 或 `three` 真机示例：
 
     REALMAN_BT_DRY_RUN=false ./rm65 bt three
 

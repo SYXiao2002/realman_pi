@@ -62,7 +62,7 @@ flowchart LR
 同一 launch 还启动 `pika_control_router`。它接收 executor 的 active mode，并只为 l/r 管理 Pika
 Action session，同时将夹爪百分比转发到 `/gripper_left/percentage/command` 和
 `/gripper_right/percentage/command`。只有 `pikaposition`、`pikavelocity` 或 `pikamixed` 处于 `ACTIVE` 时才转发；
-其它模式会丢弃输入，不自动开合。夹爪 command topic 是非阻塞的连续控制路径，`dry_run=true`
+其它模式会丢弃输入，不自动开合。夹爪 command topic 保留非阻塞百分比入口；左右 42D 由适配器按阈值和回差转换为开闭动作，重复端点不重发。`dry_run=true`
 （默认）时不发送机器人 Action 或夹爪 command。需要真实 Pika 运动时必须显式设置
 `REALMAN_BT_DRY_RUN=false`，并完成低速、急停和工作区检查。
 
@@ -295,5 +295,5 @@ Pika 主机和生产机之间**没有共同的有线网段**，唯一共用的�
 
 - [行为树控制权与 Mock 测试](./behavior-tree-control)：输入模式目录、`control.xml`、模式切换与 Web override。
 - [睿尔曼 Action 开发与测试](./realman-action-development)：`CartesianVelocity` / `CartesianPose` 的 driver 侧契约。
-- [Changingtek 夹爪控制](./gripper-control)：夹爪 command 的 4 Hz 流式限速与健康门控。
+- [夹爪控制](./gripper-control)：42D 的百分比二值适配、共享串口与健康门控。
 - [故障排查](../troubleshooting)：Pika 无响应、session 反复重开、坐标不匹配。

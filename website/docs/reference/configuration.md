@@ -13,20 +13,20 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 
 | 文件 | 管什么 | 消费者 | 专题页 |
 | --- | --- | --- | --- |
-| `realman_driver.yaml` | 三臂控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期 | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
+| `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂 | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_driver_mock.yaml` | 离线 mock 驱动（TEST-NET 地址，永不连接真机） | `realman_driver_test` 服务 | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_coordinates.yaml` | 每臂工具/工作坐标的**期望状态**（`tcpgrip`、`cell`、`pikabase`），启动时校验并自动修复失配 | 驱动 `CoordinateManager`、BT、Web | [Action 开发与测试](../development/realman-action-development) |
 | `realman_motion.yaml` | 每臂运动限值：普通会话 `max_*`、Pika 专用 `hard_max_*`、控制周期、watchdog、`pose_max_joint_speed_dps` | 驱动、Web、键盘/Pika router | [驱动与运动控制](../development/realman-driver-scaffold#参数) |
 | `keyboard_control.yaml` | 键位、心跳/超时、速度比例（`linear_speed_fraction`）、键盘夹爪键 | `realman_web_control`、`keyboard_control_router` | [行为树控制权](../development/behavior-tree-control) |
 | `pika_config.yaml` | Pika 入场姿态 `pika_default_pose`、`pika_velocity`、`pika_mixed` | `pika_control_router`、`control_router.launch.py` | [Pika 遥操作](../development/pika-teleop) |
 | `behavior_tree.yaml` | 持久输入路由器参数（tick 频率、切换超时、安全回退模式） | `realman_bt_executor` | [行为树控制权](../development/behavior-tree-control) |
-| `gripper.yaml` | 夹爪串口拓扑（稳定别名）、行程、速度/力、流式限速 | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
+| `gripper.yaml` | 左右两个 42D 共用串口、地址、二值阈值/回差与兼容坐标；中臂无夹爪 | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
 | `realman_web_control.yaml` | Web 服务监听地址/端口、允许来源、客户端数、模式发现与 override 超时 | `realman_web_control` | [Web 控制](../development/realman-web-control) |
-| `three_robots.yaml` | 三臂在 `world` 中的位姿与型号（**标定结果**） | 描述包、RViz、网站 3D 预览 | [三臂可视化](../development/three-arm-visualization) |
-| `end_effectors.yaml` | 末端夹爪定义（AG2F90-C）与每臂安装位姿；被文档站三维场景和 `:8765` Web 控制页读取（后者随夹爪位置反馈实时开合），RViz/驱动 TF 尚未包含 | `website/scripts/sync-three-robots.mjs`、`model_manifest.py` | [夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型) |
+| `three_robots.yaml` | 通用三臂在 `world` 中的位姿与型号（**标定结果**）；保留中臂模型参考，不决定实际启用的驱动 | 描述包、RViz、网站 3D 预览 | [三臂可视化](../development/three-arm-visualization) |
+| `end_effectors.yaml` | 左右末端显示模型（AG2F90-C 占位）与安装位姿，中臂无挂载；被文档站三维场景和 `:8765` Web 控制页读取（后者随夹爪位置反馈实时开合），RViz/驱动 TF 尚未包含 | `website/scripts/sync-three-robots.mjs`、`model_manifest.py` | [夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型) |
 | `cameras_ros2.yaml` | 四台 Orbbec 的串号、launch 文件；`defaults` 共享彩色/深度宽高、fps、format，`cameras.<namespace>.parameters` 逐机覆盖，当前右腕与后全局 `enable_depth=true`；可由 `cameras_ros2.local.yaml` 或 `RM65_CAMERAS_LOCAL_CONFIG` 深合并覆盖；修改后停止相机再启动，重复 `up` 不热更新 | `host_cameras.py`、`rm65_camera_ros2` | [相机指南](../guide/cameras) |
 | `camera_calibration.yaml` | ChArUco 板参数、话题、帧、阈值、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
-| `recording.yaml` | 录制根目录、有界队列、预检阈值、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770` | `realman_recording` | [数据录制平台](../development/recording-platform) |
+| `recording.yaml` | 录制根目录、订阅/预检清单、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770`；当前只要求左右双臂和两只夹爪，使用独立双臂数据集标识 | `realman_recording` | [数据录制平台](../development/recording-platform) |
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |

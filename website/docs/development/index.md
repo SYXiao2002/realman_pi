@@ -26,7 +26,7 @@ description: realman_pi 开发者入口：按任务找到对应页面，了解�
 | 改 Pika 遥操作（位置 / 速度 / Mixed / replay） | [Pika 遥操作](./pika-teleop) | `config/ros/pika_config.yaml` |
 | 写新的行为树节点或任务树 | [行为树节点参考](./behavior-tree-nodes)（执行模型、节点语义、可交互的树与逐拍模拟），[行为树机械臂移动 Demo](./behavior-tree-motion) | `config/behavior-trees/`、`src/behavior/realman_bt/` |
 | 改浏览器控制台、URDF 影子、WebSocket 协议 | [WebSocket 浏览器控制](./realman-web-control) | `config/ros/realman_web_control.yaml` |
-| 改夹爪、串口、流式控制 | [Changingtek 夹爪控制](./gripper-control) | `config/ros/gripper.yaml` |
+| 改夹爪、串口、流式控制 | [夹爪控制](./gripper-control) | `config/ros/gripper.yaml` |
 | 录制示教数据、导出 LeRobot、在网页回放与整理 episode | [独立数据录制平台](./recording-platform) | `config/ros/recording.yaml`、`config/python/recording-requirements.txt` |
 | 接入 VLA 策略服务 | [VLA 策略桥接节点](./policy-bridge) | `config/ros/policy_bridge.yaml` |
 | 相机配置、手眼标定 | [相机指南](../guide/cameras)、[三臂 ChArUco 手眼标定](./camera-calibration) | `config/ros/{cameras_ros2,camera_calibration}.yaml` |
@@ -38,10 +38,10 @@ description: realman_pi 开发者入口：按任务找到对应页面，了解�
 
 <Cards>
 <Card kicker="Run" title="运行与部署" href="/development/production-operations">启动入口、Bringup 开关、镜像源、生产机运维与回滚。</Card>
-<Card kicker="Driver" title="驱动与运动" href="/development/realman-driver-scaffold">三臂 ROS 图、运动 owner、速度与位姿 session、坐标 gate。</Card>
+<Card kicker="Driver" title="驱动与运动" href="/development/realman-driver-scaffold">按配置选择机械臂，生产为 l/r；运动 owner、速度与位姿 session、坐标 gate。</Card>
 <Card kicker="Control" title="控制与输入" href="/development/behavior-tree-control">输入模式、键盘 lease、行为树；Pika 与 Web 控制。</Card>
 <Card kicker="Pika" title="Pika 遥操作" href="/development/pika-teleop">位置 / 速度 / Mixed 三种模式，链路与已知问题。</Card>
-<Card kicker="Tool" title="夹爪" href="/development/gripper-control">AG2F90-C 模型、串口独占、行程设置、4 Hz 流式限速。</Card>
+<Card kicker="Tool" title="夹爪" href="/development/gripper-control">左右 42D 共享串口与二值适配、兼容坐标与显示模型；可选 Changingtek 支持。</Card>
 <Card kicker="Sense" title="相机与标定" href="/development/camera-calibration">ChArUco 手眼标定、原子采样与相对位姿求解。</Card>
 <Card kicker="Data" title="数据录制平台" href="/development/recording-platform">只订阅录制、LeRobot 导出、网页回放与整理。</Card>
 <Card kicker="Policy" title="VLA 策略桥" href="/development/policy-bridge">OpenPI WebSocket 与 ROS 2 的纯协议转换。</Card>

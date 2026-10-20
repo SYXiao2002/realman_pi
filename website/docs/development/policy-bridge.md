@@ -62,6 +62,8 @@ realman_bt_executor ── /realman_bt_executor/input_mode_state ──▶ ModeW
 
 一期 `arm_names` 固定 `[l, r]`，节点以单个 `active_side`（launch 默认 `left`，Docker `policy` 服务默认 `right`）驱动单臂动作流；双臂独立流为二期扩展。上行 `state[0:6]` 一期取每臂 `joint_states` 前 6 个关节位置占位，`state[6]` 由夹爪 `Float64` 设备单位经 `open/close_position` 换算为 `0..1`。
 
+左右硬件现为 42D 开合夹爪：该位置反馈由设备状态合成，已知状态只有全开／全闭，不能表示连续开度；未知状态保留上次位置，初次未知使用中点占位。下行百分比接口继续接受 `0..1`，由驱动按阈值和滞回转换为开闭命令，见[42D 二值适配](./gripper-control#binary-42d-adapter)。
+
 ## ROS 接口
 
 订阅（上行观测源，topic 名全部来自配置）：
