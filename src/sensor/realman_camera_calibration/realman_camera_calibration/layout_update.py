@@ -42,14 +42,11 @@ def calibrated_layout_values(
         raise ValueError("layout must contain robots l, m and r")
     anchor = _layout_transform(robots["l"])
     values: dict[str, dict[str, float]] = {}
-    for arm in ARMS:
-        if arm == "l":
-            # Preserve the configured anchor exactly; only the other arms are
-            # derived from calibrated relative transforms.
-            values[arm] = {field: float(robots[arm][field]) for field in LAYOUT_FIELDS}
-            continue
-        if arm not in relative_base_poses:
-            raise ValueError(f"calibration result has no relative pose for {arm}")
+    if not relative_base_poses or set(relative_base_poses) - {"m", "r"}:
+        raise ValueError("relative poses must name m and/or r, anchored to l")
+    for arm in relative_base_poses:
+        if robots[arm].get("parent_frame") != robots["l"].get("parent_frame"):
+            raise ValueError("calibrated arms must share the configured parent frame")
         pose = anchor @ np.asarray(relative_base_poses[arm], dtype=np.float64).reshape(4, 4)
         roll, pitch, yaw = matrix_to_rpy(pose)
         values[arm] = {
@@ -94,7 +91,7 @@ def update_layout_file(
 
     updated = list(lines)
     scalar_pattern = re.compile(r"^(\s*)(x|y|z|roll|pitch|yaw)(\s*:\s*)([^#\n]*)(.*)$")
-    for arm in ARMS:
+    for arm in values:
         start, end = arm_ranges[arm]
         seen: set[str] = set()
         for index in range(start + 1, end):

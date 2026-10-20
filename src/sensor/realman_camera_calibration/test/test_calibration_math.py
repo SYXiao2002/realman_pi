@@ -43,7 +43,8 @@ def test_charuco_dictionary_and_board_are_constructed():
             "marker_length_m": 0.03,
         }
     )
-    assert len(board.getChessboardCorners()) == 24
+    corners = board.getChessboardCorners() if hasattr(board, "getChessboardCorners") else board.chessboardCorners
+    assert len(corners) == 24
 
 
 def test_detect_charuco_supports_opencv_45_board_dictionary_attribute():

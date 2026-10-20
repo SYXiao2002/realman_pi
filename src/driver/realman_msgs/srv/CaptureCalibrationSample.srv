@@ -1,16 +1,17 @@
+# Each session is bound to one arm and camera installation.
 string session_id
 bool start_new_session
-string[] arm_ids
+string arm_id
 ---
 bool success
 string session_id
 string batch_id
-string[] captured_arm_ids
-uint32[] sample_counts
-string[] sample_ids
-string[] image_paths
-string[] preview_image_paths
-string[] latest_image_paths
-string[] detection_statuses
-string[] detection_messages
+string arm_id
+uint32 sample_count
+string sample_id
+string image_path
+string preview_image_path
+string latest_image_path
+string detection_status
+string detection_message
 string message

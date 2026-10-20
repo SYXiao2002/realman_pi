@@ -185,7 +185,6 @@ def test_depth_selection_requires_yaml_boolean(config, camera_config, base_path,
     ("enable_color", False, "true"),
     ("enable_left_ir", True, "false"),
     ("enable_point_cloud", True, "false"),
-    ("enable_frame_sync", True, "false"),
     ("software_trigger_enabled", True, "false"),
 ])
 def test_parameter_overrides_cannot_rebind_or_change_requested_stream(
@@ -324,3 +323,28 @@ def test_health_check_never_reports_empty_camera_set_as_success(camera_config, m
     except ValueError:
         return
     assert result not in (None, 0)
+
+
+def test_frame_sync_is_configurable_per_device_and_defaults_false(config, camera_config):
+    config["defaults"].pop("enable_frame_sync", None)
+    config["cameras"]["camera_right"]["parameters"]["enable_frame_sync"] = True
+    commands = dict(camera_config.camera_commands(config))
+    for name, argv in commands.items():
+        args = _arguments(argv)
+        assert args["enable_frame_sync"] == str(name == "camera_right").lower()
+        assert args["sync_mode"] == "standalone"
+    config["defaults"]["enable_frame_sync"] = True
+    config["cameras"]["camera_left"]["parameters"]["enable_frame_sync"] = False
+    commands = dict(camera_config.camera_commands(config))
+    assert _arguments(commands["camera_left"])["enable_frame_sync"] == "false"
+    assert _arguments(commands["camera_right"])["enable_frame_sync"] == "true"
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+@pytest.mark.parametrize("scope", ["defaults", "camera"])
+def test_frame_sync_requires_yaml_boolean(config, camera_config, base_path, scope, value):
+    params = config["defaults"] if scope == "defaults" else config["cameras"]["camera_right"]["parameters"]
+    params["enable_frame_sync"] = value
+    _write_yaml(base_path, config)
+    with pytest.raises(ValueError):
+        camera_config.load_config(base_path)

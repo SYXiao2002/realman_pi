@@ -18,7 +18,7 @@ setup(
     zip_safe=True,
     maintainer="RealMan maintainers",
     maintainer_email="maintainer@example.com",
-    description="ROS 2 scaffold for multi-camera calibration sessions.",
+    description="Independent left/right wrist eye-in-hand calibration sessions.",
     license="BSD-3-Clause",
     entry_points={
         "console_scripts": [

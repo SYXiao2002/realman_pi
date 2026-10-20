@@ -58,7 +58,7 @@ RViz，生产机不需要桌面：
 
 </Steps>
 
-生产驱动清单由 `config/ros/realman_driver.yaml` 决定：多臂 launch 只启动文件中存在的 `/l/realman_driver`、`/m/realman_driver`、`/r/realman_driver` section。当前只有 `l/r`，因此不创建中臂驱动，也不重连中臂。`three_robots.yaml` 的三臂布局仍用于通用模型和标定参考；录制订阅与预检独立由 `recording.yaml` 配置，当前同样只要求左右双臂和两只夹爪。
+生产驱动清单由 `config/ros/realman_driver.yaml` 决定：多臂 launch 只启动文件中存在的 `/l/realman_driver`、`/m/realman_driver`、`/r/realman_driver` section。当前只有 `l/r`，因此不创建中臂驱动，也不重连中臂。`three_robots.yaml` 的三臂布局仍用于通用模型参考；录制订阅与预检独立由 `recording.yaml` 配置，当前同样只要求左右双臂和两只夹爪。
 
 | 命令 | 用途 |
 | --- | --- |

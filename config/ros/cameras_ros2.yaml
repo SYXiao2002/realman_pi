@@ -9,7 +9,7 @@ launch:
 # 直接传给官方 launch 的共享参数，单机可在 cameras.<namespace>.parameters 覆盖。
 # 宽高 0 / ANY 使用驱动支持的默认 profile，fps 单位 Hz；换档位前确认设备支持。
 # color 模式保留 RGB；enable_depth 可共享设置，也可逐设备覆盖。
-# depth 宽高/fps 为 0、格式 ANY 时使用 SDK 默认档位；IR/IMU/点云/同步/触发保持关闭。
+# depth 宽高/fps 为 0、格式 ANY 时使用 SDK 默认档位；IR/IMU/点云/跨设备触发保持关闭。
 defaults:
   color_width: 0
   color_height: 0
@@ -27,6 +27,7 @@ defaults:
   enable_right_ir: false
   enable_accel: false
   enable_gyro: false
+  # 设备内 RGB-D 同步可逐相机覆盖；先核实设备能力。它不提供 D2C 空间配准。
   enable_frame_sync: false
   trigger_out_enabled: false
   software_trigger_enabled: false
@@ -47,7 +48,8 @@ cameras:
     # right WRIST CAM：Gemini 305 使用官方 301 series 启动文件。
     serial: "CV2856D0002E"
     launch_file: gemini_301_series.launch.py
-    # 右腕同时发布 RGB 和原始深度；彩色流仍作为自动曝光参考。
+    # 右腕同时发布 RGB 和原始深度；grasp_bridge 使用真实内外参进行软件 D2C。
+    # 首版按时间戳配对并停稳采集；设备验证后可添加 enable_frame_sync: true。
     parameters: {ae_reference_stream: color, enable_depth: true}
   camera_left:
     # left WRIST CAM；没有中腕相机，不发布 camera_middle。

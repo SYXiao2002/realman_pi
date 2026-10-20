@@ -1,4 +1,4 @@
-"""Launch the input monitor used as the first calibration milestone."""
+"""Launch independent left/right wrist eye-in-hand calibration services."""
 
 import os
 from datetime import datetime
@@ -8,7 +8,6 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -20,8 +19,6 @@ def generate_launch_description() -> LaunchDescription:
         )
     else:
         default_config = str(Path.cwd() / "config" / "ros" / "camera_calibration.yaml")
-    config_root = Path(os.environ.get("REALMAN_CONFIG_ROOT", str(Path.cwd() / "config")))
-    default_layout_config = str(config_root / "ros" / "three_robots.yaml")
     configured_log_dir = os.environ.get("ROS_LOG_DIR")
     if configured_log_dir:
         run_log_dir = Path(configured_log_dir)
@@ -36,13 +33,8 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("config_file", default_value=default_config),
             DeclareLaunchArgument(
                 "layout_config_file",
-                default_value=default_layout_config,
-                description="Three-arm layout YAML updated after a successful solve.",
-            ),
-            DeclareLaunchArgument(
-                "update_layout_after_solve",
-                default_value=os.environ.get("REALMAN_UPDATE_LAYOUT_AFTER_CALIBRATION", "true"),
-                description="Write calibrated middle/right base poses into the layout YAML.",
+                default_value=str(Path(default_config).with_name("three_robots.yaml")),
+                description="Authoritative layout YAML; explicitly selected left/right sessions update the right-arm base pose.",
             ),
             Node(
                 package="realman_camera_calibration",
@@ -53,9 +45,6 @@ def generate_launch_description() -> LaunchDescription:
                     {
                         "config_file": LaunchConfiguration("config_file"),
                         "layout_config_file": LaunchConfiguration("layout_config_file"),
-                        "update_layout_after_solve": ParameterValue(
-                            LaunchConfiguration("update_layout_after_solve"), value_type=bool
-                        ),
                     }
                 ],
             ),

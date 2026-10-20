@@ -49,6 +49,7 @@ def test_motion_action_contracts_are_exact():
                 "uint16 radio",
                 "uint8 velocity_percent",
                 "uint8 blend_radius_percent",
+                "string task_token",
             ],
             [
                 "uint8 SUCCEEDED=0",
@@ -92,6 +93,7 @@ def test_motion_action_contracts_are_exact():
                 "string reference_name",
                 "realman_msgs/MotionWaypoint[] waypoints",
                 "float32 timeout_sec",
+                "string task_token",
             ],
             [
                 "uint8 SUCCEEDED=0",
@@ -160,6 +162,7 @@ def test_motion_action_contracts_are_exact():
                 "uint32 blend_radius_percent",
                 "bool connect",
                 "float32 timeout_sec",
+                "string task_token",
             ],
             [
                 "uint8 SUCCEEDED=0",
@@ -206,6 +209,7 @@ def test_motion_action_contracts_are_exact():
                 "bool follow",
                 "uint8 trajectory_mode",
                 "uint16 radio",
+                "string task_token",
             ],
             [
                 "uint8 SUCCEEDED=0",
@@ -266,19 +270,19 @@ def test_coordinate_service_contracts_are_exact():
     _assert_interface_contract(
         ROOT / "srv/CaptureCalibrationSample.srv",
         [
-            ["string session_id", "bool start_new_session", "string[] arm_ids"],
+            ["string session_id", "bool start_new_session", "string arm_id"],
             [
                 "bool success",
                 "string session_id",
                 "string batch_id",
-                "string[] captured_arm_ids",
-                "uint32[] sample_counts",
-                "string[] sample_ids",
-                "string[] image_paths",
-                "string[] preview_image_paths",
-                "string[] latest_image_paths",
-                "string[] detection_statuses",
-                "string[] detection_messages",
+                "string arm_id",
+                "uint32 sample_count",
+                "string sample_id",
+                "string image_path",
+                "string preview_image_path",
+                "string latest_image_path",
+                "string detection_status",
+                "string detection_message",
                 "string message",
             ],
         ],
@@ -287,15 +291,30 @@ def test_coordinate_service_contracts_are_exact():
     _assert_interface_contract(
         ROOT / "srv/SolveCalibration.srv",
         [
-            ["string session_id"],
+            ["string session_id", "string arm_id"],
             [
                 "bool success",
-                "bool all_arms_solved",
                 "string session_id",
+                "string arm_id",
+                "uint32 sample_count",
                 "string result_file",
                 "string result_json",
                 "float64 mean_reprojection_error_px",
-                "uint32[] sample_counts",
+                "bool layout_updated",
+                "string layout_backup_file",
+                "string message",
+            ],
+        ],
+    )
+
+    _assert_interface_contract(
+        ROOT / "srv/UpdateCalibrationLayout.srv",
+        [
+            ["string left_session_id", "string right_session_id"],
+            [
+                "bool success",
+                "string left_session_id",
+                "string right_session_id",
                 "bool layout_updated",
                 "string layout_backup_file",
                 "string message",

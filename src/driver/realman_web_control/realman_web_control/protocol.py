@@ -181,15 +181,13 @@ def _parse_capture_calibration_sample(message: dict[str, Any]) -> dict[str, Any]
     start_new_session = message.get("start_new_session", False)
     if not isinstance(start_new_session, bool):
         raise ProtocolError("invalid_field", "start_new_session must be a boolean", request_id)
-    raw_arms = message.get("arm_ids", ["l", "m", "r"])
-    if not isinstance(raw_arms, list) or set(raw_arms) != ARMS or len(raw_arms) != 3:
-        raise ProtocolError("invalid_field", "arm_ids must contain l, m, and r", request_id)
+    arm_id = _calibration_arm_id(message)
     return {
         "type": "capture_calibration_sample",
         "request_id": request_id,
         "session_id": session_id,
         "start_new_session": start_new_session,
-        "arm_ids": [str(arm) for arm in raw_arms],
+        "arm_id": arm_id,
     }
 
 
@@ -198,7 +196,25 @@ def _parse_solve_calibration(message: dict[str, Any]) -> dict[str, Any]:
         "type": "solve_calibration",
         "request_id": _request_id(message),
         "session_id": _string(message.get("session_id", ""), "session_id", maximum=128, allow_empty=True),
+        "arm_id": _calibration_arm_id(message),
     }
+
+
+def _parse_update_calibration_layout(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "update_calibration_layout",
+        "request_id": _request_id(message),
+        "left_session_id": _string(message.get("left_session_id"), "left_session_id", maximum=128),
+        "right_session_id": _string(message.get("right_session_id"), "right_session_id", maximum=128),
+    }
+
+
+def _calibration_arm_id(message: dict[str, Any]) -> str:
+    if "arm_ids" in message or message.get("arm_id") not in ("l", "r"):
+        raise ProtocolError(
+            "invalid_field", "calibration requires one arm_id: l or r", _request_id(message)
+        )
+    return message["arm_id"]
 
 
 def _parse_gripper_command(message: dict[str, Any]) -> dict[str, Any]:
@@ -473,6 +489,7 @@ _ARMLESS_PARSERS = {
     "keyboard_state": _parse_keyboard_state,
     "capture_calibration_sample": _parse_capture_calibration_sample,
     "solve_calibration": _parse_solve_calibration,
+    "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
 }
 

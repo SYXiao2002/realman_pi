@@ -111,25 +111,29 @@ def test_unknown_messages_and_oversized_payloads_are_rejected():
         parse_message("x" * 32, max_bytes=16)
 
 
-def test_calibration_messages_require_all_three_arms():
+def test_calibration_messages_require_one_supported_arm():
     capture = parse_message(
         '{"type":"capture_calibration_sample","request_id":"cap-1",'
-        '"session_id":"","start_new_session":true,"arm_ids":["l","m","r"]}'
+        '"session_id":"","start_new_session":true,"arm_id":"r"}'
     )
-    assert capture["arm_ids"] == ["l", "m", "r"]
+    assert capture["arm_id"] == "r"
     solved = parse_message(
-        '{"type":"solve_calibration","request_id":"solve-1","session_id":"session-1"}'
+        '{"type":"solve_calibration","request_id":"solve-1","session_id":"session-1","arm_id":"r"}'
     )
     assert solved == {
         "type": "solve_calibration",
         "request_id": "solve-1",
         "session_id": "session-1",
+        "arm_id": "r",
     }
-    with pytest.raises(ProtocolError, match="arm_ids"):
+    with pytest.raises(ProtocolError, match="arm_id"):
         parse_message(
             '{"type":"capture_calibration_sample","request_id":"cap-2",'
             '"arm_ids":["l"]}'
         )
+    for arm in ("m", "", ["l", "r"]):
+        with pytest.raises(ProtocolError, match="arm_id"):
+            parse_message(json.dumps({"type": "solve_calibration", "request_id": "s", "arm_id": arm}))
 
 
 def test_kinematics_messages_are_normalized():

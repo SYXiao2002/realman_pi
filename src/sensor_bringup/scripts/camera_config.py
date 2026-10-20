@@ -82,8 +82,8 @@ def _parameters(value, label):
             isinstance(parameter, float) and not math.isfinite(parameter)
         ):
             raise ValueError(f"{label}.{key} must be a finite scalar")
-        if key == "enable_depth" and not isinstance(parameter, bool):
-            raise ValueError(f"{label}.enable_depth must be true or false")
+        if key in {"enable_depth", "enable_frame_sync"} and not isinstance(parameter, bool):
+            raise ValueError(f"{label}.{key} must be true or false")
 
 
 def validate_config(config):
@@ -144,7 +144,10 @@ def camera_commands(config, mode="color"):
             enable_color=mode == "color", enable_depth=mode == "depth" or parameters.get("enable_depth", False),
             enable_left_ir=False, enable_right_ir=False, enable_accel=False, enable_gyro=False,
             enable_point_cloud=False, enable_colored_point_cloud=False,
-            enable_frame_sync=False, trigger_out_enabled=False, software_trigger_enabled=False,
+            # Device-local RGB-D synchronization is configurable. Cross-device
+            # triggers remain disabled; registration/time pairing are separate.
+            enable_frame_sync=parameters.get("enable_frame_sync", False),
+            trigger_out_enabled=False, software_trigger_enabled=False,
             sync_mode="standalone",
         )
         argv = ["ros2", "launch", "orbbec_camera", camera["launch_file"]]

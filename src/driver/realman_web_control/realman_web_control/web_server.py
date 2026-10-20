@@ -394,23 +394,47 @@ class WebControlServer:
         session_id = directory.name
         if not self._valid_calibration_session_id(session_id):
             return None
-        sample_counts = {arm: 0 for arm in ("l", "m", "r")}
+        sample_count = 0
+        arm_id = ""
+        recoverable = False
         try:
+            try:
+                manifest = json.loads((directory / "session.json").read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    raise ValueError("session manifest must be an object")
+                identity = manifest.get("identity", {})
+                if not isinstance(identity, dict):
+                    raise ValueError("session identity must be an object")
+                arm_id = str(identity.get("arm_id", ""))
+                recoverable = manifest.get("schema_version") == 1 and arm_id in ("l", "r")
+            except (OSError, ValueError, TypeError):
+                manifest = {}
             for metadata_path in (directory / "batches").glob("*/*.json"):
+                if any(part.startswith(".") for part in metadata_path.relative_to(directory).parts):
+                    continue
                 try:
                     sample = json.loads(metadata_path.read_text(encoding="utf-8"))
-                    sample_id = str(sample.get("sample_id", ""))
-                    arm = sample_id.split("-", 1)[0]
-                    if arm in sample_counts and isinstance(sample.get("base_to_tool"), list):
-                        sample_counts[arm] += 1
-                except (OSError, ValueError, json.JSONDecodeError):
+                    if not isinstance(sample, dict):
+                        raise ValueError("sample metadata must be an object")
+                    if isinstance(sample.get("base_to_tool"), list):
+                        sample_count += 1
+                        if (
+                            sample.get("arm_id") != arm_id
+                            or sample.get("identity") != manifest.get("identity")
+                            or sample.get("intrinsics_sha256") != manifest.get("intrinsics_sha256")
+                        ):
+                            recoverable = False
+                except (OSError, ValueError, TypeError):
+                    recoverable = False
                     continue
             return {
                 "session_id": session_id,
                 "created_at": datetime.fromtimestamp(
                     directory.stat().st_mtime, tz=timezone.utc
                 ).isoformat(),
-                "sample_counts": sample_counts,
+                "arm_id": arm_id,
+                "sample_count": sample_count,
+                "recoverable": recoverable,
                 "solved": (directory / "calibration_result.json").is_file(),
             }
         except OSError:
@@ -421,7 +445,7 @@ class WebControlServer:
         """Return valid sessions and optionally remove only sessions with no accepted samples."""
         root = self._calibration_sessions_root()
         try:
-            directories = [path for path in root.iterdir() if path.is_dir()]
+            directories = [path for path in root.iterdir() if path.is_dir() and not path.is_symlink()]
         except FileNotFoundError:
             return [], []
         sessions: list[dict[str, Any]] = []
@@ -430,7 +454,13 @@ class WebControlServer:
             summary = self._calibration_session_summary(directory)
             if summary is None:
                 continue
-            if delete_empty and not any(summary["sample_counts"].values()):
+            # Preserve corrupt accepted records for inspection; hidden staging
+            # batches have not been committed and do not make a session nonempty.
+            has_records = any(
+                not any(part.startswith(".") for part in path.relative_to(directory).parts)
+                for path in (directory / "batches").glob("*/*.json")
+            )
+            if delete_empty and summary["sample_count"] == 0 and not has_records:
                 try:
                     shutil.rmtree(directory)
                     deleted.append(summary["session_id"])

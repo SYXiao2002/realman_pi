@@ -56,3 +56,12 @@ def test_old_or_delayed_input_has_specific_status():
     )
     assert stale["status"] == "stale"
     assert delayed["status"] == "delayed"
+
+
+def test_camera_info_source_timestamp_delay_is_checked():
+    health = classify_camera_input(
+        **BASE, image_age_sec=0.1, camera_info_age_sec=0.1,
+        image_timestamp_delay_sec=0.1, camera_info_timestamp_delay_sec=1.2,
+        image_camera_info_skew_sec=0.01,
+    )
+    assert health["status"] == "delayed"

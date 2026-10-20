@@ -67,7 +67,7 @@ cameras:
 /camera_global/depth/camera_info
 ```
 
-IR、IMU、点云和帧同步仍关闭。`CAMERA_START_TIMEOUT`（默认 `90` 秒）控制 `./rm65 up` / `rm65 wait` 的相机启动等待上限；`REALMAN_CAMERA_CHECK_TIMEOUT`（默认 `60` 秒）控制 supervisor 的首帧等待上限。当前生产映射中没有 D435 或 `/camera_middle`。ROS 2 topic 和设备状态可从宿主机检查：
+IR、IMU 和点云默认关闭。同设备 RGB-D 帧同步默认 `enable_frame_sync=false`，可在 YAML 逐设备设置真实布尔值；设备支持情况须实测。跨设备触发继续关闭。开启帧同步不替代 D2C 配准、时间戳配对或停稳采集，详见[腕相机抓取](../development/grasping)。`CAMERA_START_TIMEOUT`（默认 `90` 秒）控制 `./rm65 up` / `rm65 wait` 的相机启动等待上限；`REALMAN_CAMERA_CHECK_TIMEOUT`（默认 `60` 秒）控制 supervisor 的首帧等待上限。当前生产映射中没有 D435 或 `/camera_middle`。ROS 2 topic 和设备状态可从宿主机检查：
 
 ```bash
 source /opt/ros/humble/setup.bash

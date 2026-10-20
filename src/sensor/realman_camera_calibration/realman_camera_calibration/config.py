@@ -22,11 +22,14 @@ def _validate_cameras(config: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(camera.get(key), str) or not camera[key].strip():
                 raise ValueError(f"camera '{camera_id}' requires a non-empty {key}")
         arm_id = camera.get("arm_id")
-        if arm_id not in ("l", "m", "r"):
-            raise ValueError(f"camera '{camera_id}' arm_id must be l, m or r")
+        if arm_id not in ("l", "r"):
+            raise ValueError(f"camera '{camera_id}' arm_id must be l or r")
+        for key in ("serial", "optical_frame", "mount_id"):
+            if not isinstance(camera.get(key), str) or not camera[key].strip():
+                raise ValueError(f"camera '{camera_id}' requires a non-empty {key}")
         camera_arm_ids.append(arm_id)
-    if len(cameras) != 3 or set(camera_arm_ids) != {"l", "m", "r"}:
-        raise ValueError("cameras must map exactly one input to each of l, m and r")
+    if len(set(camera_arm_ids)) != len(camera_arm_ids):
+        raise ValueError("cameras must map exactly one input to each configured arm")
 
     return cameras
 
@@ -55,8 +58,9 @@ def _validate_robots(config: dict[str, Any], cameras: dict[str, Any]) -> None:
     """Validate per-arm frames and that each arm names a configured camera."""
 
     robots = config.get("robots")
-    if not isinstance(robots, dict) or set(robots) != {"l", "m", "r"}:
-        raise ValueError("robots must define exactly l, m and r")
+    expected = {camera["arm_id"] for camera in cameras.values()}
+    if not isinstance(robots, dict) or set(robots) != expected:
+        raise ValueError("robots must define exactly the configured camera arms")
     for arm, robot in robots.items():
         if not isinstance(robot, dict):
             raise ValueError(f"robots.{arm} must be a mapping")
@@ -65,6 +69,8 @@ def _validate_robots(config: dict[str, Any], cameras: dict[str, Any]) -> None:
                 raise ValueError(f"robots.{arm} requires a non-empty {key}")
         if robot["camera_id"] not in cameras:
             raise ValueError(f"robots.{arm}.camera_id must name a configured camera")
+        if cameras[robot["camera_id"]]["arm_id"] != arm:
+            raise ValueError(f"robots.{arm}.camera_id belongs to another arm")
 
 
 def _validate_sampling(config: dict[str, Any]) -> None:
@@ -73,9 +79,14 @@ def _validate_sampling(config: dict[str, Any]) -> None:
     sampling = config.get("sampling", {})
     if not isinstance(sampling, dict):
         raise ValueError("sampling must be a mapping")
-    required_arms = sampling.get("required_arms", ["l", "m", "r"])
-    if required_arms != ["l", "m", "r"]:
-        raise ValueError("sampling.required_arms must be exactly [l, m, r]")
+    if "required_arms" in sampling:
+        raise ValueError("sampling.required_arms is obsolete; use arm_order and default_arm")
+    order = sampling.get("arm_order")
+    arms = set(config["robots"])
+    if not isinstance(order, list) or len(order) != len(arms) or set(order) != arms:
+        raise ValueError("sampling.arm_order must list each configured arm exactly once")
+    if sampling.get("default_arm") not in arms:
+        raise ValueError("sampling.default_arm must name a configured arm")
     for key in (
         "maximum_message_age_sec",
         "maximum_inter_camera_skew_sec",
@@ -96,7 +107,7 @@ def _validate_solver(config: dict[str, Any]) -> None:
         raise ValueError("solver must be a mapping")
     if not isinstance(solver.get("hand_eye_method"), str) or not solver["hand_eye_method"]:
         raise ValueError("solver.hand_eye_method must be a non-empty string")
-    for key in ("maximum_hand_eye_residual", "maximum_relative_translation_spread_m", "maximum_relative_rotation_spread_rad"):
+    for key in ("maximum_hand_eye_residual", "maximum_board_translation_spread_m", "maximum_board_rotation_spread_rad"):
         if float(solver.get(key, 0.0)) <= 0.0:
             raise ValueError(f"solver.{key} must be positive")
 

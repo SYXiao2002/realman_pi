@@ -1,0 +1,11 @@
+# The operator explicitly selects two already solved sessions captured with the
+# same physical board placement.
+string left_session_id
+string right_session_id
+---
+bool success
+string left_session_id
+string right_session_id
+bool layout_updated
+string layout_backup_file
+string message

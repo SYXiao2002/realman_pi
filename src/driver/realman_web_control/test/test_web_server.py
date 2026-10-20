@@ -116,7 +116,7 @@ def test_calibration_preview_is_limited_to_log_root(tmp_path):
         asyncio.run(_server(static_root)._calibration_preview(FakeRequest("../index.html")))
 
 
-def test_calibration_sessions_list_only_valid_sessions_and_sample_counts(tmp_path):
+def test_legacy_calibration_sessions_are_visible_but_not_recoverable(tmp_path):
     static_root = tmp_path / "static"
     static_root.mkdir()
     (static_root / "index.html").write_text("ok", encoding="utf-8")
@@ -138,7 +138,9 @@ def test_calibration_sessions_list_only_valid_sessions_and_sample_counts(tmp_pat
     assert len(payload["sessions"]) == 1
     listed = payload["sessions"][0]
     assert listed["session_id"] == "session-20260821T102303.053863Z"
-    assert listed["sample_counts"] == {"l": 1, "m": 1, "r": 1}
+    assert listed["sample_count"] == 3
+    assert listed["arm_id"] == ""
+    assert listed["recoverable"] is False
     assert listed["solved"] is True
     assert listed["created_at"].endswith("+00:00")
 
@@ -179,3 +181,46 @@ def test_calibration_session_cleanup_and_explicit_delete_are_scoped_to_sessions(
                 type("Request", (), {"match_info": {"session_id": "../outside"}})()
             )
         )
+
+
+def test_single_arm_sessions_ignore_uncommitted_batches_and_reject_mixed_arms(tmp_path):
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    root = static_root / "logs" / "camera_calibration"
+    identity = {"arm_id": "r", "serial": "right-camera", "mount_id": "right-wrist-v1"}
+    for suffix, sample_arm in (("01", "r"), ("02", "l")):
+        session = root / f"session-20260821T1000{suffix}.000000Z"
+        batch = session / "batches" / "batch-1"
+        batch.mkdir(parents=True)
+        manifest = {"schema_version": 1, "identity": identity, "intrinsics_sha256": "hash"}
+        (session / "session.json").write_text(json.dumps(manifest))
+        sample = {"arm_id": sample_arm, "identity": identity, "intrinsics_sha256": "hash", "base_to_tool": [[1.0]]}
+        (batch / "r-0000.json").write_text(json.dumps(sample))
+        pending = session / "batches" / ".batch-2.tmp"
+        pending.mkdir()
+        (pending / "r-0001.json").write_text("not committed JSON")
+
+    summaries, deleted = _server(static_root)._list_calibration_sessions(delete_empty=True)
+
+    assert deleted == []
+    assert [(item["arm_id"], item["sample_count"], item["recoverable"]) for item in summaries] == [
+        ("r", 1, False), ("r", 1, True),
+    ]
+
+
+@pytest.mark.parametrize("manifest", [[], {"identity": []}, {"schema_version": 1, "identity": {"arm_id": "r"}}])
+def test_malformed_sample_records_are_preserved_during_empty_cleanup(tmp_path, manifest):
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    session = static_root / "logs" / "camera_calibration" / "session-20260821T100001.000000Z"
+    batch = session / "batches" / "batch-1"
+    batch.mkdir(parents=True)
+    (session / "session.json").write_text(json.dumps(manifest))
+    (batch / "r-0000.json").write_text("[]")
+
+    summaries, deleted = _server(static_root)._list_calibration_sessions(delete_empty=True)
+
+    assert deleted == []
+    assert session.is_dir()
+    assert summaries[0]["sample_count"] == 0
+    assert summaries[0]["recoverable"] is False

@@ -15,7 +15,7 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 
 三臂 URDF 画布的显示原点固定为中间臂 `m` 的基座：网页仅在 Three.js 渲染时减去中臂的
 平移，绝不修改 `config/ros/three_robots.yaml` 的世界/TF 布局或任何 Action 的运动坐标。
-这让标定后左右臂位置改变时，中臂仍保持在画面中心。
+调整历史布局时，中臂仍保持在画面中心。独立腕相机手眼标定不修改该布局。
 
 页面启动时直接创建 Three.js WebGL 渲染器，并使用完整 URDF 实体/影子模型。WebGL 是三维机械臂
 预览的必要能力；浏览器禁用 GPU、软件光栅化不可用或上下文创建失败时，页面明确显示
@@ -626,8 +626,8 @@ PYTHONPATH=src/driver/realman_web_control \
 ```
 
 前端源代码在 `src/driver/realman_web_control/web/src/`，控制页面和
-`calibration.html` 标定页面共用一个 WebSocket 服务。标定页按操作顺序排列：桌面端第一行是三路相机输入状态，
-然后是“保存样本 | 执行标定”、检测预览，最后是标定板配置与实时反馈；配置在
+`calibration.html` 标定页面共用一个 WebSocket 服务。标定页先选择左臂或右臂，展示当前单臂输入健康、
+样本/会话、保存样本与求解操作、检测预览和结果；切臂后独立管理会话，见[单臂手眼标定](./camera-calibration)。前端构建配置在
 `config/web-control/vite.config.mjs`。普通 ROS 镜像不依赖 Node，提交的 `static/` 是可复现
 构建产物；源码变更后在仓库 `website/` 目录执行：
 

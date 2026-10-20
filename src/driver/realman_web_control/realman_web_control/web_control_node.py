@@ -35,6 +35,7 @@ from realman_msgs.srv import (
     RecoverMotion,
     SelectInputMode,
     SolveCalibration,
+    UpdateCalibrationLayout,
     SolveIk,
 )
 from sensor_msgs.msg import JointState
@@ -305,6 +306,11 @@ class WebControlNode(Node):
             "/camera_calibration/capture_sample",
             callback_group=self._callback_group,
         )
+        self._update_calibration_layout_client = self.create_client(
+            UpdateCalibrationLayout,
+            "/camera_calibration/update_layout",
+            callback_group=self._callback_group,
+        )
         self._solve_calibration_client = self.create_client(
             SolveCalibration,
             "/camera_calibration/solve",
@@ -474,6 +480,8 @@ class WebControlNode(Node):
             self._stop_behavior_tree(client_id, message)
         elif message_type == "capture_calibration_sample":
             self._capture_calibration_sample(client_id, message)
+        elif message_type == "update_calibration_layout":
+            self._update_calibration_layout(client_id, message)
         elif message_type == "solve_calibration":
             self._solve_calibration(client_id, message)
         else:
@@ -841,7 +849,7 @@ class WebControlNode(Node):
         request = CaptureCalibrationSample.Request()
         request.session_id = message["session_id"]
         request.start_new_session = message["start_new_session"]
-        request.arm_ids = message["arm_ids"]
+        request.arm_id = message["arm_id"]
         future = client.call_async(request)
         future.add_done_callback(
             lambda completed: self._calibration_capture_response(
@@ -858,20 +866,14 @@ class WebControlNode(Node):
                 "success": bool(response.success),
                 "session_id": response.session_id,
                 "batch_id": response.batch_id,
-                "captured_arm_ids": list(response.captured_arm_ids),
-                "sample_counts": list(response.sample_counts),
-                "sample_ids": list(response.sample_ids),
-                "image_paths": list(response.image_paths),
-                "preview_image_paths": [
-                    self._calibration_preview_url(path)
-                    for path in response.preview_image_paths
-                ],
-                "latest_image_paths": [
-                    self._calibration_preview_url(path)
-                    for path in response.latest_image_paths
-                ],
-                "detection_statuses": list(response.detection_statuses),
-                "detection_messages": list(response.detection_messages),
+                "arm_id": response.arm_id,
+                "sample_count": int(response.sample_count),
+                "sample_id": response.sample_id,
+                "image_path": response.image_path,
+                "preview_image_path": self._calibration_preview_url(response.preview_image_path),
+                "latest_image_path": self._calibration_preview_url(response.latest_image_path),
+                "detection_status": response.detection_status,
+                "detection_message": response.detection_message,
                 "message": response.message,
             }
         except Exception as error:
@@ -882,19 +884,21 @@ class WebControlNode(Node):
                 "success": False,
                 "session_id": "",
                 "batch_id": "",
-                "captured_arm_ids": [],
-                "sample_counts": [],
-                "sample_ids": [],
-                "image_paths": [],
-                "preview_image_paths": [],
-                "latest_image_paths": [],
-                "detection_statuses": [],
-                "detection_messages": [],
+                "arm_id": "",
+                "sample_count": 0,
+                "sample_id": "",
+                "image_path": "",
+                "preview_image_path": "",
+                "latest_image_path": "",
+                "detection_status": "error",
+                "detection_message": str(error),
                 "message": str(error),
             }
         self._server.send_event(event, client_id)
 
     def _calibration_preview_url(self, path: str) -> str:
+        if not path:
+            return ""
         root = Path(os.environ.get("REALMAN_LOG_ROOT", "/opt/rm65_ws/logs")).resolve()
         candidate = Path(path).resolve()
         try:
@@ -913,6 +917,7 @@ class WebControlNode(Node):
             )
         request = SolveCalibration.Request()
         request.session_id = message["session_id"]
+        request.arm_id = message["arm_id"]
         future = client.call_async(request)
         future.add_done_callback(
             lambda completed: self._calibration_solve_response(
@@ -927,12 +932,12 @@ class WebControlNode(Node):
                 "type": "calibration_solve_result",
                 "request_id": request_id,
                 "success": bool(response.success),
-                "all_arms_solved": bool(response.all_arms_solved),
                 "session_id": response.session_id,
+                "arm_id": response.arm_id,
+                "sample_count": int(response.sample_count),
                 "result_file": response.result_file,
                 "result_json": response.result_json,
                 "mean_reprojection_error_px": float(response.mean_reprojection_error_px),
-                "sample_counts": list(response.sample_counts),
                 "layout_updated": bool(response.layout_updated),
                 "layout_backup_file": response.layout_backup_file,
                 "message": response.message,
@@ -943,16 +948,49 @@ class WebControlNode(Node):
                 "type": "calibration_solve_result",
                 "request_id": request_id,
                 "success": False,
-                "all_arms_solved": False,
                 "session_id": "",
+                "arm_id": "",
+                "sample_count": 0,
                 "result_file": "",
                 "result_json": "",
                 "mean_reprojection_error_px": 0.0,
-                "sample_counts": [],
                 "layout_updated": False,
                 "layout_backup_file": "",
                 "message": str(error),
             }
+        self._server.send_event(event, client_id)
+
+    def _update_calibration_layout(self, client_id: str, message: dict[str, Any]) -> None:
+        client = self._update_calibration_layout_client
+        if not client.service_is_ready():
+            raise ProtocolError("calibration_unavailable", "/camera_calibration/update_layout is not available", message["request_id"])
+        request = UpdateCalibrationLayout.Request()
+        request.left_session_id = message["left_session_id"]
+        request.right_session_id = message["right_session_id"]
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._calibration_layout_response(client_id, message, completed)
+        )
+
+    def _calibration_layout_response(self, client_id: str, message: dict[str, Any], future: Any) -> None:
+        event = {
+            "type": "calibration_layout_result",
+            "request_id": message["request_id"],
+            "left_session_id": message["left_session_id"],
+            "right_session_id": message["right_session_id"],
+            "success": False, "layout_updated": False, "layout_backup_file": "",
+        }
+        try:
+            response = future.result()
+            event.update({
+                "success": bool(response.success),
+                "layout_updated": bool(response.layout_updated),
+                "layout_backup_file": response.layout_backup_file,
+                "message": response.message,
+            })
+        except Exception as error:
+            self.get_logger().error(f"Web calibration layout update failed: {error}")
+            event["message"] = str(error)
         self._server.send_event(event, client_id)
 
     def _tf_frame_ids(self) -> set[str]:

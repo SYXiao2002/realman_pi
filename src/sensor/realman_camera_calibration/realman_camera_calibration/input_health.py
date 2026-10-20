@@ -34,6 +34,11 @@ def classify_camera_input(
     ):
         status, message = "delayed", "Image timestamp delay exceeds the configured limit"
     elif (
+        camera_info_timestamp_delay_sec is not None
+        and abs(camera_info_timestamp_delay_sec) > maximum_timestamp_delay_sec
+    ):
+        status, message = "delayed", "CameraInfo timestamp delay exceeds the configured limit"
+    elif (
         image_camera_info_skew_sec is not None
         and image_camera_info_skew_sec > maximum_inter_camera_skew_sec
     ):

@@ -17,7 +17,7 @@ description: l、m、r 三台 RM65 在 ROS 2、RViz 2 和 GitHub Pages 中共享
 - 位置单位为米，欧拉角单位为弧度；Web 与 ROS 2 使用相同的 `x/y/z/roll/pitch/yaw`。
 - 两个 Web 查看器固定以中间臂 `m` 的基座为**显示原点和相机焦点**。这只是渲染坐标的平移；YAML 中的世界/TF 变换不会被改写。
 - `settings.default_joint_position` 作为六个旋转关节的初始位置。
-- 当前配置保存最近一次三臂布局 ChArUco 标定结果：左臂是布局参考；中、右臂的六自由度位姿来自同一次求解。重新标定后应将成功写回的 `three_robots.yaml` 提交，才能让 GitHub Pages 与配置布局一致。
+- 当前配置保存三臂布局：左臂是布局参考，中臂保持配置值。用户在标定页选择标定板位置相同的左右已求解 session 后，服务计算相对位姿并写回右臂六自由度位姿，原文件保留 `.bak`；重新 bringup 后 TF 生效。网站 3D 预览在下一次构建时同步配置。
 - 生产 Web 控制台进入 `ACTIVE/keyboard` 时，会在 l/r URDF 上绘制当前已验证 WORK 坐标轴；坐标位姿来自驱动运行状态，失配或离开模式立即隐藏。
 
 权威配置是 [`config/ros/three_robots.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/three_robots.yaml)。不要在 launch 文件、网页组件或 RViz 配置中复制布局数值。
@@ -73,7 +73,7 @@ config/ros/three_robots.yaml + config/ros/end_effectors.yaml
 
 - **只用于显示**：不进 TF、不参与运动或碰撞，`three_robots.launch.py`、录制和标定都不读它。没有 `pedestal` 段时两个查看器照旧只画地面网格；有底座时网格下移到底座底面，不再从底座中间穿过。
 - **是近似值，不是测量图纸**：底面高度由 2026-10-19 右臂真机抓取时的末端位置推出（夹爪尖在抓取瞬间的高度减 3 cm），占地面积只是刚好盖住三个基座。拿到实测尺寸后直接改这里。
-- **键名刻意避开 `x/y/z/roll/pitch/yaw`**：标定写回（`realman_camera_calibration/layout_update.py`）按行改写 `r:` 之后所有这些键名的行，底座若用这些键名会被右臂的标定结果覆盖。`test_layout_update_leaves_the_pedestal_block_untouched` 守住这一点。
+- 底座几何使用独立字段名，和机器人位姿字段保持区分；旧布局写回工具已不在当前单臂手眼流程中调用。
 - 网站生成的 `three-robots.json` 带 `pedestal`（驼峰键名），Web 控制台的 `/api/layout` 带 `pedestal`（下划线键名）；两边都校验正尺寸、`top_z > bottom_z` 和 `#rrggbb` 颜色。查看器节点上的 `data-pedestal="1"` 供端到端测试使用。
 
 GitHub Pages 工作流监听 YAML、URDF、mesh 和网站文件。推送这些路径的变化会重新构建页面，因此线上模型会反映最新提交。

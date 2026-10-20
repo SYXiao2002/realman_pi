@@ -21,7 +21,7 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
       <div class="hero-copy">
         <p class="hero-kicker">ROS 2 Humble / 多臂控制平台</p>
         <h1>RealMan RM65</h1>
-        <p class="hero-lead">左右两台 RM65 与两只 42D 夹爪，集成键盘 / Pika / 策略遥操作、行为树编排和相机标定，运行在同一个可复现的 Docker 环境里。右侧三臂模型由 <code>config/ros/three_robots.yaml</code> 构建，中臂保留为显示与标定参考。</p>
+        <p class="hero-lead">左右两台 RM65 与两只 42D 夹爪，集成键盘 / Pika / 策略遥操作、行为树编排和相机标定，运行在同一个可复现的 Docker 环境里。右侧三臂模型由 <code>config/ros/three_robots.yaml</code> 构建，中臂保留为显示参考。</p>
         <div class="hero-actions">
           <a class="rm-action primary" :href="withBase('/guide/getting-started')">快速开始</a>
           <a class="rm-action" :href="withBase('/architecture/overview')">系统架构</a>

@@ -1,4 +1,4 @@
-"""ROS services for ChArUco capture, hand-eye solve and arm registration."""
+"""ROS services for independent single-arm ChArUco eye-in-hand calibration."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import qos_profile_sensor_data
-from realman_msgs.srv import CaptureCalibrationSample, SolveCalibration
+from realman_msgs.srv import CaptureCalibrationSample, SolveCalibration, UpdateCalibrationLayout
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
@@ -34,16 +34,13 @@ from .calibration_math import (
     matrix_json,
     annotate_charuco,
     mean_transform_and_spread,
-    relative_pose_from_board_poses,
     solve_hand_eye,
     transform_matrix,
 )
 from .config import load_config
-from .layout_update import update_layout_file
 from .input_health import classify_camera_input
-
-
-ARMS = ("l", "m", "r")
+from .layout_update import update_layout_file
+from .session import content_hash, restore_session, session_identity, write_manifest
 
 
 @dataclass
@@ -79,16 +76,6 @@ def _transform_message_matrix(transform: Any) -> np.ndarray:
     )
 
 
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
-    return value
-
-
 class CameraCalibrationNode(Node):
     """A deep service interface over the ChArUco/TF calibration implementation."""
 
@@ -96,29 +83,25 @@ class CameraCalibrationNode(Node):
         super().__init__("camera_calibration")
         self._callback_group = ReentrantCallbackGroup()
         self._lock = threading.RLock()
+        self._operation_lock = threading.Lock()
         self.declare_parameter("config_file", self._default_config_file())
-        self.declare_parameter("layout_config_file", self._default_layout_config_file())
-        self.declare_parameter("update_layout_after_solve", True)
         config_file = str(self.get_parameter("config_file").value)
-        self._layout_config_file = Path(str(self.get_parameter("layout_config_file").value))
-        update_layout_value = self.get_parameter("update_layout_after_solve").value
-        if isinstance(update_layout_value, str):
-            self._update_layout_after_solve = update_layout_value.strip().lower() in {"1", "true", "yes", "on"}
-        else:
-            self._update_layout_after_solve = bool(update_layout_value)
+        self.declare_parameter("layout_config_file", str(Path(config_file).resolve().with_name("three_robots.yaml")))
+        self._layout_config_file = Path(str(self.get_parameter("layout_config_file").value)).expanduser().resolve()
         self._config = load_config(config_file)
         self._board = make_charuco_board(self._config["board"])
         self._frames = {
             camera_id: LatestFrame() for camera_id in self._config["cameras"]
         }
         self._samples: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._manifests: dict[str, dict[str, Any]] = {}
         self._session_id = ""
-        self._subscriptions: list[Any] = []
+        self._camera_subscriptions: list[Any] = []
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         for camera_id, camera in self._config["cameras"].items():
-            self._subscriptions.append(
+            self._camera_subscriptions.append(
                 self.create_subscription(
                     Image,
                     camera["image_topic"],
@@ -127,7 +110,7 @@ class CameraCalibrationNode(Node):
                     callback_group=self._callback_group,
                 )
             )
-            self._subscriptions.append(
+            self._camera_subscriptions.append(
                 self.create_subscription(
                     CameraInfo,
                     camera["camera_info_topic"],
@@ -150,6 +133,12 @@ class CameraCalibrationNode(Node):
             self._solve,
             callback_group=self._callback_group,
         )
+        self._layout_service = self.create_service(
+            UpdateCalibrationLayout,
+            str(services.get("update_layout", "/camera_calibration/update_layout")),
+            self._update_layout,
+            callback_group=self._callback_group,
+        )
         self._diagnostics = self.create_publisher(
             DiagnosticArray,
             str(self._config.get("diagnostics_topic", "/camera_calibration/diagnostics")),
@@ -164,8 +153,8 @@ class CameraCalibrationNode(Node):
             1.0, self._publish_diagnostics, callback_group=self._callback_group
         )
         self.get_logger().info(
-            f"ChArUco calibration services ready for arms {list(self._required_arms())}; "
-            "capture is atomic and solve requires all three arms"
+            f"Single-arm ChArUco calibration ready for {list(self._required_arms())}; "
+            "each session captures and solves one wrist independently"
         )
 
     def _default_config_file(self) -> str:
@@ -175,19 +164,8 @@ class CameraCalibrationNode(Node):
         root = os.environ.get("REALMAN_CONFIG_ROOT", str(Path.cwd() / "config"))
         return str(Path(root) / "ros" / "camera_calibration.yaml")
 
-    def _default_layout_config_file(self) -> str:
-        override = os.environ.get("REALMAN_LAYOUT_CONFIG_FILE", "")
-        if override:
-            return override
-        root = os.environ.get("REALMAN_CONFIG_ROOT", str(Path.cwd() / "config"))
-        return str(Path(root) / "ros" / "three_robots.yaml")
-
     def _required_arms(self) -> tuple[str, ...]:
-        configured = self._config.get("sampling", {}).get("required_arms", ARMS)
-        arms = tuple(str(arm) for arm in configured)
-        if set(arms) != set(ARMS):
-            raise ValueError("sampling.required_arms must contain exactly l, m and r")
-        return arms
+        return tuple(self._config["sampling"]["arm_order"])
 
     def _on_image(self, camera_id: str, message: Image) -> None:
         try:
@@ -207,371 +185,309 @@ class CameraCalibrationNode(Node):
             frame.camera_info = message
             frame.camera_info_received_monotonic = time.monotonic()
 
-    @staticmethod
-    def _set_capture_diagnostics(
-        response: CaptureCalibrationSample.Response,
-        latest_image_paths: list[str],
-        detection_statuses: list[str],
-        detection_messages: list[str],
-    ) -> None:
-        response.latest_image_paths = list(latest_image_paths)
-        response.detection_statuses = list(detection_statuses)
-        response.detection_messages = list(detection_messages)
-
-    def _capture(self, request: CaptureCalibrationSample.Request, response: CaptureCalibrationSample.Response) -> CaptureCalibrationSample.Response:
-        requested = tuple(request.arm_ids) if request.arm_ids else self._required_arms()
-        if len(requested) != 3 or set(requested) != set(self._required_arms()):
-            response.message = "capture requires arm_ids l, m and r together"
+    def _capture(self, request, response):
+        if not self._operation_lock.acquire(blocking=False):
+            response.message = "another calibration operation is in progress"
             return response
-        if request.start_new_session or not self._session_id:
-            self._start_session()
-        elif request.session_id and request.session_id != self._session_id:
-            if not self._load_session(request.session_id):
-                response.message = f"unknown calibration session: {request.session_id}"
-                return response
-        session_id = self._session_id
-        observations: dict[str, dict[str, Any]] = {}
-        latest_image_paths: list[str] = []
-        detection_statuses: list[str] = []
-        detection_messages: list[str] = []
-        attempt_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        attempt_dir = self._session_directory(session_id) / "attempts" / attempt_id
-        attempt_dir.mkdir(parents=True, exist_ok=True)
-        max_age = float(self._config["sampling"]["maximum_message_age_sec"])
         try:
-            for arm in self._required_arms():
-                camera_id = self._camera_for_arm(arm)
-                best_error = ""
-                observation = None
-                for _ in range(8):
-                    now = time.monotonic()
-                    with self._lock:
-                        frame = self._frames[camera_id]
-                        if frame.image is None or frame.camera_info is None:
-                            image = None
-                            image_message = None
-                            info = None
-                        elif now - frame.image_received_monotonic > max_age:
-                            image = None
-                            image_message = None
-                            info = None
-                            best_error = f"{arm}: image is older than {max_age:.2f}s"
-                        elif now - frame.camera_info_received_monotonic > max_age:
-                            image = None
-                            image_message = None
-                            info = None
-                            best_error = f"{arm}: CameraInfo is older than {max_age:.2f}s"
-                        else:
-                            image = frame.image.copy()
-                            image_message = frame.image_message
-                            info = frame.camera_info
-                    if image is None:
-                        time.sleep(0.06)
-                        continue
-                    try:
-                        candidate = detect_charuco(
-                            image,
-                            np.asarray(info.k, dtype=np.float64).reshape(3, 3),
-                            np.asarray(info.d, dtype=np.float64),
-                            self._board,
-                            int(self._config["board"]["minimum_corners"]),
-                        )
-                    except Exception as error:
-                        best_error = str(error)
-                        time.sleep(0.06)
-                        continue
-                    observation = candidate
-                    break
-                if image is None or image_message is None or info is None:
-                    status = "missing_input" if not best_error else "stale"
-                    detection_statuses.append(status)
-                    detection_messages.append(best_error or f"{arm}: image or CameraInfo has not arrived")
-                    latest_image_paths.append("")
-                    continue
-                latest_path = attempt_dir / f"{camera_id}.png"
-                latest_image_paths.append(str(latest_path) if cv2.imwrite(str(latest_path), image) else "")
-                if observation is None:
-                    detection_statuses.append("not_detected")
-                    detection_messages.append(best_error or f"{arm}: ChArUco board not visible")
-                    continue
-                tf_config = self._config["robots"][arm]
-                try:
-                    transform = self._tf_buffer.lookup_transform(
-                        tf_config["base_frame"],
-                        tf_config["end_effector_frame"],
-                        Time.from_msg(image_message.header.stamp),
-                        timeout=Duration(
-                            seconds=float(self._config["sampling"]["tf_timeout_sec"])
-                        ),
-                    )
-                except Exception as error:
-                    detection_statuses.append("tf_unavailable")
-                    detection_messages.append(f"{arm}: {error}")
-                    continue
-                base_to_tool = _transform_message_matrix(transform)
-                detection_statuses.append("detected")
-                detection_messages.append(f"{arm}: detected {len(observation.ids)} ChArUco corners")
-                observations[arm] = {
-                    "camera_id": camera_id,
-                    "image": image,
-                    "observation": observation,
-                    "base_to_tool": base_to_tool,
-                    "captured_at": datetime.now(timezone.utc).isoformat(),
-                    "stamp_ns": int(image_message.header.stamp.sec) * 1_000_000_000
-                    + int(image_message.header.stamp.nanosec),
-                }
-            if len(observations) != len(self._required_arms()):
-                raise ValueError(
-                    "; ".join(
-                        f"{arm}: {message}"
-                        for arm, message in zip(self._required_arms(), detection_messages)
-                        if message and not message.startswith(f"{arm}: detected")
-                    )
-                    or "one or more cameras failed"
-                )
-            stamps = [item["stamp_ns"] for item in observations.values()]
-            if any(stamp <= 0 for stamp in stamps):
-                raise ValueError("camera images must carry non-zero ROS timestamps")
-            skew_sec = (max(stamps) - min(stamps)) / 1_000_000_000.0
-            maximum_skew = float(
-                self._config["sampling"]["maximum_inter_camera_skew_sec"]
-            )
-            if skew_sec > maximum_skew:
-                raise ValueError(
-                    f"inter-camera image skew {skew_sec:.3f}s exceeds {maximum_skew:.3f}s"
-                )
+            return self._capture_locked(request, response)
         except Exception as error:
-            response.session_id = session_id
-            self._set_capture_diagnostics(
-                response, latest_image_paths, detection_statuses, detection_messages
-            )
-            response.message = f"capture rejected atomically: {error}"
+            response.message = f"capture rejected: {error}"
             self.get_logger().warn(response.message)
             return response
+        finally:
+            self._operation_lock.release()
 
+    def _capture_locked(self, request, response):
+        arm = request.arm_id or self._config["sampling"]["default_arm"]
+        identity = session_identity(self._config, arm)
+        response.arm_id = arm
+        if request.start_new_session:
+            if request.session_id:
+                raise ValueError("start_new_session requires an empty session_id")
+            self._start_session(arm)
+        elif request.session_id:
+            self._load_session(request.session_id, arm)
+        elif not self._session_id:
+            self._start_session(arm)
+        elif self._manifests[self._session_id]["identity"] != identity:
+            raise ValueError("selected arm differs from the active session; start or load its own session")
+        session_id = self._session_id
+        manifest = self._manifests[session_id]
+        response.session_id = session_id
+        samples = self._samples[session_id][arm]
+        response.sample_count = len(samples)
+        camera_id = identity["camera_id"]
         batch_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        attempt_dir = self._session_directory(session_id) / "attempts" / batch_id
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        sampling = self._config["sampling"]
+        best_error = "waiting for Image and CameraInfo"
+        observation = None
+        image = None
+        message = None
+        info = None
+        for _ in range(8):
+            now = time.monotonic()
+            with self._lock:
+                frame = self._frames[camera_id]
+                health = self._camera_health_state(
+                    camera_id, frame, now, self.get_clock().now().nanoseconds
+                )
+                if health["status"] == "healthy":
+                    image = frame.image.copy()
+                    message = frame.image_message
+                    info = frame.camera_info
+                else:
+                    image = message = info = None
+                    best_error = str(health["message"])
+            if image is None:
+                time.sleep(0.06)
+                continue
+            try:
+                if self._message_stamp_ns(message) <= 0 or self._message_stamp_ns(info) <= 0:
+                    raise ValueError("Image and CameraInfo require non-zero ROS timestamps")
+                if message.header.frame_id != identity["optical_frame"] or info.header.frame_id != identity["optical_frame"]:
+                    raise ValueError("Image/CameraInfo optical frame differs from configured camera")
+                if (info.width, info.height) != (image.shape[1], image.shape[0]):
+                    raise ValueError("CameraInfo resolution differs from Image")
+                observation = detect_charuco(
+                    image, np.asarray(info.k, dtype=np.float64).reshape(3, 3),
+                    np.asarray(info.d, dtype=np.float64), self._board,
+                    int(self._config["board"]["minimum_corners"]),
+                )
+                break
+            except Exception as error:
+                best_error = str(error)
+                time.sleep(0.06)
+        if image is not None:
+            latest = attempt_dir / f"{camera_id}.png"
+            if cv2.imwrite(str(latest), image):
+                response.latest_image_path = str(latest)
+        if observation is None:
+            response.detection_status = "missing_input" if image is None else "not_detected"
+            response.detection_message = best_error
+            raise ValueError(best_error)
+        intrinsics = {
+            "width": int(info.width), "height": int(info.height),
+            "k": list(info.k), "d": list(info.d),
+            "distortion_model": str(info.distortion_model),
+        }
+        intrinsic_hash = content_hash(intrinsics)
+        if manifest.get("intrinsics_sha256") not in (None, intrinsic_hash):
+            raise ValueError("camera intrinsics changed within this session; start a new session")
+        robot = self._config["robots"][arm]
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                robot["base_frame"], robot["end_effector_frame"],
+                Time.from_msg(message.header.stamp),
+                timeout=Duration(seconds=float(sampling["tf_timeout_sec"])),
+            )
+        except Exception as error:
+            response.detection_status = "tf_unavailable"
+            response.detection_message = str(error)
+            raise ValueError(f"image-time flange TF unavailable: {error}") from error
+        response.detection_status = "detected"
+        response.detection_message = f"{arm}: detected {len(observation.ids)} ChArUco corners"
         output_dir = self._session_directory(session_id)
-        output_dir.mkdir(parents=True, exist_ok=True)
         batch_root = output_dir / "batches"
         batch_root.mkdir(parents=True, exist_ok=True)
         final_batch_dir = batch_root / batch_id
-        staging_dir = batch_root / f".{batch_id}.tmp"
-        staging_dir.mkdir(parents=False, exist_ok=False)
-        sample_ids: list[str] = []
-        image_paths: list[str] = []
-        preview_image_paths: list[str] = []
-        counts: list[int] = []
-        pending: list[tuple[str, dict[str, Any]]] = []
+        staging = batch_root / f".{batch_id}.tmp"
+        staging.mkdir()
+        sample_id = f"{arm}-{len(samples):04d}-{batch_id}"
+        image_path = final_batch_dir / f"{sample_id}.png"
+        preview_path = final_batch_dir / f"{sample_id}-preview.png"
+        sample = {
+            "sample_id": sample_id, "arm_id": arm, "identity": identity,
+            "image_path": str(image_path), "preview_image_path": str(preview_path),
+            "base_to_tool": _transform_message_matrix(transform).tolist(),
+            "target_to_camera": observation.target_to_camera.tolist(),
+            "reprojection_error_px": observation.reprojection_error_px,
+            "charuco_ids": observation.ids.reshape(-1).tolist(),
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "stamp_ns": self._message_stamp_ns(message),
+            "intrinsics_sha256": intrinsic_hash,
+        }
         try:
-            for arm in self._required_arms():
-                item = observations[arm]
-                observation = item["observation"]
-                sample_index = len(self._samples.setdefault(session_id, {}).setdefault(arm, []))
-                sample_id = f"{arm}-{sample_index:04d}-{batch_id}"
-                staged_image = staging_dir / f"{sample_id}.png"
-                staged_preview = staging_dir / f"{sample_id}-preview.png"
-                staged_metadata = staging_dir / f"{sample_id}.json"
-                image_path = final_batch_dir / staged_image.name
-                preview_image_path = final_batch_dir / staged_preview.name
-                if not cv2.imwrite(str(staged_image), item["image"]):
-                    raise OSError(f"failed to write {staged_image}")
-                preview = annotate_charuco(
-                    item["image"],
-                    observation,
-                    float(self._config["board"]["square_length_m"]) * 2.0,
-                )
-                if not cv2.imwrite(str(staged_preview), preview):
-                    raise OSError(f"failed to write {staged_preview}")
-                sample = {
-                    "sample_id": sample_id,
-                    "image_path": str(image_path),
-                    "preview_image_path": str(preview_image_path),
-                    "base_to_tool": item["base_to_tool"].tolist(),
-                    "target_to_camera": observation.target_to_camera.tolist(),
-                    "reprojection_error_px": observation.reprojection_error_px,
-                    "charuco_ids": observation.ids.reshape(-1).tolist(),
-                    "captured_at": item["captured_at"],
-                }
-                staged_metadata.write_text(json.dumps(sample, indent=2), encoding="utf-8")
-                pending.append((arm, sample))
-            staging_dir.replace(final_batch_dir)
-            for arm, sample in pending:
-                self._samples[session_id][arm].append(sample)
-                sample_ids.append(sample["sample_id"])
-                image_paths.append(sample["image_path"])
-                preview_image_paths.append(sample["preview_image_path"])
-                counts.append(len(self._samples[session_id][arm]))
-        except Exception as error:
-            response.session_id = session_id
-            response.message = f"capture rejected atomically while writing files: {error}"
-            self.get_logger().error(response.message)
-            if staging_dir.is_dir():
-                for path in staging_dir.glob("*"):
-                    path.unlink(missing_ok=True)
-                staging_dir.rmdir()
-            return response
-
+            if not cv2.imwrite(str(staging / image_path.name), image):
+                raise OSError("could not save sample image")
+            preview = annotate_charuco(
+                image, observation, float(self._config["board"]["square_length_m"]) * 2.0
+            )
+            if not cv2.imwrite(str(staging / preview_path.name), preview):
+                raise OSError("could not save sample preview")
+            (staging / f"{sample_id}.json").write_text(
+                json.dumps(sample, indent=2, allow_nan=False), encoding="utf-8"
+            )
+            if manifest.get("intrinsics_sha256") is None:
+                manifest = {**manifest, "intrinsics": intrinsics, "intrinsics_sha256": intrinsic_hash}
+                write_manifest(output_dir, manifest)
+                self._manifests[session_id] = manifest
+            staging.replace(final_batch_dir)
+        except Exception:
+            for path in staging.glob("*"):
+                path.unlink(missing_ok=True)
+            staging.rmdir()
+            raise
+        samples.append(sample)
         response.success = True
-        response.session_id = session_id
         response.batch_id = batch_id
-        response.captured_arm_ids = list(self._required_arms())
-        response.sample_counts = counts
-        response.sample_ids = sample_ids
-        response.image_paths = image_paths
-        response.preview_image_paths = preview_image_paths
-        self._set_capture_diagnostics(
-            response, latest_image_paths, detection_statuses, detection_messages
-        )
-        response.message = "captured ChArUco image, board pose and end-effector TF for all three arms"
-        self.get_logger().info(f"Captured calibration batch {batch_id} for session {session_id}")
+        response.sample_count = len(samples)
+        response.sample_id = sample_id
+        response.image_path = str(image_path)
+        response.preview_image_path = str(preview_path)
+        response.message = f"accepted one {arm} wrist sample; other arms are not required"
+        self.get_logger().info(response.message)
         return response
 
-    def _solve(self, request: SolveCalibration.Request, response: SolveCalibration.Response) -> SolveCalibration.Response:
-        session_id = request.session_id or self._session_id
-        response.session_id = session_id
-        if session_id and session_id not in self._samples:
-            self._load_session(session_id)
-        if not session_id or session_id not in self._samples:
-            response.message = "no active calibration session"
+    def _solve(self, request, response):
+        if not self._operation_lock.acquire(blocking=False):
+            response.message = "another calibration operation is in progress"
             return response
-        required = self._required_arms()
-        samples_by_arm = self._samples[session_id]
-        minimum = int(self._config["sampling"]["minimum_samples_per_arm"])
-        response.sample_counts = [len(samples_by_arm.get(arm, [])) for arm in required]
-        if any(count < minimum for count in response.sample_counts):
-            response.message = f"each arm needs at least {minimum} atomic samples"
-            return response
-        results: dict[str, Any] = {}
-        base_to_board: dict[str, np.ndarray] = {}
-        residual_limit = float(self._config["solver"]["maximum_hand_eye_residual"])
         try:
-            for arm in required:
-                solved = solve_hand_eye(
-                    samples_by_arm[arm],
-                    str(self._config["solver"]["hand_eye_method"]),
-                )
-                if solved["mean_residual_m"] > residual_limit:
-                    raise ValueError(
-                        f"{arm} hand-eye residual {solved['mean_residual_m']:.4f}m exceeds {residual_limit:.4f}m"
-                    )
-                tool_to_camera = solved["tool_to_camera"]
-                board_poses = [
-                    np.asarray(sample["base_to_tool"]) @ tool_to_camera @ np.asarray(sample["target_to_camera"])
-                    for sample in samples_by_arm[arm]
-                ]
-                mean_board_pose, translation_spread, rotation_spread = mean_transform_and_spread(board_poses)
-                translation_limit = float(self._config["solver"]["maximum_relative_translation_spread_m"])
-                rotation_limit = float(self._config["solver"]["maximum_relative_rotation_spread_rad"])
-                if translation_spread > translation_limit or rotation_spread > rotation_limit:
-                    raise ValueError(
-                        f"{arm} board-pose spread is {translation_spread:.4f}m/"
-                        f"{rotation_spread:.4f}rad; limits are {translation_limit:.4f}m/"
-                        f"{rotation_limit:.4f}rad"
-                    )
-                base_to_board[arm] = mean_board_pose
-                results[arm] = {
-                    "sample_count": solved["sample_count"],
-                    "mean_hand_eye_residual_m": solved["mean_residual_m"],
-                    "tool_to_camera": matrix_json(tool_to_camera),
-                    "base_to_board": matrix_json(mean_board_pose),
-                    "translation_spread_m": translation_spread,
-                    "rotation_spread_rad": rotation_spread,
-                }
+            return self._solve_locked(request, response)
         except Exception as error:
             response.message = f"calibration solve rejected: {error}"
             self.get_logger().error(response.message)
             return response
+        finally:
+            self._operation_lock.release()
 
-        result: dict[str, Any] = {
-            "session_id": session_id,
+    def _solve_locked(self, request, response):
+        arm = request.arm_id or self._config["sampling"]["default_arm"]
+        session_identity(self._config, arm)
+        session_id = request.session_id or self._session_id
+        response.session_id = session_id
+        response.arm_id = arm
+        if not session_id:
+            raise ValueError("no calibration session selected")
+        # Always reload: immutable disk provenance, not the active arm, owns solve.
+        self._load_session(session_id, arm)
+        samples = self._samples[session_id][arm]
+        manifest = self._manifests[session_id]
+        response.sample_count = len(samples)
+        minimum = int(self._config["sampling"]["minimum_samples_per_arm"])
+        if len(samples) < minimum:
+            raise ValueError(f"selected {arm} session needs at least {minimum} pose-diverse samples")
+        solver = self._config["solver"]
+        solved = solve_hand_eye(samples, str(solver["hand_eye_method"]))
+        residual_limit = float(solver["maximum_hand_eye_residual"])
+        if solved["mean_residual_m"] > residual_limit:
+            raise ValueError(f"hand-eye residual exceeds {residual_limit:.4f}m")
+        tool_to_camera = solved["tool_to_camera"]
+        board_poses = [
+            np.asarray(sample["base_to_tool"]) @ tool_to_camera @ np.asarray(sample["target_to_camera"])
+            for sample in samples
+        ]
+        board_pose, translation_spread, rotation_spread = mean_transform_and_spread(board_poses)
+        if translation_spread > float(solver["maximum_board_translation_spread_m"]) or rotation_spread > float(solver["maximum_board_rotation_spread_rad"]):
+            raise ValueError(f"board-pose spread too large: {translation_spread:.4f}m/{rotation_spread:.4f}rad")
+        result = {
+            "schema_version": 1, "session_id": session_id, "arm_id": arm,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "board": self._config["board"],
-            "hand_eye": results,
-            "relative_base_poses": relative_pose_from_board_poses(base_to_board),
+            "identity": manifest["identity"], "intrinsics": manifest["intrinsics"],
+            "intrinsics_sha256": manifest["intrinsics_sha256"],
+            "board": self._config["board"], "method": solver["hand_eye_method"],
+            "hand_eye": {arm: {
+                "sample_count": len(samples), "tool_to_camera": matrix_json(tool_to_camera),
+                "mean_hand_eye_residual_m": solved["mean_residual_m"],
+                "base_to_board": matrix_json(board_pose),
+                "translation_spread_m": translation_spread,
+                "rotation_spread_rad": rotation_spread,
+            }},
+            "verified_for_grasp": False,
         }
-        backup_path: Path | None = None
-        if self._update_layout_after_solve:
-            try:
-                backup_path = update_layout_file(
-                    self._layout_config_file,
-                    result["relative_base_poses"],
-                )
-            except Exception as error:
-                response.message = f"calibration solved but layout update failed; no success reported: {error}"
-                self.get_logger().error(response.message)
-                return response
-        result["layout_update"] = {
-            "enabled": self._update_layout_after_solve,
-            "updated": self._update_layout_after_solve,
-            "layout_file": str(self._layout_config_file),
-            "backup_file": str(backup_path) if backup_path else "",
-        }
+        result["calibration_id"] = content_hash(result)
         result_path = self._session_directory(session_id) / "calibration_result.json"
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        result_path.write_text(json.dumps(_json_safe(result), indent=2), encoding="utf-8")
-        result_json = json.dumps(_json_safe(result), separators=(",", ":"))
+        temporary = result_path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
+            temporary.replace(result_path)
+        finally:
+            temporary.unlink(missing_ok=True)
         response.success = True
-        response.all_arms_solved = True
         response.result_file = str(result_path)
-        response.result_json = result_json
-        response.mean_reprojection_error_px = float(
-            np.mean(
-                [sample["reprojection_error_px"] for arm in required for sample in samples_by_arm[arm]]
-            )
-        )
-        if self._update_layout_after_solve:
-            response.layout_updated = True
-            response.layout_backup_file = str(backup_path) if backup_path else ""
-            response.message = (
-                "hand-eye calibration succeeded for l/m/r; relative base poses were computed "
-                f"and written to {self._layout_config_file}"
-            )
-        else:
-            response.layout_updated = False
-            response.layout_backup_file = ""
-            response.message = "hand-eye calibration succeeded for l/m/r; layout write-back is disabled"
+        response.result_json = json.dumps(result, separators=(",", ":"), allow_nan=False)
+        response.mean_reprojection_error_px = float(np.mean([sample["reprojection_error_px"] for sample in samples]))
+        response.layout_updated = False
+        response.layout_backup_file = ""
+        response.message = f"{arm} hand-eye solved; select left/right sessions to update base layout"
         self.get_logger().info(response.message)
         return response
 
-    def _start_session(self) -> None:
+    def _start_session(self, arm: str) -> None:
         self._session_id = datetime.now(timezone.utc).strftime("session-%Y%m%dT%H%M%S.%fZ")
-        self._samples[self._session_id] = {arm: [] for arm in self._required_arms()}
-        self._session_directory(self._session_id).mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": 1, "session_id": self._session_id,
+            "identity": session_identity(self._config, arm),
+        }
+        write_manifest(self._session_directory(self._session_id), manifest)
+        self._manifests[self._session_id] = manifest
+        self._samples[self._session_id] = {arm: []}
 
-    def _load_session(self, session_id: str) -> bool:
-        """Restore sample metadata so a service client can continue after restart."""
-        if not re.fullmatch(r"session-[0-9TZ.\-]+", session_id):
-            return False
-        directory = self._session_directory(session_id)
-        if not directory.is_dir():
-            return False
-        restored = {arm: [] for arm in self._required_arms()}
+    def _update_layout(self, request, response):
+        response.left_session_id = request.left_session_id
+        response.right_session_id = request.right_session_id
+        if not self._operation_lock.acquire(blocking=False):
+            response.message = "another calibration operation is in progress"
+            return response
         try:
-            for metadata_path in sorted(directory.rglob("*.json")):
-                if metadata_path.name == "calibration_result.json":
-                    continue
-                relative_metadata = metadata_path.relative_to(directory)
-                if any(part.startswith(".") for part in relative_metadata.parts):
-                    continue
-                sample = json.loads(metadata_path.read_text(encoding="utf-8"))
-                sample_id = str(sample["sample_id"])
-                arm = sample_id.split("-", 1)[0]
-                if arm not in restored or not isinstance(sample["base_to_tool"], list):
-                    continue
-                restored[arm].append(sample)
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-            return False
-        if not any(restored.values()):
-            return False
-        self._session_id = session_id
-        self._samples[session_id] = restored
-        return True
+            poses = {}
+            for arm, session_id in (("l", request.left_session_id), ("r", request.right_session_id)):
+                result_path = self._session_directory(session_id) / "calibration_result.json"
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                if result.get("session_id") != session_id or result.get("arm_id") != arm:
+                    raise ValueError(f"selected {arm} session does not contain a solved {arm} result")
+                manifest, samples = restore_session(self._session_directory(session_id), self._config, arm)
+                if result.get("identity") != manifest.get("identity"):
+                    raise ValueError(f"selected {arm} result identity differs from its session")
+                hashed = {key: value for key, value in result.items() if key != "calibration_id"}
+                if result.get("calibration_id") != content_hash(hashed):
+                    raise ValueError(f"selected {arm} result hash is invalid; solve it again")
+                if result.get("intrinsics_sha256") != manifest.get("intrinsics_sha256"):
+                    raise ValueError(f"selected {arm} result intrinsics changed since solving")
+                if result.get("board") != self._config["board"]:
+                    raise ValueError(f"selected {arm} board configuration differs from current config")
+                hand_eye = result.get("hand_eye", {}).get(arm)
+                if not isinstance(hand_eye, dict) or hand_eye.get("sample_count") != len(samples):
+                    raise ValueError(f"selected {arm} result samples changed since solving")
+                if len(samples) < int(self._config["sampling"]["minimum_samples_per_arm"]):
+                    raise ValueError(f"selected {arm} session has too few samples")
+                solver = self._config["solver"]
+                for field, limit in (
+                    ("mean_hand_eye_residual_m", "maximum_hand_eye_residual"),
+                    ("translation_spread_m", "maximum_board_translation_spread_m"),
+                    ("rotation_spread_rad", "maximum_board_rotation_spread_rad"),
+                ):
+                    value = float(hand_eye[field])
+                    if not np.isfinite(value) or value > float(solver[limit]):
+                        raise ValueError(f"selected {arm} result fails current {limit}")
+                pose = np.asarray(result["hand_eye"][arm]["base_to_board"], dtype=np.float64)
+                if pose.shape != (4, 4) or not np.isfinite(pose).all():
+                    raise ValueError(f"invalid {arm} base_to_board matrix")
+                poses[arm] = pose
+            relative = poses["l"] @ np.linalg.inv(poses["r"])
+            backup = update_layout_file(self._layout_config_file, {"r": relative})
+            response.layout_updated = True
+            response.layout_backup_file = str(backup)
+            response.success = True
+            response.message = "right-arm layout updated; left/middle preserved; restart bringup to load base TF"
+            self.get_logger().info(
+                f"{response.message}; l={request.left_session_id}, r={request.right_session_id}"
+            )
+        except Exception as error:
+            response.message = f"layout update rejected: {error}"
+            self.get_logger().error(response.message)
+        finally:
+            self._operation_lock.release()
+        return response
 
-    def _camera_for_arm(self, arm: str) -> str:
-        for camera_id, camera in self._config["cameras"].items():
-            if str(camera["arm_id"]) == arm:
-                return camera_id
-        raise ValueError(f"no camera configured for arm {arm}")
+    def _load_session(self, session_id: str, arm: str) -> None:
+        manifest, samples = restore_session(self._session_directory(session_id), self._config, arm)
+        self._session_id = session_id
+        self._manifests[session_id] = manifest
+        self._samples[session_id] = {arm: samples}
 
     def _session_directory(self, session_id: str) -> Path:
         if not re.fullmatch(r"session-[0-9TZ.\-]+", session_id):
