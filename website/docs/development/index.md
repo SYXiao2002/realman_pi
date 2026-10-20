@@ -54,7 +54,7 @@ description: realman_pi 开发者入口：按任务找到对应页面，了解�
 - **Lint**：`ruff check --config config/python/ruff.toml src tools scripts docker` 必须通过（CI 会跑）；规则和 vendor 排除项见该配置的注释。
 - **日志**：只用 `rclpy` / `rclcpp` 官方日志接口，保留彩色 rcutils 输出和 `logs/YYYYMMDD_HHMMSS/` 时间目录（`ros2-logging-conventions` skill）。
 - **安全默认值**：行为树 router 默认 dry-run；限值分"普通会话"与"Pika 硬上限"两层；坐标失配会关闭 motion gate。
-- **vendor 目录不改**：`src/sensor/OrbbecSDK_ROS2`、`src/sensor/realsense`、`third_party/behavior_tree_cpp` 是快照，差异通过配置与自己的包表达。
+- **vendor 目录不改**：`third_party/behavior_tree_cpp` 是快照，差异通过配置与自己的包表达。相机使用宿主机二进制 `orbbec_camera`，本仓库不维护厂商相机驱动源码。
 - **提交习惯**：功能分支 + PR 合入 `main`；提交说明写清验证了什么、没验证什么。`./rm65 sync` 只同步 clean 的 `main`。
 - **AI 助手**：项目级 skill 位于 `.agents/skills/`（架构、驱动、行为树、夹爪、Pika 两端调试、日志、文档同步），与本手册同步维护，冲突时以仓库实现和本手册为准。
 

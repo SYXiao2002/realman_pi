@@ -69,7 +69,7 @@ realman_bt_executor ── /realman_bt_executor/input_mode_state ──▶ ModeW
 | 用途 | 默认 topic | 类型 |
 | --- | --- | --- |
 | 腕部图像 | `/camera_right/color/image_raw` | `sensor_msgs/Image` |
-| 全局图像 | `/camera_global/d435/color/image_raw` | `sensor_msgs/Image`（独立 RealSense D435，区别于三路 Orbbec 臂相机） |
+| 全局图像 | `/camera_global/color/image_raw` | `sensor_msgs/Image`（back GLOBAL Gemini 335L） |
 | 关节状态 | `/l/joint_states`、`/r/joint_states` | `sensor_msgs/JointState` |
 | 夹爪位置 | `/gripper_left/position`、`/gripper_right/position` | `std_msgs/Float64` |
 | 夹爪行程 | `/gripper_left/limits`、`/gripper_right/limits` | `gripper_ros2_msgs/GripperLimits`（可靠、`transient_local`、深度 1）；`state[6]` 的开位、闭位随它更新 |

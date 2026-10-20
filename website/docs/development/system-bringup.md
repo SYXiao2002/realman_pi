@@ -23,10 +23,11 @@ description: 三臂、RViz 2、输入节点、远程调试和 ROS 2 运行日志
 
 ## 统一生产入口
 
-推荐从仓库根目录执行 `./rm65 up`。该命令先在宿主机启动三路 ROS 2 彩色相机，再启动 Docker
+推荐从仓库根目录执行 `./rm65 up`。该命令先在宿主机通过二进制 `orbbec_camera` 包启动四路 Orbbec RGB，等待四路都实际出帧，再启动 Docker
 中的 `realman_bringup_remote`（三臂真实驱动、headless、`restart: unless-stopped`），因此标定和
-机械臂节点加入同一个 ROS 2 图。相机启动失败时不会启动 Docker；Docker 启动失败会自动停止相机，
-避免半启动状态。
+机械臂节点加入同一个 ROS 2 图。相机启动失败时会清理已启动的相机并且不会启动 Docker。若相机已就绪但
+Compose 启动失败，`./rm65 up` 返回失败并保留 RGB 流，便于继续查看画面和诊断；确认要结束本次运行时执行
+`./rm65 down`，它会停止 Compose 服务，再等待受管相机 launch 逐个退出并释放 USB 设备。
 
 ```bash
 ./rm65 build              # 仅重建生产 driver/Web 本地镜像，不改变容器状态
@@ -49,7 +50,8 @@ description: 三臂、RViz 2、输入节点、远程调试和 ROS 2 运行日志
 容器即可生效，不需要重建镜像。
 
 相机后台进程 PID 保存在 `logs/.rm65-camera.pid`，其标准输出写入 `logs/rm65-camera.log`；ROS 2
-节点仍按官方机制写入 `logs/YYYYMMDD_HHMMSS/`。
+节点仍按官方机制写入 `logs/YYYYMMDD_HHMMSS/`。相机使用宿主机 ROS distro 中的二进制
+`orbbec_camera`，不 source 仓库 install 或 vendor overlay。配置与串号见[相机指南](../guide/cameras)。
 
 `bt control` 必须在一个唯一运行中的 bringup 容器上单独运行，但不要求该容器由 `./rm65 up` 启动：它加入
 同一 ROS domain，保持 :8080 只读监视器、`realman_bt_executor`、`pika_control_router` 和
@@ -286,7 +288,7 @@ source /path/to/realman_pi/functions.zsh
 ```
 
 `FASTDDS_BUILTIN_TRANSPORTS` 也必须由同一 `.env` 提供。生产默认值为 `UDPv4`：它禁止宿主
-Orbbec ROS2 工作区和 Docker 镜像在 Fast DDS 共享内存 ABI 不一致时出现“发现到 topic、但收不到
+Orbbec ROS2 二进制包和 Docker 镜像在 Fast DDS 共享内存 ABI 不一致时出现“发现到 topic、但收不到
 Image”的状态。修改该值后必须重启相关 Docker 服务和宿主相机 launch。
 
 Web 控制台不再读取 token；浏览器打开后即可通过 `realman_web_control` 提交动作。该服务

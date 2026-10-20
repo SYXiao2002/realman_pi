@@ -36,11 +36,13 @@ rm65_project_help
 ./rm65 sync               # 校验 main 后同步生产端
 ```
 
-默认相机链路是 `rm65_camera_ros2 color`，用 ROS2 节点发布三路 Orbbec（`/camera_left|middle|right`）
-和全局 RealSense D435（`/camera_global/d435`）的彩色话题，与 `config/ros/camera_calibration.yaml`
-中的彩色话题一致；缺少 `realsense2_camera` 驱动时 `./rm65 up` 直接失败，禁止降级为仅三路 Orbbec。RTSP/TCP 推流
-（`./rm65 camera`、`rm65_camera_start`）已弃用，仅作历史备选，且与 ROS2 节点互斥。默认 `up`
-不启动 RViz，生产端不需要 `DISPLAY` 或 `XAUTHORITY`。
+默认相机链路是宿主机 `rm65_camera_ros2 color`：直接使用已安装的 `orbbec_camera` 二进制包，
+按串号启动两台 Gemini 335L 全局相机（`/camera_global`、`/camera_global2`）和两台 Gemini 305
+腕部相机（`/camera_right`、`/camera_left`）。四路均为 RGB-only；`./rm65 up` 等待每路
+`color/image_raw` 首帧，首帧失败会清理相机且不启动 Docker。相机就绪后若 Compose 启动失败，命令返回失败但
+保留相机流；执行 `./rm65 down` 可停止服务并等待相机 launch 逐个退出、释放 USB。不 source 本仓库 install
+或 vendor overlay，不依赖 RealSense。默认 `up` 不启动 RViz，生产端不需要 `DISPLAY` 或 `XAUTHORITY`。
+详情见[相机指南](../guide/cameras)。
 
 `./rm65 up` 同时启动录制平台（`realman_recording` 容器内的 `recording_recorder` + 只读回放网页），回放页在
 `http://127.0.0.1:8770/`（默认仅绑定 loopback，认证/反向代理完成前不要暴露到局域网）。录制/回放细节见
@@ -149,170 +151,59 @@ Ctrl-C。`./rm65 up` 不会替它启动 executor；只要 bringup 容器已运�
 | `rm65_docker_bringup_input` | 只启动 Joy 和 Xbox 输入链。 | `start_robots=false`、`start_driver=false`、`start_joy_driver=true`、`start_controller=true`，等待设备。 | 独立验证实体手柄输入，不触碰机械臂或 RViz。 | `config/ros/xbox_controller.yaml`、[Xbox 手柄输入](./xbox-controller) |
 | `rm65_docker_bringup_web` | 启动真实驱动和 Web 控制，不显示 RViz。 | `start_robots=true`、`start_driver=true`、`start_web_control=true`、RViz/Joy/Xbox 关闭。 | 工控机上提供浏览器 Action 控制和 URDF 状态影子。 | `config/ros/realman_web_control.yaml`、[WebSocket 浏览器控制与 URDF 影子](./realman-web-control) |
 
-## Camera streaming
+## 相机入口
 
-::: warning 已弃用
-`rm65_camera_start` 一族的 RTSP/TCP 推流方案已弃用，不再是相机出图主线。生产主线是 ROS2
-节点出图 `rm65_camera_ros2`（见下方「ROS2 图像节点与 RViz2」一节）。两者都独占 USB 设备、互斥
-运行；`rm65_camera_ros2` 与 `start_sensors.sh` 会在启动前调用 `stop_streaming.sh` 停掉推流。以下
-内容仅作历史参考。
-:::
+相机主线运行在直接连接 USB 相机的宿主机上。`start_sensors.sh` source `/opt/ros/humble/setup.bash`，
+仅在显式设置 `REALMAN_ORBBEC_ROS2_SETUP` 时额外 source 该文件，
+由 `src/sensor_bringup/scripts/host_cameras.py` 管理四个独立的 `ros2 launch orbbec_camera` 子进程；
+`./rm65 up` 等待四路真实 RGB 首帧后才继续。不需要构建
+`src/sensor_bringup` 或已移除的厂商源码驱动。完整串号、命名空间及检查步骤见[相机指南](../guide/cameras)。
 
-相机推流入口运行在**直接连接 USB 相机的宿主机**上，不是 Docker Compose 服务，也不属于
-`realman_bringup` 容器。脚本直接调用 RealSense/Orbbec SDK，启动 `mediamtx`、配置中已填写
-序列号的相机进程以及可选的 `ros2_bridge`。因此，同一台设备不能同时被旧的
-`realsense2_camera_node` 或 Orbbec ROS 图像节点打开。
-
-| 函数 | 当前用途 | 启动/影响的组件 | 适用场景 | 权威配置与文档 |
-| --- | --- | --- | --- | --- |
-| `rm65_camera_start` | 检查 Python SDK 依赖后调用 `src/camera_stream/scripts/start_streaming.sh`。 | `mediamtx`、`realsense_stream`、`orbbec.yaml` 中所有 side；若主机有 `ros2`，还启动 `ros2_bridge`。 | 首次运行依赖安装完成、且需要向局域网提供相机彩色/深度流时。重复启动会被拒绝。 | `src/camera_stream/config/realsense.yaml`、`src/camera_stream/config/orbbec.yaml`、[相机流 README](https://github.com/QingTianRobot/realman_pi/blob/main/src/camera_stream/README.md) |
-| `rm65_camera_stop` | 调用 `stop_streaming.sh` 停止相机流相关进程。 | 停止 Orbbec/RealSense 推流、`ros2_bridge` 和仓库 `bin/mediamtx`。 | 释放 USB 相机、修改配置或切换到其他相机节点前。 | `src/camera_stream/scripts/stop_streaming.sh` |
-| `rm65_camera_status` | 打印配置路径、匹配的进程和监听端口。 | 只读检查相机进程、`mediamtx`、`ros2_bridge`，以及 RTSP `8554`/深度 `8100-8103`。 | 启动后确认服务是否真正监听，或排查端口/残留进程。 | `src/camera_stream/scripts/start_streaming.sh` |
-| `rm65_camera_logs [-f] [component]` | 查看最近 100 行，或用 `-f` 持续跟踪 `src/camera_stream/log/*.log`。 | `all`、`mediamtx`、`orbbec_left`、`orbbec_middle`、`orbbec_right`、`realsense_stream`、`ros2_bridge`。 | 排查 SDK 初始化、串号不匹配、USB 带宽和推流错误。 | `src/camera_stream/log/` |
-| `rm65_camera_ros2 [color|depth] [rviz]` | 停止 SDK 推流后，按串号启动三台 Orbbec 的单一 ROS2 图像流，并在 24s 错峰后启动全局 RealSense D435；默认 `color`，传入 `depth` 切换深度流，传入 `rviz` 时额外启动 RViz2。缺少 `realsense2_camera` 时直接失败（`./rm65 up` 同步中止），禁止降级为仅 Orbbec。 | `sensor_bringup/cameras_ros2.launch.py`、`orbbec_camera/gemini305.launch.py`、`sensor_bringup/realsense_d435.launch.py`（薄包装 `realsense2_camera/rs_launch.py`）；发布所选 Image、CameraInfo 和 TF（含 `world→d435_link` 静态 TF）；`ROS_DOMAIN_ID` 和 `ROS_LOCALHOST_ONLY` 来自 `.env` 或当前环境。 | 需要原生 ROS image topic、`image_view` 或 RViz2 调试时；生产端无 GUI 时省略 `rviz`。 | `.env`、`config/ros/cameras_ros2.yaml`（`wrist_cameras` + `global_camera` 两段）、可选本地覆盖 `config/ros/cameras_ros2.local.yaml`、`config/rviz/cameras.rviz` |
-| `rm65_camera_ros2_stop` | 停止 ROS2 相机 launch、Orbbec 组件容器和 `realsense2_camera_node`。 | 释放三台 Orbbec 与 D435 USB 设备；不会启动或停止 RealMan 驱动。 | 在切回 `rm65_camera_start` SDK 推流或重新构建前。 | `src/sensor_bringup/launch/cameras_ros2.launch.py` |
-| `rm65_camera_ros2_status` | 查看 ROS2 相机 launch、Orbbec 节点和日志根目录。 | 只读检查，不改变运行状态。 | 排查节点是否仍占用 USB 或确认 headless 启动是否成功。 | `logs/<timestamp>/` |
-| `rm65_camera_ros2_logs` | 查看最近一次 ROS2 相机运行目录中的官方 ROS 日志。 | 读取 `ROS_LOG_DIR` 下节点日志，不做 shell 重定向。 | 排查串号匹配、depth profile 和 DDS 发现问题。 | `logs/<timestamp>/` |
-
-首次使用先在宿主机安装依赖，再加载函数：
-
-```bash
-cd src/camera_stream
-./scripts/install_deps.sh
-```
-
-日常操作：
-
-```zsh
-source /path/to/realman_pi/functions.zsh
-rm65_camera_start
-rm65_camera_status
-rm65_camera_logs -f
-rm65_camera_stop
-```
-
-彩色帧由 `mediamtx` 提供 RTSP：
-
-```text
-rtsp://<host>:8554/realsense/color
-rtsp://<host>:8554/orbbec/left/color
-rtsp://<host>:8554/orbbec/middle/color
-rtsp://<host>:8554/orbbec/right/color
-```
-
-深度帧通过 TCP `8100`（RealSense）、`8101`（Orbbec left）、`8102`（Orbbec middle）和
-`8103`（Orbbec right）发送；
-它们不是 ROS image topic。`ros2_bridge` 仅发布标定中的 `CameraInfo` 和静态 TF。
-启动前应根据 `udevadm`、`lsusb` 或 `/dev/v4l/by-id` 的实际串号更新两个 YAML；空的
-Orbbec `serial` 会跳过对应 side，错误串号则会在日志中报告找不到设备。
-
-如果 `rm65_camera_start` 提示 `av`、`yaml`、`pyrealsense2` 或 `pyorbbecsdk` 缺失，先运行
-`install_deps.sh`。脚本需要宿主机有 `python3`、`bash`、`curl`，并从官方发布地址下载
-Orbbec wheel 和 `mediamtx`；它不会启动 Docker 容器。
-
-启动脚本现在从 `orbbec.yaml` 动态遍历所有 side。当前生产配置按 USB 物理端口记录为
-`left=CV2L36000037`、`middle=CV2T661000DC`、`right=CV2L360000HS`。这些是物理安装位置的
-映射，不是 USB 端口号；如果现场重新插拔或更换相机，必须重新核对物理位置和串号，并同时更新
-`config/ros/cameras_ros2.yaml` 与 `src/camera_stream/config/orbbec.yaml`。
-生产机四个相机共用 USB2 总线；三路 Orbbec 使用 `320x240@15` 深度低带宽档并可正常返回深度帧，
-D435 当前无法稳定出帧，因此配置暂时只启用 RealSense 彩色低分辨率流。接入 USB3 后再恢复
-RealSense 深度、更高分辨率和 Orbbec 的 `640x400@30` 深度档。
+| 函数 | 当前用途 | 启动/影响的组件 | 权威配置与文档 |
+| --- | --- | --- | --- |
+| `rm65_camera_ros2 [color|depth] [rviz]` | 默认按串号启动四路 Orbbec RGB，并等待每路首帧；可显式切换 `depth`，`rviz` 额外打开 RViz2。 | 宿主机 `orbbec_camera` 的 Gemini 330 series / 301 series launch；发布各 namespace 下的 `color/image_raw` 与 `color/camera_info`。 | `config/ros/cameras_ros2.yaml`、可选 `RM65_CAMERAS_LOCAL_CONFIG`、`.env`、`config/rviz/cameras.rviz` |
+| `rm65_camera_ros2_stop` | 停止项目管理的相机进程并释放 USB；监督进程已退出时仍按当前配置清理残留 launch/组件进程。 | 相机启动器及其 launch 子进程，不影响 RealMan 驱动。 | `src/sensor_bringup/scripts/host_cameras.py` |
+| `rm65_camera_ros2_status` | 检查受管相机进程和日志位置。 | 只读检查。 | `logs/<timestamp>/` |
+| `rm65_camera_ros2_logs` | 查看最近一次相机运行日志。 | 官方 ROS 日志。 | `logs/<timestamp>/` |
 
 ### ROS2 图像节点与 RViz2
 
-`rm65_camera_ros2` 使用官方 `orbbec_camera` ROS2 驱动，不使用旧 USB port 路径，而是从
-`config/ros/cameras_ros2.yaml` 的 `wrist_cameras.devices.<side>.serial` 读取三台 Gemini 305 的串号
-（现场串号差异建议写进被 `.gitignore` 忽略的 `config/ros/cameras_ros2.local.yaml`，见下文）。默认彩色档为 `640x480@10 YUYV`，
-深度档使用 `640x480@15 Y16` 原始 profile 和硬件抽取系数 `2`，实际发布
-`320x240@15`，并关闭点云以适应生产机 USB2 总线。三台相机按独立设备运行，配置默认关闭
-`enable_frame_sync`、`trigger_out_enabled` 和 `software_trigger_enabled`；官方默认同步参数会导致
-后启动的设备只有 publisher 而没有图像帧。默认只打开彩色流，每次启动都会创建
-`logs/YYYYMMDD_HHMMSS/` 并设置 `ROS_LOG_DIR`，节点日志由 rcutils 官方机制生成。
-右侧相机在 30 Hz 下使用固定彩色曝光 `43`（单位 0.1 ms，即 4.3 ms）并关闭自动曝光：实测同一台相机在自动曝光下
-约 77% 像素饱和且曝光长期不变，固定后亮度约 115、无饱和，同配置的左相机不受影响。该值由
-`cameras_ros2.yaml` 的 `wrist_cameras.devices.right.streams.color` 管理。驱动在启动阶段写入的"关闭自动曝光"在这批
-设备上不生效（驱动日志显示 `Setting color auto exposure to OFF`、读回曝光也等于配置值，画面却仍在自动曝光并过曝；
-运行中通过服务设置则有效），因此 `cameras_ros2.launch.py` 对每台配置了 `auto_exposure: false` 的腕部相机追加一个
-`apply_color_exposure.py` 进程：等该相机彩色流出第一帧并稳定 3 s 后，依次调用 `set_color_auto_exposure false`、
-`set_color_exposure <值>` 并读回；前一步失败则不继续。读回只能证明曝光值已写入，不能证明自动曝光已关，验证画面要看亮度
-或饱和像素比例。脚本找不到时启动器打印 WARNING 并跳过，不会中断启动。固定曝光不随光照自适应：若更换光源或相机位置，
-应在运行中通过 `/camera_right/set_color_auto_exposure`、`/camera_right/set_color_exposure` 扫描并用
-`/camera_right/get_color_exposure` 读回验证画面，再把结果写回配置并重启相机（相机配置只在启动时读取一次）。
-左侧相机目前使用自动曝光；早期为反光标定板写入的固定 `30`（3 ms）已在配置重构中移除，如需恢复，在
-`devices.left.streams.color` 写入 `auto_exposure: false` 与 `exposure: 30`，不能为了通过采样降低 ChArUco 角点门槛。
-
-`cameras_ros2.yaml` 按设备族分两段：`wrist_cameras`（三台 Orbbec Gemini 305，含共享的
-`streams`/`mode`/`sync` 与逐台 `devices`）与 `global_camera`（单台 RealSense D435，独立自包含，
-参数模型为 `WxHxFPS` profile 字符串）。两族参数模型不同，`global_camera` 不继承 `wrist_cameras.streams`。
-每台腕部相机的最终 profile = 全局 `wrist_cameras.streams` 深合并本台 `devices.<side>.streams`
-（只写要改的叶子键，例如 `right` 仅覆盖曝光）；未知叶子键会打印 WARNING 而非静默失效。
-现场差异（最典型是各相机串号）写进被 `.gitignore` 忽略的 `config/ros/cameras_ros2.local.yaml`：
-它与 base 深合并，优先级 `local > base`，逐叶子覆盖且保留 base 独有键；该文件缺失时仅用 base 正常启动。
-`--symlink-install` 构建下 launch 通过解析符号链接直接在源码 `config/ros/` 发现该文件，改完无需 rebuild；
-也可用环境变量 `RM65_CAMERAS_LOCAL_CONFIG=<绝对路径>` 临时指定覆盖文件。
-
-三台 Orbbec 与 D435 共用一条 USB2 root hub 时，生产机的
-`/sys/module/usbcore/parameters/usbfs_memory_mb` 应至少为 `256`；函数会在低于该值时告警。
-临时修复和持久化设置分别为：
-
-```bash
-sudo sh -c 'echo 256 > /sys/module/usbcore/parameters/usbfs_memory_mb'
-echo 'options usbcore usbfs_memory_mb=256' | sudo tee /etc/modprobe.d/usbcore.conf
-```
-
-先停止 SDK 推流，再在连接 USB 相机的生产机上 source 函数并启动 headless ROS2 图：
-
 ```zsh
-source /home/administrator/realman_pi/functions.zsh
+source /path/to/realman_pi/functions.zsh
 rm65_camera_ros2 color
 rm65_camera_ros2_status
+rm65_camera_ros2_logs
+rm65_camera_ros2_stop
 ```
 
-不依赖 zsh 时，宿主机可用等价 bash 入口 `bash start_sensors.sh`：它同样会先停推流、按必需
-overlay source RealSense/Orbbec，并在缺少 `realsense2_camera` 时直接失败，不再降级为仅三路 Orbbec。
+不依赖 zsh 时可执行 `bash start_sensors.sh [color|depth] [rviz]`，使用 `bash start_sensors.sh stop` 单独停止相机；旧的 `enable_color:=true enable_depth:=false`
+与 `use_rviz:=true` 形式仍兼容。`./rm65 up` 和省略模式时只启 RGB；`depth` 仅供显式调用兼容。
+需要本地 GUI 时执行 `rm65_camera_ros2 color rviz`；生产端通常不带桌面，应使用笔记本的
+[相机 RViz](../guide/cameras#查看四路实拍画面)。
 
-默认 `color` 模式预期 topic 包括三路 Orbbec 与全局 D435：
+顶层 `cameras` mapping 以 `camera_global`、`camera_global2`、`camera_right`、`camera_left`
+为键，每项配置 `serial`、`launch_file`，`enabled` 可选且默认开启，`parameters` 用于设备级覆盖。顶层 `defaults` 提供共享参数；
+`launch.stagger_seconds` 为启动间隔（秒）。默认 `color_width` / `color_height` 为 `0`（驱动自动选分辨率）、`color_fps=30`、`color_format=ANY`；默认 RGB 模式关闭深度、IR、IMU、点云和帧同步。`config/ros/cameras_ros2.local.yaml` 可覆盖共享或逐设备参数、串号等叶子字段，也可通过 `RM65_CAMERAS_LOCAL_CONFIG` 指定覆盖文件；旧的 `wrist_cameras` / `global_camera` 结构必须迁移，不能继续加载。
+
+四路预期 RGB topic：
 
 ```text
-/camera_left/color/image_raw
-/camera_middle/color/image_raw
+/camera_global/color/image_raw
+/camera_global2/color/image_raw
 /camera_right/color/image_raw
-/camera_global/d435/color/image_raw
+/camera_left/color/image_raw
 ```
 
-默认模式实际发布三路 Orbbec 的 `color/image_raw`、`color/camera_info` 和 TF，以及全局
-`/camera_global/d435` 彩色；深度路径只有显式
-使用 `rm65_camera_ros2 depth` 时才会发布。wrapper 2.7.6 在当前 USB2/libuvc 拓扑下同时
-打开同一设备的彩色和深度会创建 publisher 但不连续出帧，因此两种流是互斥模式。三台彩色
-在 `640x480@10 YUYV` 下预期约 10 Hz；YUYV 用于规避右侧设备在 USB2/MJPEG 下的持续帧撕裂，
-实际帧率应以 `ros2 topic hz` 验证。
+每路同时发布 `color/camera_info`。节点存在或 topic publisher 存在都不足以证明设备出图；
+以四路持续收到真实帧为准。首帧检查失败时先核对串号、宿主机 `orbbec_camera` launch 文件和 USB
+连接，再查看本次 `logs/<timestamp>/` 日志。宿主机与 Docker 共同读取 `.env` 的 ROS domain 与
+`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，修改后重启相关节点。
 
-有图形桌面的机器可以直接启动 RViz2：
+### 已弃用的 SDK 推流
 
-```zsh
-rm65_camera_ros2 color rviz
-# 需要深度时改为：rm65_camera_ros2 depth rviz
-```
-
-生产端通常没有 `DISPLAY`，这时在生产端只运行 `rm65_camera_ros2 color`，在笔记本使用与生产端
-相同的 `.env` 启动远程 RViz。需要更换 DDS 域时，优先修改两端 `.env` 的 `ROS_DOMAIN_ID`，
-然后重新 source 函数并重启相关节点。
-不要在笔记本运行会直接连接机械臂 SDK 的
-`realman_driver_rviz`。切换回 SDK/RTSP 推流前执行：
-
-```zsh
-rm65_camera_ros2_stop
-rm65_camera_start
-```
-
-`rm65_camera_ros2_logs` 可检查串号不匹配、`OB_FORMAT_UNKNOWN` 或 USB 带宽错误。当前生产
-机已验证 Orbbec 使用 `Y16` 和硬件二倍抽取；直接传 `320x240` 会被 wrapper 2.7.6 拒绝。
-RealSense D435 已通过 `realsense_d435.launch.py` 接入 ROS2 节点路径（命名空间
-`camera_global/d435`，24s 错峰，串号/profile/安装位姿在 `cameras_ros2.yaml` 的 `global_camera`
-段配置），但受现有 USB2 拓扑限制：默认仅发布 `424x240@15` 彩色、深度关闭，且首帧可能不稳定；
-`src/sensor/realsense` 子模块未构建时 `rm65_camera_ros2` / `start_sensors.sh` / `./rm65 up` 直接失败，
-拒绝降级为仅三路 Orbbec。迁移到 USB3 端口后再在
-`global_camera` 段上调 profile 并开启深度。
+`rm65_camera_start` / `stop` / `status` / `logs` 是 `src/camera_stream/` 下的 RTSP/TCP SDK
+历史入口，不属于 `./rm65 up`。它们直接使用 Orbbec/RealSense SDK、`mediamtx` 和可选
+`ros2_bridge`；不要与 ROS 2 相机节点同时打开同一 USB 设备。详情见[相机指南](../guide/cameras#相机推流已弃用)。
 
 ## Web 控制入口
 
@@ -334,8 +225,8 @@ RealSense D435 已通过 `realsense_d435.launch.py` 接入 ROS2 节点路径（�
 | `rm65_docker_remote_rviz_stop` | 停止后台远程 RViz。 | `docker compose stop realman_remote_rviz`。 | 关闭桌面机 RViz-only 服务，不影响工控机驱动和机械臂。 | Docker Compose |
 | `rm65_docker_remote_rviz_status` | 查看后台远程 RViz 状态。 | `docker compose ps realman_remote_rviz`。 | 确认 RViz 容器是否仍在运行。 | Docker Compose |
 | `rm65_docker_remote_rviz_logs [-f]` | 查看或跟踪远程 RViz 日志。 | `docker compose logs --tail=100 ... realman_remote_rviz`。 | 排查 DDS 发现、TF、joint state 或显示授权问题。 | Docker Compose、[故障排查](../troubleshooting) |
-| `rm65_docker_camera_rviz [domain]` | 前台显示生产机三路 Orbbec 加全局 RealSense D435 共四路彩色图像；省略 `domain` 时读取 `.env` 的 `ROS_DOMAIN_ID`；宿主机未构建 `realsense2_camera` 时 `rm65_camera_ros2` 直接失败，不会到达 RViz 阶段。 | `realman_camera_rviz` 和只含彩色 Image display 的 `config/rviz/cameras.rviz`；不启动驱动、本地相机或深度显示。 | 笔记本查看生产机的 `/camera_left`、`/camera_middle`、`/camera_right` 与 `/camera_global/d435` 实拍画面。 | `.env`、[快速开始：查看四路实拍画面](../guide/cameras#查看四路实拍画面) |
-| `rm65_docker_camera_rviz_start [domain]` | 后台启动三路相机 RViz；省略 `domain` 时读取 `.env`。 | `docker compose up -d realman_camera_rviz`。 | 日常持续查看相机画面。 | `.env`、`realman_camera_rviz` Compose 服务 |
+| `rm65_docker_camera_rviz [domain]` | 前台显示生产机四路 Orbbec RGB；省略 `domain` 时读取 `.env` 的 `ROS_DOMAIN_ID`。 | `realman_camera_rviz` 和只含彩色 Image display 的 `config/rviz/cameras.rviz`；不启动驱动或本地相机。 | 查看 `/camera_left`、`/camera_right`、`/camera_global`、`/camera_global2` 实拍画面。 | `.env`、[快速开始：查看四路实拍画面](../guide/cameras#查看四路实拍画面) |
+| `rm65_docker_camera_rviz_start [domain]` | 后台启动四路相机 RViz；省略 `domain` 时读取 `.env`。 | `docker compose up -d realman_camera_rviz`。 | 日常持续查看相机画面。 | `.env`、`realman_camera_rviz` Compose 服务 |
 | `rm65_docker_camera_rviz_stop` | 停止后台相机 RViz。 | `docker compose stop realman_camera_rviz`。 | 关闭笔记本上的相机查看器，不影响生产机相机。 | Docker Compose |
 | `rm65_docker_camera_rviz_status` | 查看后台相机 RViz 状态。 | `docker compose ps realman_camera_rviz`。 | 确认相机 RViz 容器是否运行。 | Docker Compose |
 | `rm65_docker_camera_rviz_logs [-f]` | 查看或跟踪相机 RViz 日志。 | `docker compose logs --tail=100 ... realman_camera_rviz`。 | 排查 X11、DDS domain 或图像订阅问题。 | Docker Compose |

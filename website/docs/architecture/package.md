@@ -26,8 +26,8 @@ realman_pi/
 │   ├── recording/            数据录制与回放：realman_recording、realman_recording_msgs
 │   ├── realman_bringup/      系统 launch 编排
 │   ├── rm65_description/     URDF、mesh、TF、RViz launch
-│   ├── sensor/               realman_camera_calibration + Orbbec / RealSense 厂商驱动（vendor）
-│   ├── sensor_bringup/       相机 launch
+│   ├── sensor/               realman_camera_calibration（厂商相机驱动使用宿主机二进制包）
+│   ├── sensor_bringup/       宿主机相机启动器、兼容 launch 与诊断工具
 │   └── camera_stream/        已弃用的 RTSP/TCP 相机推流
 ├── tests/                    行为树启动器、容器入口、./rm65 入口的集成测试
 ├── third_party/              behavior_tree_cpp 快照（行为树库 + 只读编辑器前端）
@@ -55,12 +55,12 @@ realman_pi/
 | `realman_recording`、`realman_recording_msgs` | Python / IDL | 只订阅的数据录制：recorder、预检、LeRobot v3 导出、Web 实时与回放页 | `recording.launch.py`、`recording_runtime_probe` |
 | `policy_bridge` | Python | 策略 WebSocket 桥与 mock 策略服务 | `policy_bridge_node`、`mock_policy_server` |
 | `realman_camera_calibration` | Python | ChArUco 采样与手眼求解 | `camera_calibration_node` |
-| `sensor_bringup` | launch | Orbbec ×3 + D435 的 ROS 2 出图 | `cameras_ros2.launch.py` |
+| `sensor_bringup`、宿主机 `orbbec_camera` | Python / 二进制 ROS 包 | 四路 Orbbec RGB 启动与出图；厂商驱动不由本仓库构建 | `src/sensor_bringup/scripts/host_cameras.py` |
 | `xbox_controller_driver` | C++ | 订阅 `/input/joy`，输出按键边沿日志 | `xbox_controller_node` |
 | `realman_bringup` | launch | 统一组合驱动、TF、RViz、夹爪、Web、标定 | `system.launch.py`、`remote_rviz.launch.py` |
 | `rm65_description` | 资源 / launch | RM65 URDF、mesh、三臂 TF、RViz | `display.launch.py`、`three_robots.launch.py` |
 
-`src/sensor/OrbbecSDK_ROS2`、`src/sensor/realsense/*` 和 `third_party/behavior_tree_cpp` 是 vendor 快照，**不要在其中做项目改动**；需要的差异通过配置、launch 参数或本项目自己的包表达。
+`third_party/behavior_tree_cpp` 是 vendor 快照，**不要在其中做项目改动**。相机驱动来自宿主机的 `orbbec_camera` 二进制包，本仓库不维护 Orbbec 或 RealSense 驱动源码。
 
 ## 文档来源
 

@@ -5,10 +5,12 @@ description: 通过 ROS service 原子采样三臂图像/末端 TF，并求解�
 
 # 三臂 ChArUco 手眼标定
 
-`realman_camera_calibration` 位于 `src/sensor/`，与厂商相机驱动源码隔离。
+`realman_camera_calibration` 位于 `src/sensor/`，只订阅图像与 TF，不启动厂商相机驱动。
 它通过两个 service 提供一个小而稳定的标定接口，网页只负责发起任务和展示
 结果；话题、TF、ChArUco 尺寸、样本门槛和误差阈值全部由
 [`config/ros/camera_calibration.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/camera_calibration.yaml) 掌管。
+
+当前四相机生产布局是左 / 右腕部 Gemini 305 和后 / 前全局 Gemini 335L，详见[相机指南](../guide/cameras)。本页仍是三臂 eye-in-hand 标定契约，`camera_calibration.yaml` 仍要求 `/camera_middle` 的中臂腕部图像；该设备当前未配置，因此中路健康状态为 `missing`，三臂原子采样无法完成。两路全局相机不会自动替代腕部相机；恢复中臂腕部设备或另行实现适合固定相机的标定契约后再运行完整三臂采样。
 
 当前实体标定板为 `CC200-15-11.25`：外形尺寸 200 x 150 mm，图案区域
 180 x 135 mm，12 x 9 个棋盘格，大格边长 15 mm、小格（marker）边长
@@ -174,7 +176,7 @@ ros2 service call /camera_calibration/solve \
 宿主机执行 `rm65_camera_ros2 color`，再确认 `.env` 的 `ROS_DOMAIN_ID`、`ROS_LOCALHOST_ONLY=0`
 和 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` 已被该 shell 和 Docker 服务共同加载。最后重启
 `realman_bringup_remote`，使标定节点取得新环境。若主机 `ros2 topic hz /camera_left/color/image_raw`
-有帧而网页仍是 `missing`，这是宿主 Orbbec overlay 与容器 Fast DDS 同机共享内存不兼容的典型
+有帧而网页仍是 `missing`，这是宿主 Orbbec ROS 2 包与容器 Fast DDS 同机共享内存不兼容的典型
 现象；保留 `UDPv4`，不要改为 `DEFAULT`。
 
 ## Web 标定页面

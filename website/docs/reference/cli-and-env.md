@@ -12,11 +12,11 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | 命令 | 作用 |
 | --- | --- |
 | `./rm65 build [service ...]` | 默认重建 `realman_bringup_remote` 与 `realman_web_control`，可指定如 `rm65_rviz`；使用 Bake 显式授权 `network.host` 并载入本机镜像，不改变容器状态 |
-| `./rm65 up` | 生产默认：ROS 2 彩色相机 + 三臂真实驱动 + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY` |
+| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB（四路首帧确认后启动 Docker）+ 三臂真实驱动 + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
-| `./rm65 down` / `status` / `logs` | 停止、查看状态、查看最近日志（含相机日志） |
+| `./rm65 down` / `status` / `logs` | 停止服务并等待受管相机 launch 退出、释放 USB；或查看状态、最近日志（含相机日志） |
 | `./rm65 bt <l\|m\|r\|three\|control\|name>` | 在**已运行**的 `realman_bringup_remote` 容器内执行行为树；默认 dry-run |
 | `./rm65 bt-test build\|mock\|web\|all` | 构建、运行或校验隔离的行为树 mock 场景 |
 | `./rm65 sync` | 校验 `main` 与 clean worktree 后 push，并 rsync 已跟踪文件到生产端 |
@@ -63,6 +63,10 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | `POLICY_WS_HOST`、`POLICY_BRIDGE_CONFIG_FILE`、`POLICY_BRIDGE_ACTIVE_SIDE` | 策略服务地址、配置文件、当前驱动的一侧（`left`/`right`） |
 | `DISPLAY`、`XAUTHORITY`、`LIBGL_ALWAYS_SOFTWARE` | 带 RViz 的服务需要；headless 服务不需要 |
 | `REALMAN_LOG_ROOT` | 日志根目录（容器内 `/opt/rm65_ws/logs`，映射到仓库 `logs/`） |
+| `REALMAN_ORBBEC_ROS2_SETUP` | 仅显式设置时额外 source 的宿主机 Orbbec ROS 2 setup 文件；默认只加载 `/opt/ros/humble/setup.bash`，不自动加载仓库 overlay |
+| `RM65_CAMERAS_LOCAL_CONFIG` | 可选的宿主机相机 YAML 覆盖文件；按 `cameras_ros2.yaml` 结构覆盖默认配置 |
+| `CAMERA_START_TIMEOUT` | `rm65 wait` / `./rm65 up` 等待相机启动的最长秒数，默认 `90`；超时中止启动并清理受管相机 |
+| `REALMAN_CAMERA_CHECK_TIMEOUT` | 相机 supervisor 等待首帧的最长秒数，默认 `60`；超时判定该相机启动失败 |
 
 ::: warning Web 控制没有认证
 Web control 不做任何身份校验：`:8765` 能被访问的浏览器就能发送运动和停止命令，所以必须只放在受信任的机器人局域网内，不要暴露到公网或经 NAT 映射。（`.env` 里曾有一个 `REALMAN_WEB_CONTROL_TOKEN`，但从来没有代码读取它，已删除，避免让人误以为有认证。）

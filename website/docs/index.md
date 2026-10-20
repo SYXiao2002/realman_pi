@@ -52,7 +52,7 @@ import TfExplorer from './.vitepress/theme/components/TfExplorer.vue'
         <article class="model-item"><h3>遥操作输入</h3><p>Web 键盘、Pika 位置 / 速度 / Mixed、Xbox 手柄；统一由输入模式路由选择控制权。</p><a class="section-link" :href="withBase('/development/pika-teleop')">Pika 遥操作 →</a></article>
         <article class="model-item"><h3>行为树编排</h3><p>常驻输入路由器与分阶段 MoveJ 任务树，只读运行监视器，终态归档。</p><a class="section-link" :href="withBase('/development/behavior-tree-control')">行为树控制权 →</a></article>
         <article class="model-item"><h3>夹爪</h3><p>Changingtek Modbus RTU 多串口并行驱动，键盘与 Pika 连续目标。</p><a class="section-link" :href="withBase('/development/gripper-control')">夹爪控制 →</a></article>
-        <article class="model-item"><h3>相机与标定</h3><p>三路 Orbbec 腕部相机 + 全局 D435，ChArUco 手眼标定与相对位姿求解。</p><a class="section-link" :href="withBase('/development/camera-calibration')">手眼标定 →</a></article>
+        <article class="model-item"><h3>相机与标定</h3><p>两路 Orbbec 腕部相机 + 两路 Orbbec 全局相机，ChArUco 手眼标定与相对位姿求解。</p><a class="section-link" :href="withBase('/development/camera-calibration')">手眼标定 →</a></article>
         <article class="model-item"><h3>VLA 策略桥</h3><p>OpenPI WebSocket 与 ROS 2 的纯协议转换，滚动时域与模式门控。</p><a class="section-link" :href="withBase('/development/policy-bridge')">策略桥接 →</a></article>
       </div>
     </div>

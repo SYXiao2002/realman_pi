@@ -23,7 +23,7 @@ description: 用 ./rm65 启动生产运行时、打开 Web 控制台，或在没
 | 操作系统 | Linux（生产为工控机）；仅查看模型时可用任意提供 X11/XWayland 的桌面 |
 | 容器运行时 | Docker Engine 与 Docker Compose v2 |
 | 机器人网络 | 工控机经工业交换机有线直连三台控制器：`l=192.168.30.123`、`m=192.168.30.125`、`r=192.168.30.124`，端口 `8080`（见 `config/ros/realman_driver.yaml`）。无线链路不能替代这一跳 |
-| 相机 | 宿主机 USB（Orbbec ×3、RealSense D435），详见[相机](./cameras) |
+| 相机 | 宿主机 USB（Orbbec Gemini 335L ×2、Gemini 305 ×2），宿主机安装 `orbbec_camera` 二进制 ROS 2 包，详见[相机](./cameras) |
 | 显示变量 | **只有**带 RViz 的服务需要 `DISPLAY` 和可读的 `XAUTHORITY`；`./rm65 up` 的默认生产模式不需要 |
 | 项目目录 | 在包含 `docker-compose.yml` 的仓库根目录执行命令 |
 
@@ -45,12 +45,14 @@ cd realman_pi
 ./rm65 up
 ```
 
-它按下面的顺序启动，任何一步失败都会清理已经启动的部分；默认不启动 RViz，生产机不需要桌面：
+它按下面的顺序启动；相机启动或首帧检查失败时会清理相机且不启动 Docker。相机已经出帧后，若 Compose
+启动失败，`./rm65 up` 返回失败但保留相机，方便继续排查；执行 `./rm65 down` 停止服务和相机。默认不启动
+RViz，生产机不需要桌面：
 
 <Steps>
 
-1. **宿主机 ROS 2 彩色相机**——相机失败则不启动 Docker。
-2. **`realman_bringup_remote`**——三臂真实驱动、TF、标定健康诊断、夹爪 manager；失败则清理相机。
+1. **宿主机四路 Orbbec RGB**——按串号分别执行 `ros2 launch orbbec_camera`，四路首帧确认失败则不启动 Docker。
+2. **`realman_bringup_remote`**——三臂真实驱动、TF、标定健康诊断、夹爪 manager。
 3. **`realman_web_control`**——`:8765` 控制页。
 4. **`realman_recording`**——数据录制与回放网页 `http://127.0.0.1:8770/`，见[独立数据录制平台](../development/recording-platform)。
 
@@ -60,7 +62,7 @@ cd realman_pi
 | --- | --- |
 | `./rm65 status` | 相机进程与 Compose 服务状态 |
 | `./rm65 logs` | 最近的相机、bringup、Web 日志 |
-| `./rm65 down` | 停止服务和相机（机械臂驱动随之停止） |
+| `./rm65 down` | 停止 Compose 服务和相机；等待相机 launch 退出并释放 USB（机械臂驱动随之停止） |
 | `./rm65 up desktop` | 额外启动 RViz-only 的 `realman_remote_rviz` |
 | `./rm65 up policy` | 额外启动 VLA 策略桥（见[策略桥接](../development/policy-bridge)） |
 
@@ -405,7 +407,7 @@ rm65_project_help
 | `rm65_docker_bringup_model` / `hardware` / `headless` | 启动模型、真机 RViz 或无 GUI 预设 |
 | `rm65_docker_bringup_input` / `web` | 只启动输入链路，或启动真机与 Web 控制 |
 | `rm65_docker_bringup_custom_args ...` | 临时透传 `system.launch.py` 参数 |
-| `rm65_camera_ros2 [color|depth] [rviz]` | **相机出图主线**：按串号启动三路 Orbbec + 全局 RealSense D435 的单一 ROS2 图像流；默认彩色，传入 `depth` 切换深度，传入 `rviz` 时同时启动 RViz2 |
+| `rm65_camera_ros2 [color|depth] [rviz]` | **相机出图主线**：使用宿主机二进制 `orbbec_camera` 按串号启动四路 RGB；可显式切换深度或附加 RViz2；`./rm65 up` 仅启 RGB |
 | `rm65_camera_ros2_stop` / `status` / `logs` | 停止、检查或查看 ROS2 相机节点日志 |
 | `rm65_camera_start` / `stop`（已弃用） | 启动或停止 RTSP/TCP SDK 推流；已被 ROS2 出图取代，仅作历史备选 |
 | `rm65_camera_status` / `logs [-f]`（已弃用） | 查看已弃用推流进程、`8554`/`8100-8103` 端口或跟踪推流日志 |
@@ -416,7 +418,7 @@ rm65_project_help
 | `rm65_docker_remote_rviz [domain]` | 在当前桌面前台显示远程 ROS 图 |
 | `rm65_docker_remote_rviz_start [domain]` | 在当前桌面后台持续运行远程 RViz |
 | `rm65_docker_remote_rviz_status` / `logs [-f]` / `stop` | 查看、跟踪或停止后台 RViz |
-| `rm65_docker_camera_rviz [domain]` | 在当前桌面直接查看生产机左、中、右三路 Orbbec 加全局 RealSense D435 共四路彩色画面（缺少 `realsense2_camera` 时第四格为空） |
+| `rm65_docker_camera_rviz [domain]` | 在当前桌面查看生产机左 / 右腕部与后 / 前全局相机四路 Orbbec RGB |
 | `rm65_docker_camera_rviz_start [domain]` / `stop` / `status` / `logs` | 后台启动、停止、检查或查看相机 RViz |
 | `rm65_ros_build` | 使用本机 Humble 构建到 `realman_bringup` |
 | `rm65_web_build` / `rm65_web_test` | 构建或测试文档网站 |

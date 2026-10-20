@@ -106,9 +106,11 @@ ros2 service call /l/coordinates/select_work realman_msgs/srv/SelectFrame "{name
 
 ## 相机
 
-- 没有图像：`ros2 topic list | grep camera`；`./rm65 up` 在宿主机缺少 `realsense2_camera` 时直接失败，不会降级。
-- 有 publisher 但无帧：三台 Orbbec 与 D435 共用 USB2 root hub 时，`usbfs_memory_mb` 必须至少 `256`；启动函数会检查并打印修复命令。彩色与深度模式互斥，不能同时启用。
+- 启动失败或没有图像：先检查宿主机 `ros2 pkg prefix orbbec_camera`、四台设备串号与 `config/ros/cameras_ros2.yaml`，再查看 `./rm65 logs`。任一路首帧失败会中止 Docker 启动并清理相机；若四路已经出帧但 Compose 启动失败，相机流会保留，便于检查画面及 Docker 错误。修复后可再次执行 `./rm65 up`；要释放相机则执行 `./rm65 down`，它会等待受管 launch 逐个退出。
+- `down` 后再次 `up` 无图：先等待 `./rm65 down` 完成；也可用 `bash start_sensors.sh stop` 单独清理相机。停止入口会在监督进程已退出时，继续按当前配置的 launch 文件、相机名和串号清理残留 launch/组件进程；清理失败会返回失败并保留状态，查看日志后重试。`./rm65 up` 的监督进程独立于调用终端运行，重复 `up` 会等待或复用已有进程。
+- 有 publisher 但无帧：用 `ros2 topic hz /camera_global/color/image_raw` 等逐路检查。核对 USB 连接与带宽、安装版本支持的 launch 参数和日志中的设备/profile 错误；当前默认只启 RGB，不应有其它 SDK/RTSP 进程占用设备。
 - 容器能发现 topic 却收不到图：保持 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，不要改回 `DEFAULT`。
+- Web 标定页中路 `missing`：当前没有 `/camera_middle` 腕部相机，这是四相机生产布局与三臂 eye-in-hand 标定契约的差异，不能用全局相机冒充中路腕部相机，见[手眼标定](./development/camera-calibration)。
 - Web 标定页看不到相机状态：`ros2 topic info /camera_calibration/camera_health -v` 必须有 `camera_calibration` 一个发布者和 `realman_web_control` 一个订阅者。
 - 旧 RTSP 推流与 ROS 2 节点互斥，不要同时占用 USB 设备。详见[相机](./guide/cameras)。
 
