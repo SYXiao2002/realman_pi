@@ -51,6 +51,22 @@ def test_stop_behavior_tree_is_global_and_needs_only_a_request_id():
         parse_message('{"type":"stop_behavior_tree"}')
 
 
+def test_plan_grasp_is_read_only_and_armless():
+    message = parse_message(json.dumps({
+        "type": "plan_grasp", "request_id": "grasp-1",
+        "profile_name": "right_wrist", "target_label": "eu", "backend": "geometry",
+    }))
+    assert message == {
+        "type": "plan_grasp", "request_id": "grasp-1",
+        "profile_name": "right_wrist", "target_label": "eu", "backend": "geometry",
+    }
+    with pytest.raises(ProtocolError, match="request_id"):
+        parse_message('{"type":"plan_grasp","profile_name":"right_wrist","target_label":"eu"}')
+    with pytest.raises(ProtocolError, match="profile_name"):
+        parse_message(json.dumps({"type": "plan_grasp", "request_id": "x", "profile_name": "p" * 65,
+                                  "target_label": "eu"}))
+
+
 @pytest.mark.parametrize("mode", ["", "Policy", "pika!", "a-b", "a_b", "2policy", "策略", "a" * 97])
 def test_select_input_mode_rejects_invalid_identifiers(mode):
     with pytest.raises(ProtocolError, match="mode_id"):

@@ -4,6 +4,8 @@ string profile_name
 string target_label
 string backend
 string task_id
+# Evaluation-only requests stop after inference and never produce waypoints.
+bool evaluation_only
 string lease_token
 ---
 bool success

@@ -17,7 +17,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, DurabilityPolicy
 from rclpy.time import Time
 from realman_msgs.action import PlanGrasp
 from realman_msgs.srv import SolveIk, TaskControl
@@ -28,6 +28,7 @@ from tf2_ros import Buffer, TransformListener
 from grasp_protocol import PROTOCOL_VERSION, validate_request
 
 from .geometry import from_pose, pose_drift, transform, to_pose
+from .evaluation import snapshot
 from .planner import choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
 from .rgbd import CameraModel, image_array, rectify_color, register_depth, validate_timing
@@ -70,29 +71,41 @@ class GraspBridge(Node):
         self.busy = False
         self.generation = 0
         self.inputs = {k: deque(maxlen=30) for k in ("color", "depth", "color_info", "depth_info", "joints")}
+        self.profile_names = list(read_yaml(self.root / "ros/grasp_profiles.yaml")["profiles"])
+        self.profile_inputs = {name: (self.inputs if name == self.profile_name else
+                               {key: deque(maxlen=30) for key in self.inputs}) for name in self.profile_names}
         self.diagnostics = self.create_publisher(DiagnosticArray, "~/diagnostics", 10)
         self.plans = self.create_publisher(String, "~/plan", 10)
+        review_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.evaluations = self.create_publisher(String, "~/evaluation", review_qos)
+        self.review_status = self.create_publisher(String, "~/review_status", review_qos)
+        self.review_status.publish(String(data=json.dumps({
+            "type": "grasp_bridge_status", "dry_run": self.dry_run, "read_only": True,
+            "default_profile": self.profile_name, "profiles": [
+                {"name": name, "arm": load_profile(self.root, name)["arm"]} for name in self.profile_names]})))
         self.candidates = self.create_publisher(PoseArray, "~/candidates", 10)
         self.overlay = self.create_publisher(Image, "~/overlay", 2)
         self.server = ActionServer(self, PlanGrasp, "~/plan_grasp", execute_callback=self.execute,
                                    goal_callback=self.goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
                                    callback_group=self.group)
-        # Config dry-run intentionally creates no TF listeners, IK clients or
-        # sensor subscriptions. The Action reports readiness, not a fake plan.
+        # Dry-run allows read-only capture and inference. IK and lease clients
+        # remain absent, so no motion planning/execution path is available.
+        self.tf = Buffer(cache_time=Duration(seconds=60))
+        self.tf_listener = TransformListener(self.tf, self)
         if not self.dry_run:
-            self.tf = Buffer(cache_time=Duration(seconds=60))
-            self.tf_listener = TransformListener(self.tf, self)
             self.ik = self.create_client(SolveIk, f"/{self.profile['arm']}/solve_ik", callback_group=self.group)
             self.task_control = self.create_client(
                 TaskControl, f"/{self.profile['arm']}/task_control", callback_group=self.group)
-            self.subscriptions_owned = []
+        self.subscriptions_owned = []
+        for name in self.profile_names:
+            profile = load_profile(self.root, name)
             for key, message_type, topic in (
                 ("color", Image, "color_topic"), ("depth", Image, "depth_topic"),
                 ("color_info", CameraInfo, "color_info_topic"), ("depth_info", CameraInfo, "depth_info_topic"),
                 ("joints", JointState, "joint_topic"),
             ):
                 self.subscriptions_owned.append(self.create_subscription(
-                    message_type, self.profile[topic], lambda msg, k=key: self.receive(k, msg),
+                    message_type, profile[topic], lambda msg, k=key, n=name: self.receive(k, msg, n),
                     qos_profile_sensor_data, callback_group=self.group))
         self.report("configuration", "; ".join(self.profile["readiness_problems"]) or "ready", warning=True)
         self.get_logger().info(f"Planning-only grasp bridge profile={self.profile_name} dry_run={self.dry_run}")
@@ -108,13 +121,14 @@ class GraspBridge(Node):
         message.status = [status]
         self.diagnostics.publish(message)
 
-    def receive(self, key, message):
+    def receive(self, key, message, profile_name=None):
         with self.lock:
-            self.inputs[key].append(message)
+            self.profile_inputs[profile_name or self.profile_name][key].append(message)
 
     def goal(self, request):
         with self.lock:
-            if self.busy or request.profile_name not in ("", self.profile_name) or not request.task_id:
+            allowed = self.profile_names if request.evaluation_only else [self.profile_name]
+            if self.busy or (request.profile_name and request.profile_name not in allowed) or not request.task_id:
                 return GoalResponse.REJECT
             self.busy = True
             self.generation += 1
@@ -159,7 +173,7 @@ class GraspBridge(Node):
         return bool(np.max(np.abs(np.diff(positions, axis=0)/dt[:, None])) <=
                     self.settings["maximum_joint_velocity_rad_sec"])
 
-    def capture(self, canceled, not_before_ns):
+    def capture(self, canceled, not_before_ns, *, evaluation_only=False):
         deadline = time.monotonic()+self.settings["capture_timeout_sec"]
         problem = "waiting for paired RGB-D and stopped arm"
         while time.monotonic() < deadline:
@@ -183,13 +197,21 @@ class GraspBridge(Node):
                 if (cm.frame != self.profile["color_frame"] or color.header.frame_id != cm.frame
                         or dm.frame != self.profile["depth_frame"] or depth.header.frame_id != dm.frame):
                     raise ValueError("image/CameraInfo optical frame identity mismatch")
-                if camera_identity(cm) != self.profile["calibration_data"]["intrinsics_sha256"]:
+                approved_intrinsics = self.profile["calibration_data"].get("intrinsics_sha256")
+                if approved_intrinsics and camera_identity(cm) != approved_intrinsics:
                     raise ValueError("color intrinsics differ from approved hand-eye calibration")
-                bc = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], capture_ns) @ transform(
-                    self.profile["calibration_data"]["T_flange_color"])
+                try:
+                    bc = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], capture_ns) @ transform(
+                        self.profile["calibration_data"]["T_flange_color"])
+                except (KeyError, TypeError, ValueError, LookupError):
+                    if not evaluation_only:
+                        raise
+                    # Keep the RGB-D observation reviewable when hand-eye data is
+                    # not approved.  No base-frame candidate pose is fabricated.
+                    bc = None
                 cd = self.lookup(cm.frame, dm.frame, stamp_ns(depth))
-                up = bc[:3, :3].T @ np.array([0., 0., 1.])
-                if -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
+                up = bc[:3, :3].T @ np.array([0., 0., 1.]) if bc is not None else None
+                if up is not None and -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
                     raise ValueError("observation is outside verified near-topdown view range")
                 color_bgr = rectify_color(image_array(color), cm)
                 aligned = register_depth(image_array(depth, depth=True), dm, cm, cd)
@@ -273,24 +295,31 @@ class GraspBridge(Node):
         message.encoding, message.step = "bgr8", overlay.shape[1]*3
         message.data = overlay.tobytes()
         self.overlay.publish(message)
+        observation["overlay_bgr"] = overlay
 
     def execute(self, handle):
         result = PlanGrasp.Result()
+        observation = request = response = None
         generation = self.generation
         canceled = lambda: handle.is_cancel_requested or self.generation != generation
         try:
-            if self.dry_run:
+            if self.dry_run and not handle.request.evaluation_only:
                 raise ValueError("configuration dry-run; no hardware clients or observation: " +
                                  "; ".join(self.profile["readiness_problems"]))
-            self.profile = load_profile(self.root, self.profile_name, require_ready=True)
+            selected_profile = (handle.request.profile_name or self.profile_name) if handle.request.evaluation_only else self.profile_name
+            self.profile = load_profile(self.root, selected_profile,
+                                        require_ready=not handle.request.evaluation_only)
+            self.inputs = self.profile_inputs[selected_profile]
             backend = handle.request.backend or self.settings["backend"]
             if backend == "mock":
                 raise ValueError("mock candidates cannot produce live robot plans")
             if not handle.request.target_label:
                 raise ValueError("target_label must be explicit")
-            self.validate_lease(handle.request.lease_token, canceled)
+            if not handle.request.evaluation_only:
+                self.validate_lease(handle.request.lease_token, canceled)
             self.feedback(handle, "capture", "waiting for new paired observation")
-            observation = self.capture(canceled, self.get_clock().now().nanoseconds)
+            observation = self.capture(canceled, self.get_clock().now().nanoseconds,
+                                       evaluation_only=handle.request.evaluation_only)
             request = {"type": "infer", "protocol_version": PROTOCOL_VERSION,
                        "task_id": handle.request.task_id, "request_id": uuid.uuid4().hex,
                        "observation_id": uuid.uuid4().hex, "generation": generation,
@@ -299,14 +328,36 @@ class GraspBridge(Node):
                        "target": {"class_name": handle.request.target_label}, "backend": backend,
                        "gripper": self.profile["gripper_geometry"], "max_candidates": self.settings["max_candidates"],
                        **{k: observation[k] for k in ("color_bgr", "depth_m", "K", "up_camera")}}
+            if handle.request.evaluation_only:
+                self.publish_evaluation(observation, request, phase="captured")
             validate_request(request)
-            self.validate_lease(handle.request.lease_token, canceled)
+            if not handle.request.evaluation_only:
+                self.validate_lease(handle.request.lease_token, canceled)
             self.feedback(handle, "infer", "immutable capture sent to algorithm service")
             response = infer(self.settings["ws_uri"], request, expected_model_id=self.settings["expected_model_id"],
                              connect_timeout_sec=self.settings["connect_timeout_sec"],
                              inference_timeout_sec=self.settings["inference_timeout_sec"], canceled=canceled)
-            self.validate_lease(handle.request.lease_token, canceled)
+            if not handle.request.evaluation_only:
+                self.validate_lease(handle.request.lease_token, canceled)
             self.visualize(response, observation)
+            if handle.request.evaluation_only:
+                if canceled():
+                    raise PlanningCanceled("evaluation canceled")
+                self.publish_evaluation(observation, request, response=response, phase="inferred",
+                                        detail="evaluation only; no IK or waypoints")
+                result.success = True
+                result.observation_id = request["observation_id"]
+                result.profile_id = self.profile["profile_id"]
+                result.capture_timestamp_ns = observation["capture_timestamp_ns"]
+                result.base_frame = self.profile["base_frame"]
+                result.tool_name = self.profile["tool_name"]
+                result.message = "evaluation complete; no IK, waypoints, robot or gripper commands"
+                result.diagnostics_json = json.dumps({"observation_id": request["observation_id"],
+                                                      "candidate_count": len(response["candidates"]),
+                                                      "read_only": True})
+                handle.succeed()
+                self.report("evaluation", f"{request['observation_id']}: {len(response['candidates'])} candidates")
+                return result
             self.feedback(handle, "filter", "checking restricted corridor and IK", len(response["candidates"]))
             plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
                                lambda T, seed: self.solve(T, seed, canceled),
@@ -342,6 +393,8 @@ class GraspBridge(Node):
             handle.succeed()
             self.report("planned", result.plan_id)
         except Exception as exc:
+            if handle.request.evaluation_only and observation is not None and request is not None:
+                self.publish_evaluation(observation, request, response=response, phase="rejected", detail=str(exc))
             result.success, result.message = False, str(exc)
             if handle.is_cancel_requested:
                 handle.canceled()
@@ -353,6 +406,13 @@ class GraspBridge(Node):
             with self.lock:
                 self.busy = False
         return result
+
+    def publish_evaluation(self, observation, request, **values):
+        try:
+            evaluation = snapshot(observation, self.profile, request, **values)
+            self.evaluations.publish(String(data=json.dumps(evaluation, separators=(",", ":"))))
+        except (TypeError, ValueError, KeyError) as exc:
+            self.get_logger().warning(f"Unable to publish grasp evaluation snapshot: {exc}")
 
 
 def main(args=None):

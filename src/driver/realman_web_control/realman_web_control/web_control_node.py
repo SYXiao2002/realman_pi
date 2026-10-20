@@ -25,7 +25,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from realman_msgs.action import CartesianVelocity, ExecuteMotion, ExecuteTrajectory
+from realman_msgs.action import CartesianVelocity, ExecuteMotion, ExecuteTrajectory, PlanGrasp
 from realman_msgs.msg import CartesianVelocityState, InputModeState, MotionWaypoint
 from realman_msgs.srv import (
     CaptureCalibrationSample,
@@ -175,8 +175,13 @@ class WebControlNode(Node):
         self._last_joint_stamp_ns: dict[str, int] = {}
         self._has_nonzero_joint_state: set[str] = set()
         self._cartesian_velocity_states: dict[str, dict[str, Any]] = {}
+        self._grasp_evaluation: dict[str, Any] | None = None
+        self._grasp_bridge_status: dict[str, Any] | None = None
         self._joint_records = JointRecordStore(joint_record_dir)
         self._callback_group = ReentrantCallbackGroup()
+        self._grasp_client = ActionClient(
+            self, PlanGrasp, "/grasp_bridge/plan_grasp", callback_group=self._callback_group
+        )
         # Node owns its own _subscriptions collection; never append to it twice.
         self._web_subscriptions = []
         self._input_modes = InputModeBridge(web_override_timeout_sec=web_config.web_override_timeout_sec)
@@ -325,6 +330,20 @@ class WebControlNode(Node):
                 callback_group=self._callback_group,
             )
         )
+        self._web_subscriptions.append(
+            self.create_subscription(
+                String,
+                "/grasp_bridge/evaluation",
+                self._grasp_evaluation_message,
+                QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL),
+                callback_group=self._callback_group,
+            )
+        )
+        self._web_subscriptions.append(self.create_subscription(
+            String, "/grasp_bridge/review_status", self._grasp_bridge_status_message,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL), callback_group=self._callback_group))
         for arm in ARMS:
             self._web_subscriptions.append(
                 self.create_subscription(
@@ -484,6 +503,8 @@ class WebControlNode(Node):
             self._update_calibration_layout(client_id, message)
         elif message_type == "solve_calibration":
             self._solve_calibration(client_id, message)
+        elif message_type == "plan_grasp":
+            self._plan_grasp(client_id, message)
         else:
             raise ProtocolError("unsupported_type", f"unsupported message type: {message_type}")
 
@@ -1463,9 +1484,120 @@ class WebControlNode(Node):
         self._camera_health = payload
         self._server.send_event(payload)
 
+    def _grasp_evaluation_message(self, message: String) -> None:
+        if len(message.data.encode("utf-8")) > 2 * 1024 * 1024:
+            self.get_logger().warning("ignoring oversized grasp evaluation")
+            return
+        try:
+            payload = json.loads(message.data)
+        except (json.JSONDecodeError, TypeError) as error:
+            self.get_logger().warn(f"invalid grasp evaluation: {error}")
+            return
+        if not isinstance(payload, dict) or payload.get("type") != "grasp_evaluation":
+            self.get_logger().warn("ignoring invalid grasp evaluation")
+            return
+        required = ("observation_id", "capture_timestamp_ns", "profile_id", "profile_name", "arm", "phase")
+        if payload.get("read_only") is not True or not payload.get("observation_id") or any(not payload.get(key) for key in required):
+            self.get_logger().warn("ignoring non-read-only grasp evaluation")
+            return
+        try:
+            timestamp = int(payload["capture_timestamp_ns"])
+        except (TypeError, ValueError):
+            self.get_logger().warning("ignoring grasp evaluation with invalid timestamp")
+            return
+        if timestamp <= 0 or payload["phase"] not in ("captured", "inferred", "rejected"):
+            self.get_logger().warning("ignoring grasp evaluation with invalid identity or phase")
+            return
+        previous = self._grasp_evaluation
+        if previous is not None:
+            try:
+                previous_timestamp = int(previous["capture_timestamp_ns"])
+                if previous_timestamp > timestamp:
+                    return
+                if previous_timestamp == timestamp and (
+                    payload["observation_id"] != previous["observation_id"]
+                    or payload["profile_id"] != previous["profile_id"]
+                    or {"captured": 0, "inferred": 1, "rejected": 2}[payload["phase"]]
+                    <= {"captured": 0, "inferred": 1, "rejected": 2}[previous["phase"]]
+                ):
+                    return
+            except (KeyError, TypeError, ValueError):
+                pass
+        self._grasp_evaluation = payload
+        self._server.send_event(payload)
+
+    def _grasp_bridge_status_message(self, message: String) -> None:
+        if len(message.data.encode("utf-8")) > 64 * 1024:
+            return
+        try:
+            payload = json.loads(message.data)
+        except json.JSONDecodeError:
+            self.get_logger().warning("ignoring invalid grasp bridge status")
+            return
+        if isinstance(payload, dict) and payload.get("type") == "grasp_bridge_status" and isinstance(payload.get("profiles"), list):
+            self._grasp_bridge_status = payload
+            self._server.send_event(payload)
+
+    def _plan_grasp(self, client_id: str, message: dict[str, Any]) -> None:
+        request_id = message["request_id"]
+        if not self._grasp_client.wait_for_server(timeout_sec=0.25):
+            raise ProtocolError("grasp_unavailable", "grasp_bridge action server is unavailable", request_id)
+        goal = PlanGrasp.Goal()
+        goal.profile_name = message["profile_name"]
+        goal.target_label = message["target_label"]
+        goal.backend = message.get("backend", "")
+        goal.task_id = request_id
+        goal.evaluation_only = True
+        goal.lease_token = ""
+        self._server.send_event({"type": "grasp_plan_result", "request_id": request_id, "state": "submitted",
+                                 "read_only": True}, client_id)
+        future = self._grasp_client.send_goal_async(
+            goal,
+            feedback_callback=lambda feedback: self._grasp_feedback(client_id, request_id, feedback),
+        )
+        future.add_done_callback(
+            lambda completed: self._grasp_goal_response(client_id, request_id, completed)
+        )
+
+    def _grasp_feedback(self, client_id: str, request_id: str, feedback_message: Any) -> None:
+        feedback = message_to_json(feedback_message.feedback)
+        self._server.send_event({"type": "grasp_plan_feedback", "request_id": request_id,
+                                 "read_only": True, "feedback": feedback}, client_id)
+
+    def _grasp_goal_response(self, client_id: str, request_id: str, future: Any) -> None:
+        try:
+            handle = future.result()
+        except Exception as error:
+            self._server.send_event({"type": "grasp_plan_result", "request_id": request_id,
+                                     "success": False, "read_only": True, "message": str(error)}, client_id)
+            return
+        if not handle.accepted:
+            self._server.send_event({"type": "grasp_plan_result", "request_id": request_id,
+                                     "success": False, "read_only": True, "message": "grasp goal rejected"}, client_id)
+            return
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(
+            lambda completed: self._grasp_result(client_id, request_id, completed)
+        )
+
+    def _grasp_result(self, client_id: str, request_id: str, future: Any) -> None:
+        try:
+            wrapped = future.result()
+            result = message_to_json(wrapped.result)
+            event = {"type": "grasp_plan_result", "request_id": request_id,
+                     "status": int(wrapped.status), "read_only": True, **result}
+        except Exception as error:
+            event = {"type": "grasp_plan_result", "request_id": request_id,
+                     "success": False, "read_only": True, "message": str(error)}
+        self._server.send_event(event, client_id)
+
     def _send_cached_state(self, client_id: str) -> None:
         self._apply_input_mode_effects(self._input_modes.cached_events(client_id))
         self._server.send_event(self._camera_health, client_id)
+        if self._grasp_bridge_status is not None:
+            self._server.send_event(self._grasp_bridge_status, client_id)
+        if self._grasp_evaluation is not None:
+            self._server.send_event(self._grasp_evaluation, client_id)
         self._server.send_event({"type": "gripper_list", "grippers": list(self._grippers.values())}, client_id)
         for state in self._gripper_states.values():
             self._server.send_event({"type": "gripper_state", **state}, client_id)

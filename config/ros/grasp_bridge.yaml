@@ -1,5 +1,7 @@
-# Planning-only bridge. dry_run validates configuration without ROS hardware
-# clients/subscriptions. Set false for live observation+IK; it never executes.
+# Planning-only bridge. dry_run enables read-only RGB-D/TF subscriptions and
+# policy evaluation, but never creates IK or task-lease clients. Set false only
+# after the profile is fully verified to enable restricted IK planning; this
+# bridge never executes robot or gripper commands.
 version: 1
 dry_run: true
 profile: right_wrist

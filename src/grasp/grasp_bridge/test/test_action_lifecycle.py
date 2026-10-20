@@ -1,6 +1,7 @@
 """Isolated ROS Action evidence; no robot or gripper server is involved."""
 
 import copy
+import json
 from pathlib import Path
 import sys
 import threading
@@ -98,14 +99,51 @@ def goal():
 def test_default_dry_run_has_no_hardware_resources_and_reports_refusal(graph):
     node, client = graph(dry_run=True)
     assert list(node.clients) == []
-    assert list(node.subscriptions) == []
-    assert not hasattr(node, "tf") and not hasattr(node, "ik")
+    assert list(node.subscriptions)
+    assert hasattr(node, "tf") and not hasattr(node, "ik")
     handle = wait(client.send_goal_async(goal()))
     assert handle.accepted
     wrapped = wait(handle.get_result_async())
     assert wrapped.status == GoalStatus.STATUS_ABORTED
     assert not wrapped.result.success
     assert "configuration dry-run" in wrapped.result.message
+
+
+def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, monkeypatch):
+    profile = ready_profile()
+    profile["readiness_problems"] = ["synthetic test profile"]
+    profile["gripper_geometry"].update(min_opening_m=0., max_opening_m=0.1, finger_depth_m=0.04,
+                                        finger_thickness_m=0.01, clearance_m=0.005)
+    monkeypatch.setattr(bridge_module, "load_profile", lambda *a, **k: copy.deepcopy(profile))
+    node, client = graph(dry_run=True)
+    published = []
+    monkeypatch.setattr(node.evaluations, "publish", lambda message: published.append(json.loads(message.data)))
+    T = np.eye(4)
+    T[2, 3] = 0.4
+    monkeypatch.setattr(node, "capture", lambda *a, **k: {
+        "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32) * 0.4,
+        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., -1.],
+        "T_base_camera": None, "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
+        "source_header": Header(frame_id=profile["color_frame"])})
+    monkeypatch.setattr(bridge_module, "infer", lambda *a, **k: {
+        "model_id": "fixture-model", "diagnostics": {},
+        "candidates": [{"candidate_id": "c1", "object_id": "1", "class_name": "eu", "backend": "geometry",
+                        "T_camera_grasp": T, "width_m": 0.03, "score": 0.8}],
+    })
+    monkeypatch.setattr(node, "solve", lambda *a: pytest.fail("evaluation called IK"))
+    goal_request = goal()
+    goal_request.profile_name = "right_wrist"
+    goal_request.backend = "geometry"
+    goal_request.target_label = "eu"
+    goal_request.evaluation_only = True
+    handle = wait(client.send_goal_async(goal_request))
+    wrapped = wait(handle.get_result_async())
+    assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
+    assert wrapped.result.success and not wrapped.result.plan_id
+    assert list(node.clients) == []
+    assert [event["phase"] for event in published] == ["captured", "inferred"]
+    assert published[-1]["candidates"][0]["T_base_grasp"] is None
+    assert published[-1]["read_only"] and not published[-1]["execution_ready"]
 
 
 def ready_profile():
@@ -125,7 +163,7 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     assert [c.srv_name for c in node.clients] == ["/r/solve_ik", "/r/task_control"]
     T = np.eye(4)
     T[2, 3] = 0.4
-    monkeypatch.setattr(node, "capture", lambda *a: {
+    monkeypatch.setattr(node, "capture", lambda *a, **k: {
         "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32),
         "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., -1.],
         "T_base_camera": np.eye(4), "seed": [0.]*6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
@@ -187,7 +225,7 @@ def test_busy_rejection_cancel_and_subsequent_task(graph, monkeypatch):
     node, client = graph(dry_run=False)
     entered = threading.Event()
 
-    def capture(canceled, not_before):
+    def capture(canceled, not_before, *, evaluation_only=False):
         entered.set()
         while not canceled():
             time.sleep(0.005)

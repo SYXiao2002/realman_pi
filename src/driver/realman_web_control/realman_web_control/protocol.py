@@ -482,6 +482,18 @@ def _parse_recover_motion(message: dict[str, Any], arm: str) -> dict[str, Any]:
 # Message types that do not target an arm, and the ones that do. The split keeps the original
 # validation order: arm-less types never see the arm check, and every other type (including an
 # unknown one) is checked for a valid `arm` before its own fields.
+def _parse_plan_grasp(message: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"type", "request_id", "profile_name", "target_label", "backend"}
+    if set(message) - allowed:
+        raise ProtocolError("invalid_field", "plan_grasp accepts only review context", _request_id(message))
+    backend = _string(message.get("backend", ""), "backend", maximum=64, allow_empty=True)
+    if backend not in ("", "geometry", "contact_graspnet"):
+        raise ProtocolError("invalid_field", "unsupported review backend", _request_id(message))
+    return {"type": "plan_grasp", "request_id": _request_id(message),
+            "profile_name": _string(message.get("profile_name"), "profile_name", maximum=64),
+            "target_label": _string(message.get("target_label"), "target_label", maximum=64), "backend": backend}
+
+
 _ARMLESS_PARSERS = {
     "ping": _parse_ping,
     "select_input_mode": _parse_select_input_mode,
@@ -491,6 +503,7 @@ _ARMLESS_PARSERS = {
     "solve_calibration": _parse_solve_calibration,
     "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
+    "plan_grasp": _parse_plan_grasp,
 }
 
 _ARM_PARSERS = {
