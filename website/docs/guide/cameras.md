@@ -5,7 +5,7 @@ description: 四台宿主机 Orbbec 相机的 ROS 2 RGB 与按设备开启的原
 
 # 相机
 
-生产相机运行在**连接 USB 相机的宿主机**上，不在 Docker 里。`./rm65 up` 启动四路 Orbbec RGB，并按配置同时开启右腕和后全局相机的深度；等待全部启用流的首帧后再启动 Docker 服务。相机 launch 或首帧失败时会清理已启动的相机且不启动 Docker。若相机已出帧但 Compose 启动失败，命令返回失败并保留相机流供诊断；执行 `./rm65 down` 停止服务和相机，并等待受管 launch 逐个退出、释放 USB 设备。彩色图像供标定、Web 标定页面、录制和策略桥使用。
+生产相机运行在**连接 USB 相机的宿主机**上，不在 Docker 里。`./rm65 up` 启动四路 Orbbec RGB，并按配置同时开启左右腕和后全局相机的深度；等待全部启用流的首帧后再启动 Docker 服务。相机 launch 或首帧失败时会清理已启动的相机且不启动 Docker。若相机已出帧但 Compose 启动失败，命令返回失败并保留相机流供诊断；执行 `./rm65 down` 停止服务和相机，并等待受管 launch 逐个退出、释放 USB 设备。彩色图像供标定、Web 标定页面、录制和策略桥使用。
 
 宿主机需已安装并可运行 `orbbec_camera` 二进制 ROS 2 包。启动流程 source `/opt/ros/humble/setup.bash`；仅在显式设置 `REALMAN_ORBBEC_ROS2_SETUP` 时额外 source 该文件，然后直接执行 `ros2 launch orbbec_camera ...`。它不自动加载本仓库 install 或 vendor overlay，也不要求 RealSense 驱动。
 
@@ -14,7 +14,7 @@ description: 四台宿主机 Orbbec 相机的 ROS 2 RGB 与按设备开启的原
 | back GLOBAL CAM，Orbbec Gemini 335L | `CP28563000CK` | `/camera_global` | `gemini_330_series.launch.py` | RGB + depth |
 | front GLOBAL CAM，Orbbec Gemini 335L | `CP28563000CV` | `/camera_global2` | `gemini_330_series.launch.py` | RGB |
 | right WRIST CAM，Orbbec Gemini 305 | `CV2856D0002E` | `/camera_right` | `gemini_301_series.launch.py` | RGB + depth |
-| left WRIST CAM，Orbbec Gemini 305 | `CV2856D0008H` | `/camera_left` | `gemini_301_series.launch.py` | RGB |
+| left WRIST CAM，Orbbec Gemini 305 | `CV2856D0008H` | `/camera_left` | `gemini_301_series.launch.py` | RGB + depth |
 
 ## 串号、分辨率、帧率与深度配置
 
@@ -24,7 +24,7 @@ description: 四台宿主机 Orbbec 相机的 ROS 2 RGB 与按设备开启的原
 | --- | --- |
 | `color_width` / `color_height` / `color_fps` / `color_format` | 彩色宽高（像素）、帧率（Hz）和像素格式；具体默认值见配置 |
 | `depth_width` / `depth_height` / `depth_fps` / `depth_format` | 深度宽高（像素）、帧率（Hz）和格式；宽高与帧率为 `0`、格式为 `ANY` 时使用 SDK 默认档位 |
-| `enable_depth` | `color` 模式是否同时开启该设备深度；共享默认关闭，当前 `camera_right` 与 `camera_global` 逐机设为 `true` |
+| `enable_depth` | `color` 模式是否同时开启该设备深度；共享默认关闭，当前 `camera_left`、`camera_right` 与 `camera_global` 逐机设为 `true` |
 | `depth_registration` | 深度是否对齐彩色，默认 `false`，因此当前发布原始深度 |
 
 参数必须是对应设备与安装驱动支持的组合。下面是仅修改右腕分辨率、帧率并开启深度的配置示例，按需要合并进 `config/ros/cameras_ros2.yaml` 或本地覆盖文件：
@@ -45,7 +45,7 @@ cameras:
 
 被 `.gitignore` 忽略的 `config/ros/cameras_ros2.local.yaml` 可覆盖本机差异，也可通过 `RM65_CAMERAS_LOCAL_CONFIG` 指定覆盖 YAML；均按相同结构深合并共享或逐设备参数和串号。修改后须停止相机再启动，例如 `bash start_sensors.sh stop` 后执行 `./rm65 up`；重复 `up` 会复用正在运行的进程，不会热更新参数。旧的 `wrist_cameras` / `global_camera` schema 不兼容，迁移为 `cameras` mapping 后再使用。
 
-监督脚本 `src/sensor_bringup/scripts/host_cameras.py` 管理四个独立的 `ros2 launch orbbec_camera <launch_file>` 子进程；`./rm65 up` 将监督进程独立于调用终端启动，等待四路 `color/image_raw` 和配置启用的两路 `depth/image_raw` 都实际出帧后才启动 Docker。重复 `up` 会继续等待或复用同一个受管进程；启动新进程前先清理配置对应的残留相机进程。RGB 图像与相机参数 topic 为：
+监督脚本 `src/sensor_bringup/scripts/host_cameras.py` 管理四个独立的 `ros2 launch orbbec_camera <launch_file>` 子进程；`./rm65 up` 将监督进程独立于调用终端启动，等待四路 `color/image_raw` 和配置启用的三路 `depth/image_raw` 都实际出帧后才启动 Docker。重复 `up` 会继续等待或复用同一个受管进程；启动新进程前先清理配置对应的残留相机进程。RGB 图像与相机参数 topic 为：
 
 ```text
 /camera_global/color/image_raw
@@ -61,13 +61,15 @@ cameras:
 当前额外启用的原始深度及内参 topic 为：
 
 ```text
+/camera_left/depth/image_raw
+/camera_left/depth/camera_info
 /camera_right/depth/image_raw
 /camera_right/depth/camera_info
 /camera_global/depth/image_raw
 /camera_global/depth/camera_info
 ```
 
-IR、IMU 和点云默认关闭。同设备 RGB-D 帧同步默认 `enable_frame_sync=false`，可在 YAML 逐设备设置真实布尔值；设备支持情况须实测。跨设备触发继续关闭。开启帧同步不替代 D2C 配准、时间戳配对或停稳采集，详见[腕相机抓取](../development/grasping)。`CAMERA_START_TIMEOUT`（默认 `90` 秒）控制 `./rm65 up` / `rm65 wait` 的相机启动等待上限；`REALMAN_CAMERA_CHECK_TIMEOUT`（默认 `60` 秒）控制 supervisor 的首帧等待上限。当前生产映射中没有 D435 或 `/camera_middle`。ROS 2 topic 和设备状态可从宿主机检查：
+IR、IMU 和点云默认关闭。同设备 RGB-D 帧同步共享默认 `enable_frame_sync=false`，两台腕相机逐设备设置为 `true`；现场需核对驱动实际生效的流参数。跨设备触发继续关闭。开启帧同步不替代 D2C 配准、时间戳配对或停稳采集，详见[腕相机抓取](../development/grasping)。`CAMERA_START_TIMEOUT`（默认 `90` 秒）控制 `./rm65 up` / `rm65 wait` 的相机启动等待上限；`REALMAN_CAMERA_CHECK_TIMEOUT`（默认 `60` 秒）控制 supervisor 的首帧等待上限。当前生产映射中没有 D435 或 `/camera_middle`。ROS 2 topic 和设备状态可从宿主机检查：
 
 ```bash
 source /opt/ros/humble/setup.bash

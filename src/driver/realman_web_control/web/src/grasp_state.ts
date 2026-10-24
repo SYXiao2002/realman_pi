@@ -32,6 +32,16 @@ export function validSnapshot(value: any): boolean {
       || candidate.class_name !== value.target_label || !Number.isFinite(candidate.score)
       || typeof candidate.width_m !== "number" || !Number.isFinite(candidate.width_m) || candidate.width_m <= 0
       || !pose(candidate.T_camera_grasp) || (candidate.T_base_grasp !== null && !pose(candidate.T_base_grasp))) return false;
+    for (const key of ["T_camera_native_grasp", "T_camera_native_grasp_aligned", "T_camera_grasp_before_alignment", "T_camera_grasp_after_alignment", "T_base_grasp_before_alignment", "T_base_grasp_after_alignment"]) {
+      if (candidate[key] != null && !pose(candidate[key])) return false;
+    }
+    if (candidate.vertical_alignment !== undefined) {
+      const alignment = candidate.vertical_alignment;
+      if (!alignment || typeof alignment.applied !== "boolean" || !["applied", "missing_base_camera", "backend_not_applicable"].includes(alignment.status)
+        || alignment.applied !== (alignment.status === "applied") || !pose(candidate.T_camera_grasp_before_alignment)
+        || alignment.applied !== (candidate.T_camera_native_grasp_aligned != null)
+        || alignment.applied !== (candidate.T_camera_grasp_after_alignment != null)) return false;
+    }
     ids.add(candidate.candidate_id); return true;
   });
 }

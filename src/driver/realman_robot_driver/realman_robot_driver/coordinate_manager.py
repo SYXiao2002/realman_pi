@@ -24,8 +24,10 @@ _ARMS = frozenset({"l", "m", "r"})
 _CONTROLLER_NAME = re.compile(r"^[A-Za-z0-9_-]{1,9}$")
 _ROS_FRAME_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(?:/[A-Za-z][A-Za-z0-9_]*)*$")
 _LINEAR_TOLERANCE_M = 1.0e-5
-_TOOL_ORIENTATION_TOLERANCE_RAD = 1.0e-5
-# The controller's documented Euler readback precision is about 0.001 rad.
+# Allow the operator-approved 0.1 rad angular error between the configured
+# tool orientation and the controller's approximate Euler readback.
+_TOOL_ORIENTATION_TOLERANCE_RAD = 0.1
+# The controller's documented work-frame Euler readback precision is about 0.001 rad.
 _WORK_ORIENTATION_TOLERANCE_RAD = 1.5e-3
 _PAYLOAD_TOLERANCE_KG = 1.0e-4
 

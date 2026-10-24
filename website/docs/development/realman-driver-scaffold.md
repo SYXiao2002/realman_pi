@@ -170,6 +170,15 @@ ros2 action send_goal /l/execute_motion realman_msgs/action/ExecuteMotion \
 
 `config/ros/realman_coordinates.yaml` 是工具和工作坐标的权威期望状态。每个工具包含控制器名、namespaced ROS frame、位置（m）、`quaternion_wxyz`、负载（kg）和质心（m）；工作坐标包含控制器名、ROS frame、位置和四元数。默认三臂工具为 `tcpgrip`，工作坐标为 `cell`。
 
+工具旋转在配置和项目内部统一使用 `[w, x, y, z]` 四元数。`realman_sdk_adapter.py` 在调用
+`rm_set_manual_tool_frame()` 或 `rm_update_tool_frame()` 前，将其转换成弧度制欧拉角并填写
+`rm_frame_t.pose.euler.rx/ry/rz`，同时保留一致的 `pose.quaternion`。当前 SDK `1.1.6` 的工具
+坐标接口使用 Euler 字段；只填写四元数会导致位置变化而旋转仍为零。例如
+`[0.70710678, 0, 0, 0.70710678]` 应回读为 `rx=0, ry=0, rz≈1.570796 rad`（绕 Z 轴 90°）。
+适配器回归测试覆盖新建与同名更新、单轴与组合旋转；现场验证使用控制器工具坐标回读及
+`coordinates/verify` 的 `matched` 结果，不能仅凭页面显示的配置值判断已生效。
+工具姿态回读使用 `0.1 rad` 的角度误差门限，以覆盖控制器 Euler 回读的现场量化误差；位置、负载和质心仍按各自的绝对误差门限比较。超过该姿态误差的工具仍会关闭 motion gate。
+
 RealMan RM65 控制器的 `rm_get_current_tool_frame()` 回读中，`rm_frame_t.x/y/z` 质心字段使用毫米；驱动适配器在 SDK 边界将其转换为米后再交给坐标管理器。工具配置、`rm_set_manual_tool_frame()`/`rm_update_tool_frame()` 写入以及项目内部接口统一使用米。不要为了适配该回读值把 `config/ros/realman_coordinates.yaml` 中的质心改成毫米。
 
 每次连接都会先读取控制器当前工具/工作坐标并逐字段比较。读取成功但任一字段不匹配时，驱动自动将 `config/ros/realman_coordinates.yaml` 中的默认工具/工作坐标写入控制器、选择对应名称并回读确认；`policy.on_start` 保留用于兼容旧配置，不再允许跳过失配修复。API2 读取或写入失败、或写后回读仍不匹配，都会关闭该臂 motion gate；该 gate 拦截依赖控制器工具/工作坐标的 `MOVEL`、`MOVEJ_P` 和速度 session。关节空间 `MOVEJ` 只使用六轴关节角，不依赖当前工具/工作坐标，因此仍可用于低速回零、离开安全位置或后续重新校准。四个 Service 与普通运动共享单臂 ownership：

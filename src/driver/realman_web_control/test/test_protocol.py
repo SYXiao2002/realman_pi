@@ -58,8 +58,13 @@ def test_plan_grasp_is_read_only_and_armless():
     }))
     assert message == {
         "type": "plan_grasp", "request_id": "grasp-1",
-        "profile_name": "right_wrist", "target_label": "eu", "backend": "geometry",
+        "profile_name": "right_wrist", "target_label": "eu", "backend": "geometry", "cgn_context": "mask",
     }
+    message["cgn_context"] = "box"
+    assert parse_message(json.dumps(message))["cgn_context"] == "box"
+    message["cgn_context"] = "invalid"
+    with pytest.raises(ProtocolError, match="CGN context"):
+        parse_message(json.dumps(message))
     with pytest.raises(ProtocolError, match="request_id"):
         parse_message('{"type":"plan_grasp","profile_name":"right_wrist","target_label":"eu"}')
     with pytest.raises(ProtocolError, match="profile_name"):

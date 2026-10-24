@@ -463,6 +463,43 @@ def test_work_frame_euler_quantization_within_sdk_precision_matches(
     assert manager.motion_allowed("l") is True
 
 
+def test_tool_frame_euler_readback_within_operator_tolerance_matches(tmp_path: Path):
+    desired = (math.cos(math.pi / 4.0), 0.0, 0.0, math.sin(math.pi / 4.0))
+    path = write_profile(tmp_path, quaternion_wxyz=desired)
+    manager = CoordinateManager.from_yaml(path)
+    adapter = FakeAdapter()
+    adapter.tool = (
+        0,
+        _controller_tool(quaternion_wxyz=(math.cos(1.57 / 2.0), 0.0, 0.0, math.sin(1.57 / 2.0))),
+    )
+    adapter.work = (0, _controller_work("cell"))
+
+    result = manager.verify(adapter, "l")
+
+    assert result.matched is True
+    assert result.tool_matched is True
+    assert manager.motion_allowed("l") is True
+
+
+def test_tool_frame_orientation_beyond_operator_tolerance_stays_blocked(
+    profile_path: Path,
+):
+    manager = CoordinateManager.from_yaml(profile_path)
+    adapter = FakeAdapter()
+    adapter.tool = (
+        0,
+        _controller_tool(quaternion_wxyz=(math.cos(0.11 / 2.0), 0.0, 0.0, math.sin(0.11 / 2.0))),
+    )
+    adapter.work = (0, _controller_work("cell"))
+
+    result = manager.verify(adapter, "l")
+
+    assert result.matched is False
+    assert result.tool_matched is False
+    assert "tool.quaternion_wxyz" in result.message
+    assert manager.motion_allowed("l") is False
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

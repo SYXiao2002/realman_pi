@@ -483,15 +483,19 @@ def _parse_recover_motion(message: dict[str, Any], arm: str) -> dict[str, Any]:
 # validation order: arm-less types never see the arm check, and every other type (including an
 # unknown one) is checked for a valid `arm` before its own fields.
 def _parse_plan_grasp(message: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"type", "request_id", "profile_name", "target_label", "backend"}
+    allowed = {"type", "request_id", "profile_name", "target_label", "backend", "cgn_context"}
     if set(message) - allowed:
         raise ProtocolError("invalid_field", "plan_grasp accepts only review context", _request_id(message))
     backend = _string(message.get("backend", ""), "backend", maximum=64, allow_empty=True)
     if backend not in ("", "geometry", "contact_graspnet"):
         raise ProtocolError("invalid_field", "unsupported review backend", _request_id(message))
+    context = message.get("cgn_context", "mask")
+    if context not in ("mask", "box", "full"):
+        raise ProtocolError("invalid_field", "unsupported CGN context", _request_id(message))
     return {"type": "plan_grasp", "request_id": _request_id(message),
             "profile_name": _string(message.get("profile_name"), "profile_name", maximum=64),
-            "target_label": _string(message.get("target_label"), "target_label", maximum=64), "backend": backend}
+            "target_label": _string(message.get("target_label"), "target_label", maximum=64),
+            "backend": backend, "cgn_context": context}
 
 
 _ARMLESS_PARSERS = {

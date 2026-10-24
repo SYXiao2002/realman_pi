@@ -1546,6 +1546,7 @@ class WebControlNode(Node):
         goal.profile_name = message["profile_name"]
         goal.target_label = message["target_label"]
         goal.backend = message.get("backend", "")
+        goal.cgn_context = message.get("cgn_context", "mask")
         goal.task_id = request_id
         goal.evaluation_only = True
         goal.lease_token = ""

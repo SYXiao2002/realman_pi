@@ -85,6 +85,7 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | --- | --- | --- |
 | `/camera_left/color/image_raw`、`/camera_right/color/image_raw`，及对应 `color/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 左 / 右 Gemini 305 腕部相机 |
 | `/camera_global/color/image_raw`、`/camera_global2/color/image_raw`，及对应 `color/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后 / 前 Gemini 335L 全局相机 |
+| `/camera_left/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 左腕 Gemini 305（`CV2856D0008H`）原始深度；设备内帧同步开启 |
 | `/camera_right/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 右腕 Gemini 305（`CV2856D0002E`）原始深度；`depth_registration=false` |
 | `/camera_global/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后全局 Gemini 335L（`CP28563000CK`）原始深度；`depth_registration=false` |
 | `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF |
@@ -118,6 +119,8 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 
 ## 腕相机抓取 `grasp_bridge`
 
+`PlanGrasp.cgn_context` 为 `mask`、`box` 或 `full`，空字符串使用 bridge 配置；`evaluation_only=true` 不要求已测量夹爪尺寸、向上向量或固定模型身份，且不产生 waypoint。修改 Action 后需一起重建其所有 client/server。
+
 纯规划接口，执行由 BT 编排。契约：[腕相机抓取](../development/grasping)。
 
 | 名称 | 类型 | 说明 |
@@ -126,9 +129,9 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
 | `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
 | `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
-| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子评估快照：RGB、深度显示、反投影点云、相机/基座系候选和 readiness；按 `observation_id` 绑定 |
+| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子评估快照：RGB、深度显示、点云、对齐前后矩阵、readiness；`base_camera_transform` 记录采集时 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录跳过的深度不足实例；按 `observation_id` 和采集时 `T_base_camera` 绑定 |
 | `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
-| `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D 与几何；无 ROS |
+| `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D；返回原矩阵/分数/分割与溯源；无 ROS |
 
 ## TF 与描述
 

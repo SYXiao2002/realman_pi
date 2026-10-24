@@ -607,6 +607,7 @@ class FakePose:
     def __init__(self):
         self.position = SimpleNamespace(x=0.0, y=0.0, z=0.0)
         self.quaternion = SimpleNamespace(w=0.0, x=0.0, y=0.0, z=0.0)
+        self.euler = SimpleNamespace(rx=0.0, ry=0.0, rz=0.0)
 
 
 class FakeFrame:
@@ -695,6 +696,62 @@ def test_coordinate_adapter_protocol_uses_one_adapter_arm_and_vendor_frames(
         "cell",
         [0.4, 0.5, 0.6, 0.0, 0.0, 0.0],
     )
+
+
+@pytest.mark.parametrize("create_status", [0, 1], ids=["create", "update-existing"])
+@pytest.mark.parametrize(
+    ("quaternion_wxyz", "expected_euler"),
+    [
+        ((1.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        ((math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0), (math.pi / 2.0, 0.0, 0.0)),
+        (
+            (math.cos(math.pi / 8.0), 0.0, math.sin(math.pi / 8.0), 0.0),
+            (0.0, math.pi / 4.0, 0.0),
+        ),
+        ((math.sqrt(0.5), 0.0, 0.0, math.sqrt(0.5)), (0.0, 0.0, math.pi / 2.0)),
+        ((0.5, 0.5, 0.5, 0.5), (math.pi / 2.0, 0.0, math.pi / 2.0)),
+    ],
+    ids=["identity", "roll", "pitch", "yaw", "combined"],
+)
+def test_tool_frame_rotation_reaches_sdk_euler_fields(
+    adapter, fake_robot, monkeypatch, create_status, quaternion_wxyz, expected_euler
+):
+    _install_frame_types(monkeypatch)
+    tool = ToolFrame(
+        controller_name="tcpgrip",
+        ros_frame_id="l/tool/tcpgrip",
+        xyz_m=(0.0, 0.0, 0.166),
+        quaternion_wxyz=quaternion_wxyz,
+        payload_kg=0.8,
+        center_of_mass_m=(0.0, 0.0, 0.060),
+    )
+    fake_robot.results["rm_set_manual_tool_frame"] = create_status
+
+    assert adapter.set_tool_frame(tool) == 0
+
+    expected_methods = ["rm_set_manual_tool_frame"]
+    if create_status == 1:
+        expected_methods.append("rm_update_tool_frame")
+    assert [call[0] for call in fake_robot.calls] == expected_methods
+    for _, sent in fake_robot.calls:
+        euler = sent.pose.euler
+        assert (euler.rx, euler.ry, euler.rz) == pytest.approx(expected_euler)
+
+    # The SDK's controller readback uses XYZ + Euler, not pose.quaternion.
+    fake_robot.results["rm_get_current_tool_frame"] = (
+        0,
+        {
+            "name": "tcpgrip",
+            "pose": [*tool.xyz_m, euler.rx, euler.ry, euler.rz],
+            "payload": 0.8,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 60.0,
+        },
+    )
+    status, current = adapter.current_tool_frame()
+    assert status == 0
+    assert current.quaternion_wxyz == pytest.approx(quaternion_wxyz)
 
 
 def test_current_tool_frame_converts_controller_com_millimetres_to_metres(

@@ -1144,6 +1144,10 @@ def _vendor_tool_frame(frame: Any) -> Any:
         pose.quaternion = quaternion
     position.x, position.y, position.z = frame.xyz_m
     quaternion.w, quaternion.x, quaternion.y, quaternion.z = frame.quaternion_wxyz
+    # Tool-frame create/update serialize Euler fields in SDK 1.1.6.
+    pose.euler.rx, pose.euler.ry, pose.euler.rz = _euler_from_quaternion(
+        frame.quaternion_wxyz
+    )
 
     vendor_frame = rm_frame_t()
     vendor_frame.frame_name = frame.controller_name.encode("ascii")

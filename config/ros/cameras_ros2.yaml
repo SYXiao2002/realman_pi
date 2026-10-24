@@ -49,12 +49,12 @@ cameras:
     serial: "CV2856D0002E"
     launch_file: gemini_301_series.launch.py
     # 右腕同时发布 RGB 和原始深度；grasp_bridge 使用真实内外参进行软件 D2C。
-    # 首版按时间戳配对并停稳采集；设备验证后可添加 enable_frame_sync: true。
-    parameters: {ae_reference_stream: color, enable_depth: true}
+    # 两腕使用设备内 RGB-D 同步，与离线采集一致；D2C 仍由 bridge 完成一次。
+    parameters: {ae_reference_stream: color, enable_depth: true, enable_frame_sync: true}
   camera_left:
     # left WRIST CAM；没有中腕相机，不发布 camera_middle。
     serial: "CV2856D0008H"
     launch_file: gemini_301_series.launch.py
-    parameters: {ae_reference_stream: color}
+    parameters: {ae_reference_stream: color, enable_depth: true, enable_frame_sync: true}
     # enabled: false 可跳过临时拆除的设备（默认 true），检查也只等待启用设备。
     # parameters: {color_width: 640, color_height: 480, color_fps: 30}

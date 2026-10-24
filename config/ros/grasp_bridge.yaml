@@ -7,6 +7,8 @@ dry_run: true
 profile: right_wrist
 ws_uri: ws://127.0.0.1:8091
 backend: geometry
+# Match offline evaluate.py; context affects CGN only, not geometric generation.
+cgn_context: mask
 # Maximum elapsed seconds; independently bound capture, inference and each IK.
 capture_timeout_sec: 5.0
 inference_timeout_sec: 20.0
@@ -15,7 +17,7 @@ ik_timeout_sec: 2.0
 # Read-only driver STATUS validates a supplied task lease around planning.
 lease_status_timeout_sec: 1.0
 # Device sync is optional; timestamps are always checked. Stop before capture.
-maximum_pair_skew_sec: 0.05
+maximum_pair_skew_sec: 0.02
 maximum_capture_age_sec: 0.75
 settle_sec: 0.5
 maximum_joint_velocity_rad_sec: 0.01
@@ -28,6 +30,6 @@ plan_validity_sec: 30.0
 # Restrict IK branch changes at each straight-line corridor sample.
 maximum_ik_step_degrees: 15.0
 cartesian_sample_step_m: 0.01
-max_candidates: 8
+max_candidates: 15
 # Expected server model is explicit; null prevents live plans until pinned.
 expected_model_id: null

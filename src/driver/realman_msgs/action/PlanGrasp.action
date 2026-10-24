@@ -3,6 +3,8 @@
 string profile_name
 string target_label
 string backend
+# Original CGN point-cloud context: mask, box, full; empty uses bridge config.
+string cgn_context
 string task_id
 # Evaluation-only requests stop after inference and never produce waypoints.
 bool evaluation_only

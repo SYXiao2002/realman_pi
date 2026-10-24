@@ -71,7 +71,7 @@ def test_committed_hardware_map_uses_binary_package_launches(config, camera_conf
 
 
 def test_production_mode_preserves_all_rgb_and_enables_requested_depth(config, camera_config):
-    depth_cameras = {"camera_global", "camera_right"}
+    depth_cameras = {"camera_global", "camera_right", "camera_left"}
     for namespace, argv in camera_config.camera_commands(config):
         args = _arguments(argv)
         assert args["enable_color"] == "true"
@@ -79,10 +79,11 @@ def test_production_mode_preserves_all_rgb_and_enables_requested_depth(config, c
         for flag in (
             "enable_left_ir", "enable_right_ir", "enable_accel",
             "enable_gyro", "enable_point_cloud", "enable_colored_point_cloud",
-            "enable_frame_sync", "trigger_out_enabled", "software_trigger_enabled",
+            "trigger_out_enabled", "software_trigger_enabled",
         ):
             assert args[flag] == "false", flag
         assert args["sync_mode"] == "standalone"
+        assert args["enable_frame_sync"] == str(namespace in {"camera_left", "camera_right"}).lower()
 
 
 def test_topics_and_depth_mode_follow_each_namespace(config, camera_config):
@@ -104,6 +105,7 @@ def test_readiness_requires_rgb_and_each_requested_depth_stream(config, camera_c
         **rgb_topics,
         "camera_global/depth": "/camera_global/depth/image_raw",
         "camera_right/depth": "/camera_right/depth/image_raw",
+        "camera_left/depth": "/camera_left/depth/image_raw",
     }
     assert camera_config.required_topic_map(config, mode="depth") == {
         namespace: f"/{namespace}/depth/image_raw" for namespace in HARDWARE
@@ -115,7 +117,7 @@ def test_disabling_camera_updates_launch_count_and_health_topics(config, camera_
     commands = dict(camera_config.camera_commands(config))
     assert set(commands) == set(HARDWARE) - {"camera_global"}
     assert set(camera_config.topic_map(config)) == set(commands)
-    assert set(camera_config.required_topic_map(config)) == set(commands) | {"camera_right/depth"}
+    assert set(camera_config.required_topic_map(config)) == set(commands) | {"camera_right/depth", "camera_left/depth"}
     assert all(_arguments(argv)["device_num"] == "3" for argv in commands.values())
 
 
@@ -327,6 +329,8 @@ def test_health_check_never_reports_empty_camera_set_as_success(camera_config, m
 
 def test_frame_sync_is_configurable_per_device_and_defaults_false(config, camera_config):
     config["defaults"].pop("enable_frame_sync", None)
+    for camera in config["cameras"].values():
+        camera.get("parameters", {}).pop("enable_frame_sync", None)
     config["cameras"]["camera_right"]["parameters"]["enable_frame_sync"] = True
     commands = dict(camera_config.camera_commands(config))
     for name, argv in commands.items():

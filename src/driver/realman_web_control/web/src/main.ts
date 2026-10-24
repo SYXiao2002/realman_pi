@@ -4,6 +4,7 @@ import URDFLoader from "urdf-loader";
 import "./theme.css";
 import "./style.css";
 import { AXIS_COLORS, VelocityTrace } from "./velocity_trace";
+import { parsePoseGoal, parseMotionSettings, motionRequest } from "./motion_goal";
 import { activeRouterBranch, ancestors, buildBtTree, findInputRouter, renderBreadcrumb, renderBtNode, type BtRuntime } from "./bt_tree";
 
 type ArmId = "l" | "m" | "r";
@@ -959,20 +960,10 @@ function renderPoseInputs() {
   renderPoseSliders();
 }
 function readPoseGoal() {
-  const raw = poseInputElements().map((input) => input.value.trim());
-  if (raw.some((value) => value === "")) return null;
-  const values = raw.map(Number);
-  if (!values.every(Number.isFinite)) return null;
-  const quaternion = values.slice(3);
-  if (Math.hypot(...quaternion) < 1.0e-9) return null;
-  return { position: values.slice(0, 3), quaternion };
+  return parsePoseGoal(poseInputElements().map((input) => input.value));
 }
 function readMotionSettings() {
-  const velocity = Number(motionVelocityInput.value);
-  const timeout = Number(motionTimeoutInput.value);
-  if (!Number.isInteger(velocity) || velocity < 1 || velocity > 100) return null;
-  if (!Number.isFinite(timeout) || timeout <= 0) return null;
-  return { velocity, timeout };
+  return parseMotionSettings(motionVelocityInput.value, motionTimeoutInput.value);
 }
 function setMotionMode(command: MotionCommand) {
   const previousCommand = selectedMotionCommand;
@@ -2155,22 +2146,8 @@ executeMotionButton.addEventListener("click", () => {
   const commandLabel = MOTION_LABELS[selectedMotionCommand];
   activeMotionRequest = requestId(commandLabel.toLowerCase());
   const reference = selectedMotionCommand === 0 ? preferredReference() : poseReference();
-  send({
-    type: "execute_motion",
-    request_id: activeMotionRequest,
-    arm: selectedArm,
-    goal: {
-      command: selectedMotionCommand,
-      reference_type: reference.type,
-      reference_name: reference.name,
-      joint_degrees: selectedMotionCommand === 0 ? targetJoints.map((value) => value * 180 / Math.PI) : [0, 0, 0, 0, 0, 0],
-      pose_position_m: pose?.position ?? [0, 0, 0],
-      pose_quaternion_wxyz: pose?.quaternion ?? [1, 0, 0, 0],
-      velocity_percent: settings.velocity,
-      blend_radius_percent: 0,
-      timeout_sec: settings.timeout,
-    },
-  });
+  send(motionRequest(activeMotionRequest, selectedArm, selectedMotionCommand, reference, pose, settings,
+    selectedMotionCommand === 0 ? targetJoints.map((value) => value * 180 / Math.PI) : undefined));
   feedback.textContent = `${commandLabel} / ${referenceLabel(reference)} / 等待 feedback…`;
   window.clearTimeout(motionFeedbackTimer);
   const pendingRequestId = activeMotionRequest;
