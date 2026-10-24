@@ -3,7 +3,7 @@
 version: 1
 profile: right_wrist
 # Pick an explicit supported class before live execution. null fails validation.
-target_label: null
+target_label: eu
 backend: geometry  # geometry/contact_graspnet; mock is isolated replay only.
 lease_ttl_sec: 5.0
 acquire_timeout_sec: 10.0

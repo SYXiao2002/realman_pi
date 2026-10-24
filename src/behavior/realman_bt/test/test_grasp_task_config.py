@@ -25,15 +25,15 @@ def config_root(tmp_path):
     return root
 
 
-def test_unmeasured_default_profile_stays_unready_without_invented_robot_pose(config_root):
+def test_default_profile_keeps_configured_pose_but_stays_unready_without_calibration(config_root):
     params = load_grasp_task_parameters(config_root)
     assert params["arm_id"] == "r"
     assert params["grasp_gripper"] == "gripper_right"
-    assert params["grasp_observation_joint_degrees"] == ""
-    assert params["grasp_return_joint_degrees"] == ""
+    assert params["grasp_observation_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
+    assert params["grasp_return_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
     assert params["grasp_confirmation_timeout_sec"] == 120.0
+    assert params["grasp_target_label"] == "eu"
     assert params["grasp_execution_ready"] is False
-    assert "target_label" in params["grasp_readiness_detail"]
     assert "calibration" in params["grasp_readiness_detail"]
 
 
