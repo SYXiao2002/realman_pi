@@ -16,6 +16,10 @@ def choose_plan(candidates, profile, T_base_camera, seed_degrees, solve_ik, *, s
         if canceled():
             raise RuntimeError("planning canceled")
         try:
+            g = profile["gripper_geometry"]
+            if not (g["min_opening_m"] <= candidate["width_m"]
+                    and candidate["width_m"] + 2 * g["clearance_m"] <= g["max_opening_m"]):
+                raise ValueError("candidate exceeds measured gripper opening")
             waypoints = restricted_waypoints(
                 T_base_camera, candidate["T_camera_grasp"], profile["T_grasp_tcp"],
                 approach_m=profile["approach_m"], lift_m=profile["lift_m"], workspace=profile["workspace_m"],

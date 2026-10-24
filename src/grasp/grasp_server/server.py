@@ -5,24 +5,28 @@ import asyncio
 import json
 import logging
 import signal
+from datetime import datetime, timezone
 from pathlib import Path
+import uuid
 
+import numpy as np
 import yaml
 
 from grasp_protocol import PROTOCOL_VERSION, identity, packb, unpackb, validate_request, validate_response
 from grasp_protocol.wire import MAX_MESSAGE_BYTES
 
-from .backends import ContactGraspNetBackend, DetectorSegmentor, GeometryBackend, MockBackend, model_identity
+from .backends import ReferenceRuntime, ReferenceBackend, MockBackend, model_identity
 
 LOGGER = logging.getLogger("grasp_server")
 
 
 class GraspService:
-    def __init__(self, backends, *, model_id, unavailable=None, inference_timeout_s=30.0):
+    def __init__(self, backends, *, model_id, unavailable=None, inference_timeout_s=30.0, archive_root=None):
         self.backends = backends
         self.model_id = model_id
         self.unavailable = unavailable or {}
         self.inference_timeout_s = inference_timeout_s
+        self.archive_root = Path(archive_root) if archive_root is not None else None
         self._gpu_lock = asyncio.Lock()
         self._workers = set()
 
@@ -40,20 +44,44 @@ class GraspService:
         return {"type": "error", "protocol_version": PROTOCOL_VERSION,
                 **identity(request), "code": code, "message": message}
 
-    async def _compute(self, request):
-        # A cancelled connection must not release the GPU slot while a worker
-        # thread/kernel is still running. Cancellation invalidates publication;
-        # compute continues holding this lock until the underlying call ends.
+    def _infer_and_archive(self, request):
+        archive = None
+        if self.archive_root is not None:
+            archive_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ_") + uuid.uuid4().hex[:12]
+            archive = self.archive_root / archive_id
+            archive.mkdir(parents=True)
+            (archive / "request.msgpack").write_bytes(packb(request))
+            frame = {name: request[name] for name in ("color_bgr", "depth_m", "K")}
+            for name in ("up_camera", "T_base_camera"):
+                if request.get(name) is not None:
+                    frame[name] = request[name]
+            np.savez_compressed(archive / "frame.npz", **frame)
         try:
-            candidates, diagnostics = await asyncio.to_thread(self.backends[request["backend"]].infer, request)
+            candidates, diagnostics = self.backends[request["backend"]].infer(request)
+            if archive is not None:
+                diagnostics["archive_id"] = archive.name
             response = {
                 "type": "result", "protocol_version": PROTOCOL_VERSION, **identity(request),
                 "model_id": self.model_id, "gripper_id": request["gripper"]["id"],
                 "candidates": candidates, "diagnostics": diagnostics,
             }
             validate_response(response, request)
+        except Exception as exc:
+            if archive is not None:
+                (archive / "error.msgpack").write_bytes(packb(self._error(request, "inference_failed", str(exc))))
+            raise
+        if archive is not None:
+            (archive / "result.msgpack").write_bytes(packb(response))
+        return response
+
+    async def _compute(self, request):
+        # A cancelled connection must not release the GPU slot while a worker
+        # thread/kernel is still running. Cancellation invalidates publication;
+        # compute continues holding this lock until the underlying call ends.
+        try:
+            response = await asyncio.to_thread(self._infer_and_archive, request)
             LOGGER.info(json.dumps({"event": "inference_done", "request_id": request["request_id"],
-                                    "backend": request["backend"], "candidates": len(candidates)}))
+                                    "backend": request["backend"], "candidates": len(response["candidates"])}))
             return response
         except Exception as exc:
             LOGGER.exception("inference failed request_id=%s", request["request_id"])
@@ -137,16 +165,25 @@ class GraspService:
             await asyncio.gather(*tuple(self._workers), return_exceptions=True)
 
 
-def load_service(config_path, *, backend_override=None, models_root_override=None):
+def load_service(config_path, *, backend_override=None, models_root_override=None, reference_backend_override=None,
+                 archive_root_override=None):
     with Path(config_path).open(encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     if models_root_override is not None:
         config["models_root"] = str(models_root_override)
+    if reference_backend_override is not None:
+        config["reference_backend"] = str(Path(reference_backend_override).resolve())
+    if archive_root_override is not None:
+        config["archive_root"] = str(archive_root_override)
+    if (config["cgn_context"] not in ("mask", "box", "full")
+            or type(config["seed"]) is not int or not 0 <= config["seed"] < 2**32
+            or type(config["warmup_runs"]) is not int or not 0 <= config["warmup_runs"] <= 10
+            or not isinstance(config["z_range_m"], list) or len(config["z_range_m"]) != 2
+            or not 0 <= config["z_range_m"][0] < config["z_range_m"][1] <= 10):
+        raise ValueError("invalid reference inference settings")
     root = Path(config_path).resolve().parent
     with (root / config["models_manifest"]).open(encoding="utf-8") as stream:
         manifest = yaml.safe_load(stream)
-    with (root / config["object_policies"]).open(encoding="utf-8") as stream:
-        policies = yaml.safe_load(stream)
     names = [backend_override] if backend_override else config["enabled_backends"]
     if not names or set(names) - {"geometry", "mock", "contact_graspnet"}:
         raise ValueError("enabled_backends contains no supported backend")
@@ -156,31 +193,29 @@ def load_service(config_path, *, backend_override=None, models_root_override=Non
     backends, unavailable = {}, {}
     if "mock" in names:
         backends["mock"] = MockBackend()
-    perception = None
+    reference = None
     if set(names) & {"geometry", "contact_graspnet"}:
         try:
-            perception = DetectorSegmentor(
-                manifest, config["models_root"], device=config["device"],
-                confidence=float(config["detection_confidence"]),
-            )
+            reference = ReferenceRuntime(root / config["reference_backend"], manifest, config["models_root"], config)
         except Exception as exc:
             LOGGER.error("perception unavailable: %s", exc)
             for name in names:
                 if name != "mock":
                     unavailable[name] = str(exc)
-    if perception is not None:
+    if reference is not None:
         if "geometry" in names:
-            backends["geometry"] = GeometryBackend(perception, policies)
+            backends["geometry"] = ReferenceBackend(reference, "geometry")
         if "contact_graspnet" in names:
             try:
-                backends["contact_graspnet"] = ContactGraspNetBackend(
-                    perception, manifest, config["models_root"], aliases=policies.get("class_aliases", {}))
+                reference.enable_cgn()
+                backends["contact_graspnet"] = ReferenceBackend(reference, "contact_graspnet")
             except Exception as exc:
                 LOGGER.error("Contact-GraspNet unavailable: %s", exc)
                 unavailable["contact_graspnet"] = str(exc)
-    runtime = {"device": config["device"], "detection_confidence": config["detection_confidence"], "backends": names}
-    return GraspService(backends, model_id=model_identity(manifest, policies, runtime), unavailable=unavailable,
-                        inference_timeout_s=inference_timeout_s), config
+    runtime = {key: config[key] for key in ("device", "detection_confidence", "seed", "warmup_runs", "z_range_m", "cgn_context")}
+    runtime["backends"] = names
+    return GraspService(backends, model_id=model_identity(manifest, reference.provenance if reference else {}, runtime), unavailable=unavailable,
+                        inference_timeout_s=inference_timeout_s, archive_root=config["archive_root"]), config
 
 
 async def serve(service, host, port):
@@ -208,11 +243,15 @@ def main():
     parser.add_argument("--config", default="config/grasp/server.yaml")
     parser.add_argument("--backend", choices=["geometry", "mock", "contact_graspnet"])
     parser.add_argument("--models-root", type=Path, help="explicit host replay mount; Docker defaults to /models")
+    parser.add_argument("--reference-backend", type=Path, help="original chaung_wei_2_jiao_fu/backend source directory")
+    parser.add_argument("--archive-root", type=Path, help="lossless frozen input/result archive directory")
     parser.add_argument("--check", action="store_true", help="report model readiness and exit; no WS listener")
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     service, config = load_service(arguments.config, backend_override=arguments.backend,
-                                   models_root_override=arguments.models_root)
+                                   models_root_override=arguments.models_root,
+                                   reference_backend_override=arguments.reference_backend,
+                                   archive_root_override=arguments.archive_root)
     if arguments.check:
         print(json.dumps(service.hello(), sort_keys=True))
         return 0 if service.backends else 1

@@ -73,6 +73,16 @@ def test_bridge_round_trip_and_model_pin():
             infer(uri, request(), expected_model_id="other-model", connect_timeout_sec=1, inference_timeout_sec=1)
 
 
+def test_unpinned_unmeasured_review_works_but_live_planning_requires_pin():
+    review = request()
+    review.update(evaluation_only=True, up_camera=None, gripper={"id": "unmeasured"})
+    with server() as uri:
+        result = infer(uri, review, expected_model_id=None, connect_timeout_sec=1, inference_timeout_sec=2)
+        assert result["model_id"] == "test-model" and len(result["candidates"]) == 1
+        with pytest.raises(ValueError, match="pin expected_model_id"):
+            infer(uri, request(), expected_model_id=None, connect_timeout_sec=1, inference_timeout_sec=2)
+
+
 def test_bridge_cancellation_and_timeout_invalidate_late_result():
     with server() as uri:
         started = time.monotonic()

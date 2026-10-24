@@ -45,6 +45,16 @@ def _validate_identity(message):
              "invalid capture_timestamp_ns")
 
 
+def _rigid_transform(value, label):
+    T = np.asarray(value, dtype=np.float64)
+    _require(T.shape == (4, 4) and np.isfinite(T).all(), f"invalid {label}")
+    R = T[:3, :3]
+    _require(np.allclose(T[3], [0, 0, 0, 1], atol=1e-8)
+             and np.allclose(R.T @ R, np.eye(3), atol=1e-5)
+             and abs(np.linalg.det(R) - 1) < 1e-5, f"invalid rigid {label}")
+    return T
+
+
 def validate_request(request):
     """Validate without resizing, changing units, supplying calibration or default axes."""
     _validate_identity(request)
@@ -65,21 +75,31 @@ def validate_request(request):
              and abs(K[0, 1]) < 1e-8 and abs(K[1, 0]) < 1e-8, "invalid pinhole intrinsics")
     h, w = depth.shape
     _require(0 <= K[0, 2] < w and 0 <= K[1, 2] < h, "intrinsic principal point is outside image")
-    up = np.asarray(request.get("up_camera"), dtype=np.float64)
-    _require(up.shape == (3,) and np.isfinite(up).all() and abs(np.linalg.norm(up) - 1) < 1e-3,
-             "up_camera must be an explicit unit vector")
+    evaluation = request.get("evaluation_only", False)
+    _require(type(evaluation) is bool, "evaluation_only must be a boolean")
+    if request.get("up_camera") is not None or not evaluation:
+        up = np.asarray(request.get("up_camera"), dtype=np.float64)
+        _require(up.shape == (3,) and np.isfinite(up).all() and abs(np.linalg.norm(up) - 1) < 1e-3,
+                 "up_camera must be an explicit unit vector")
+    if request.get("T_base_camera") is not None:
+        base_camera = _rigid_transform(request["T_base_camera"], "T_base_camera")
+        if request.get("up_camera") is not None:
+            _require(np.allclose(base_camera[:3, :3].T @ [0., 0., 1.], request["up_camera"], atol=1e-3),
+                     "T_base_camera and up_camera disagree")
+    _require(request.get("cgn_context", "mask") in ("mask", "box", "full"), "invalid cgn_context")
     target = request.get("target")
     _require(isinstance(target, dict), "target must be a map")
     _string(target.get("class_name"), "target.class_name")
     gripper = request.get("gripper")
     _require(isinstance(gripper, dict), "gripper must be a map")
     _string(gripper.get("id"), "gripper.id")
-    low = _float(gripper.get("min_opening_m"), "min_opening_m", upper=1)
-    high = _float(gripper.get("max_opening_m"), "max_opening_m", upper=1)
-    _require(high > low, "gripper opening interval is empty")
-    _float(gripper.get("finger_depth_m"), "finger_depth_m", 0.001, 1)
-    _float(gripper.get("finger_thickness_m"), "finger_thickness_m", 0.001, 1)
-    _float(gripper.get("clearance_m"), "clearance_m", upper=0.1)
+    if not evaluation:
+        low = _float(gripper.get("min_opening_m"), "min_opening_m", upper=1)
+        high = _float(gripper.get("max_opening_m"), "max_opening_m", upper=1)
+        _require(high > low, "gripper opening interval is empty")
+        _float(gripper.get("finger_depth_m"), "finger_depth_m", 0.001, 1)
+        _float(gripper.get("finger_thickness_m"), "finger_thickness_m", 0.001, 1)
+        _float(gripper.get("clearance_m"), "clearance_m", upper=0.1)
     count = request.get("max_candidates", 8)
     _require(type(count) is int and 1 <= count <= 64, "max_candidates must be in [1,64]")
     return request
@@ -96,14 +116,29 @@ def validate_candidate(candidate, request=None):
              "grasp rotation must be right handed and orthonormal")
     _require(np.allclose(transform[3], [0, 0, 0, 1], atol=1e-8), "invalid homogeneous transform")
     _require(0 < transform[2, 3] <= 10, "grasp center must be in front of camera")
-    width = _float(candidate.get("width_m"), "width_m", upper=1)
-    _float(candidate.get("score"), "score", upper=1)
+    _float(candidate.get("width_m"), "width_m", lower=1e-12, upper=1)
+    # Original geometric scores include class/layer bonuses and can exceed 1.
+    _float(candidate.get("score"), "score", lower=-math.inf, upper=math.inf)
+    for name in ("T_camera_native_grasp", "T_camera_native_grasp_aligned",
+                 "T_camera_grasp_before_alignment", "T_camera_grasp_after_alignment"):
+        if candidate.get(name) is not None:
+            _rigid_transform(candidate[name], name)
+    if "vertical_alignment" in candidate:
+        alignment = candidate["vertical_alignment"]
+        _require(isinstance(alignment, dict) and type(alignment.get("applied")) is bool
+                 and alignment.get("status") in ("applied", "missing_base_camera", "backend_not_applicable"),
+                 "invalid vertical_alignment")
+        applied = alignment["applied"]
+        _require(applied == (alignment["status"] == "applied")
+                 and candidate.get("T_camera_grasp_before_alignment") is not None
+                 and applied == (candidate.get("T_camera_native_grasp_aligned") is not None)
+                 and applied == (candidate.get("T_camera_grasp_after_alignment") is not None),
+                 "inconsistent alignment stages")
+        selected = candidate["T_camera_grasp_after_alignment" if applied else "T_camera_grasp_before_alignment"]
+        _require(np.allclose(transform, selected, atol=1e-8), "effective grasp differs from alignment stage")
     if request is not None:
-        g = request["gripper"]
         _require(candidate["backend"] == request["backend"], "candidate backend mismatch")
         _require(candidate["class_name"] == request["target"]["class_name"], "candidate target mismatch")
-        _require(g["min_opening_m"] <= width and width + 2 * g["clearance_m"] <= g["max_opening_m"],
-                 "candidate exceeds gripper opening")
     return candidate
 
 

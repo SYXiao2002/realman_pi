@@ -6,6 +6,7 @@ import sys
 import threading
 
 import pytest
+import numpy as np
 import websockets
 
 from test_grasp_protocol import observation
@@ -26,6 +27,25 @@ def test_mock_ws_roundtrip_without_ros_or_models():
             assert result["diagnostics"]["diagnostic_only"] is True
         await service.drain()
     asyncio.run(scenario())
+
+
+def test_archive_preserves_inputs_and_records_backend_failure(tmp_path):
+    class FailingBackend:
+        def infer(self, request):
+            raise ValueError("original backend failure")
+
+    service = GraspService({"mock": FailingBackend()}, model_id="test", archive_root=tmp_path)
+    request = observation()
+    request.update(evaluation_only=True, up_camera=None, gripper={"id": "unmeasured"})
+    with pytest.raises(ValueError, match="original backend failure"):
+        service._infer_and_archive(request)
+    archive, = tmp_path.iterdir()
+    saved = unpackb((archive / "request.msgpack").read_bytes())
+    np.testing.assert_array_equal(saved["color_bgr"], request["color_bgr"])
+    with np.load(archive / "frame.npz", allow_pickle=False) as frozen:
+        np.testing.assert_array_equal(frozen["depth_m"], request["depth_m"])
+        assert "up_camera" not in frozen.files
+    assert unpackb((archive / "error.msgpack").read_bytes())["message"] == "original backend failure"
 
 
 def test_cancelled_gpu_work_cannot_publish_or_release_busy_slot():
@@ -109,3 +129,15 @@ asyncio.run(serve(GraspService({'mock': MockBackend()}, model_id='test'), '127.0
             process.kill()
             process.wait(timeout=5)
         process.stdout.close()
+
+
+def test_archive_and_replay_keep_captured_base_transform(tmp_path):
+    from grasp_server.replay import request_from_npz
+    request = observation()
+    request.update(evaluation_only=True, T_base_camera=np.diag([1., -1., -1., 1.]))
+    service = GraspService({"mock": MockBackend()}, model_id="test", archive_root=tmp_path)
+    service._infer_and_archive(request)
+    archive, = tmp_path.iterdir()
+    replay = request_from_npz(archive / "frame.npz", request["gripper"])
+    np.testing.assert_array_equal(replay["T_base_camera"], request["T_base_camera"])
+    np.testing.assert_array_equal(replay["up_camera"], request["up_camera"])

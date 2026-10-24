@@ -1,5 +1,5 @@
 # Run from repository root:
-# docker buildx bake --allow=network.host -f config/docker/compose.grasp.yaml
+# docker buildx bake --allow=fs.read=../chaung_wei_2_jiao_fu --allow=network.host -f config/docker/compose.grasp.yaml
 # Older Compose versions can also use `docker compose ... build`; recent
 # Buildx requires the explicit host-network entitlement for local proxies.
 # GRASP_MODELS_DIR=/path/to/verified/models docker compose --project-directory . \
@@ -12,6 +12,10 @@ services:
     build:
       context: .
       dockerfile: config/docker/grasp-server.Dockerfile
+      # Build only: copy unchanged algorithm sources into the image. Runtime
+      # needs neither this neighboring checkout nor its development venv.
+      additional_contexts:
+        grasp_reference: ${GRASP_REFERENCE_REPO:-../chaung_wei_2_jiao_fu}
       # The host's loopback proxy is reachable only on the host build network.
       # Runtime networking remains the isolated Compose bridge below.
       network: ${GRASP_BUILD_NETWORK:-host}
@@ -27,7 +31,8 @@ services:
       - '${GRASP_BIND_HOST:-127.0.0.1}:${GRASP_WS_PORT:-8091}:8091'
     volumes:
       - ./config/grasp:/opt/grasp/config/grasp:ro
-      - ${GRASP_MODELS_DIR:-./models/grasp}:/models:ro
+      - ${GRASP_MODELS_DIR:-../chaung_wei_2_jiao_fu/backend/models}:/models:ro
+      - ./logs:/opt/grasp/logs
     read_only: true
     # Allow an in-flight CUDA call to drain after SIGTERM before Docker kills it.
     stop_grace_period: 35s

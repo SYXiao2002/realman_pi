@@ -23,12 +23,12 @@ from realman_msgs.action import PlanGrasp
 from realman_msgs.srv import SolveIk, TaskControl
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from std_msgs.msg import String
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from grasp_protocol import PROTOCOL_VERSION, validate_request
 
 from .geometry import from_pose, pose_drift, transform, to_pose
-from .evaluation import snapshot
+from .evaluation import json_value, snapshot
 from .planner import choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
 from .rgbd import CameraModel, image_array, rectify_color, register_depth, validate_timing
@@ -141,7 +141,10 @@ class GraspBridge(Node):
         self.report(phase, detail)
 
     def lookup(self, parent, child, timestamp_ns):
-        value = self.tf.lookup_transform(parent, child, Time(nanoseconds=timestamp_ns), timeout=Duration(seconds=0.25))
+        try:
+            value = self.tf.lookup_transform(parent, child, Time(nanoseconds=timestamp_ns), timeout=Duration(seconds=0.25))
+        except TransformException as exc:
+            raise LookupError(f"TF {parent} <- {child} at {timestamp_ns}: {exc}") from exc
         if timestamp_ns == 0:
             now_ns = self.get_clock().now().nanoseconds
             stamp = stamp_ns(value)
@@ -150,6 +153,36 @@ class GraspBridge(Node):
                 raise ValueError("latest flange TF is stale or future; pose drift cannot be verified")
         p, q = value.transform.translation, value.transform.rotation
         return from_pose([p.x, p.y, p.z], [q.w, q.x, q.y, q.z])
+
+    def camera_at_capture(self, timestamp_ns):
+        """Compose existing arm TF with saved flange->color data; publish no TF."""
+        profile, calibration = self.profile, self.profile["calibration_data"]
+        info = {"status": "available", "detail": "", "base_frame": profile["base_frame"],
+                "flange_frame": profile["flange_frame"], "camera_frame": profile["color_frame"],
+                "capture_timestamp_ns": str(timestamp_ns), "calibration_id": calibration.get("calibration_id")}
+        if (calibration.get("T_flange_color") is None or not calibration.get("calibration_id")
+                or not calibration.get("intrinsics_sha256")):
+            info.update(status="missing_calibration", detail="未加载完整手眼标定结果，请导入所选相机的已保存标定会话")
+            return None, info
+        if any(calibration.get(key) != profile[key]
+               for key in ("camera_serial", "mount_id", "flange_frame", "color_frame")):
+            info.update(status="calibration_identity_mismatch", detail="手眼标定的相机、安装或坐标系与当前 profile 不一致")
+            return None, info
+        try:
+            flange_color = transform(calibration["T_flange_color"])
+        except (TypeError, ValueError) as exc:
+            info.update(status="invalid_calibration", detail=f"手眼外参无效：{exc}")
+            return None, info
+        try:
+            if timestamp_ns <= 0:
+                raise ValueError("capture timestamp must be positive; latest TF is not a capture transform")
+            base_flange = self.lookup(profile["base_frame"], profile["flange_frame"], timestamp_ns)
+        except (LookupError, ValueError) as exc:
+            info.update(status="tf_unavailable", detail=f"采集时法兰 TF 不可用：{exc}")
+            return None, info
+        # link_6 is the calibrated flange, not the mutable controller TCP.
+        info.update(T_base_flange=base_flange, T_flange_color=flange_color)
+        return base_flange @ flange_color, info
 
     def stopped(self, messages, now_ns):
         if len(messages) < 2:
@@ -200,18 +233,12 @@ class GraspBridge(Node):
                 approved_intrinsics = self.profile["calibration_data"].get("intrinsics_sha256")
                 if approved_intrinsics and camera_identity(cm) != approved_intrinsics:
                     raise ValueError("color intrinsics differ from approved hand-eye calibration")
-                try:
-                    bc = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], capture_ns) @ transform(
-                        self.profile["calibration_data"]["T_flange_color"])
-                except (KeyError, TypeError, ValueError, LookupError):
-                    if not evaluation_only:
-                        raise
-                    # Keep the RGB-D observation reviewable when hand-eye data is
-                    # not approved.  No base-frame candidate pose is fabricated.
-                    bc = None
+                bc, base_camera_transform = self.camera_at_capture(capture_ns)
+                if bc is None and not evaluation_only:
+                    raise ValueError(base_camera_transform["detail"])
                 cd = self.lookup(cm.frame, dm.frame, stamp_ns(depth))
                 up = bc[:3, :3].T @ np.array([0., 0., 1.]) if bc is not None else None
-                if up is not None and -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
+                if not evaluation_only and up is not None and -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
                     raise ValueError("observation is outside verified near-topdown view range")
                 color_bgr = rectify_color(image_array(color), cm)
                 aligned = register_depth(image_array(depth, depth=True), dm, cm, cd)
@@ -219,7 +246,8 @@ class GraspBridge(Node):
                     raise ValueError("insufficient registered depth")
                 return {"color_bgr": color_bgr, "depth_m": aligned, "K": cm.K,
                         "up_camera": up, "capture_timestamp_ns": capture_ns,
-                        "T_base_camera": bc, "seed": np.rad2deg(streams["joints"][-1].position).tolist(),
+                        "T_base_camera": bc, "base_camera_transform": base_camera_transform,
+                        "seed": np.rad2deg(streams["joints"][-1].position).tolist(),
                         "source_header": color.header}
             except (ValueError, LookupError) as exc:
                 problem = str(exc)
@@ -326,7 +354,12 @@ class GraspBridge(Node):
                        "capture_timestamp_ns": observation["capture_timestamp_ns"],
                        "camera_frame": self.profile["color_frame"], "config_id": self.profile["profile_id"],
                        "target": {"class_name": handle.request.target_label}, "backend": backend,
-                       "gripper": self.profile["gripper_geometry"], "max_candidates": self.settings["max_candidates"],
+                       "evaluation_only": handle.request.evaluation_only,
+                       "cgn_context": handle.request.cgn_context or self.settings["cgn_context"],
+                       "gripper": ({"id": self.profile["gripper_geometry"]["id"]} if handle.request.evaluation_only
+                                   else self.profile["gripper_geometry"]),
+                       "max_candidates": self.settings["max_candidates"],
+                       "T_base_camera": observation["T_base_camera"],
                        **{k: observation[k] for k in ("color_bgr", "depth_m", "K", "up_camera")}}
             if handle.request.evaluation_only:
                 self.publish_evaluation(observation, request, phase="captured")
@@ -387,8 +420,13 @@ class GraspBridge(Node):
                 for field in ("position_m", "quaternion_wxyz", "joint_degrees"):
                     setattr(result, name + "_" + field, waypoint[field])
             result.message = "planned; restricted corridor only, physical grasp unverified"
-            result.diagnostics_json = json.dumps({"plan_id": result.plan_id, "observation_id": result.observation_id,
-                                                 "profile_id": result.profile_id, **plan, "server": response.get("diagnostics", {})})
+            # The lossless label PNG belongs to the binary archive/review image,
+            # not the ROS plan JSON. Preserve its hash and archive identity.
+            server_diagnostics = {key: value for key, value in response.get("diagnostics", {}).items()
+                                  if key != "segmap_png"}
+            result.diagnostics_json = json.dumps(json_value({
+                "plan_id": result.plan_id, "observation_id": result.observation_id,
+                "profile_id": result.profile_id, **plan, "server": server_diagnostics}))
             self.plans.publish(String(data=result.diagnostics_json))
             handle.succeed()
             self.report("planned", result.plan_id)

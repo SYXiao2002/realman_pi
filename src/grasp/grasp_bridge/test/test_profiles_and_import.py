@@ -18,7 +18,9 @@ PROJECT = Path(__file__).resolve().parents[4]
 
 @pytest.fixture
 def config(tmp_path):
-    shutil.copytree(PROJECT / "config/ros", tmp_path / "ros")
+    (tmp_path / "ros").mkdir()
+    for name in ("grasp_profiles", "grasp_bridge", "camera_extrinsics", "cameras_ros2", "realman_coordinates", "gripper"):
+        shutil.copy2(PROJECT / f"config/ros/{name}.yaml", tmp_path / f"ros/{name}.yaml")
     shutil.copytree(PROJECT / "config/grasp", tmp_path / "grasp")
     return tmp_path
 
@@ -40,7 +42,7 @@ def artifact(profile):
 def test_unmeasured_profile_refuses_execution_and_freezes_local_changes(config):
     first = load_profile(config, "right_wrist")
     assert "verified calibration identity" in first["readiness_problems"]
-    assert "gripper max_opening_m" in first["readiness_problems"]
+    assert "measured gripper geometry" in first["readiness_problems"]
     with pytest.raises(ValueError, match="not ready"):
         load_profile(config, "right_wrist", require_ready=True)
     (config / "ros/grasp_profiles.local.yaml").write_text(

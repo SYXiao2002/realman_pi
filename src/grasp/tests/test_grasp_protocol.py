@@ -83,3 +83,37 @@ def test_stale_generation_and_wrong_model_response_are_rejected():
     response["gripper_id"] = "different-tool"
     with pytest.raises(ProtocolError, match="gripper"):
         validate_response(response, request)
+
+
+def test_read_only_reference_evaluation_needs_no_fabricated_axis_or_tool_dimensions():
+    request = observation("geometry")
+    request.update(evaluation_only=True, up_camera=None, gripper={"id": "unmeasured"})
+    validate_request(request)
+    T = np.eye(4); T[2, 3] = .4
+    response = {"protocol_version": 1, "type": "result", **identity(request), "model_id": "reference",
+                "gripper_id": "unmeasured", "candidates": [{"candidate_id": "1", "object_id": "1",
+                "class_name": "adapter", "backend": "geometry", "score": 1.7, "width_m": .1,
+                "T_camera_grasp": T, "T_camera_native_grasp": T.copy()}]}
+    validate_response(response, request)
+    request["evaluation_only"] = False
+    with pytest.raises(ProtocolError, match="up_camera"):
+        validate_request(request)
+
+
+@pytest.mark.parametrize("transform,up,match", [
+    (np.diag([1., 1., 2., 1.]), None, "rigid"),
+    (np.diag([1., -1., 1., 1.]), None, "rigid"),
+    (np.eye(3), None, "T_base_camera"),
+    (np.eye(4), [0., 0., -1.], "disagree"),
+])
+def test_rejects_invalid_or_inconsistent_frozen_camera_transform(transform, up, match):
+    request = observation("geometry")
+    request.update(evaluation_only=True, up_camera=up, T_base_camera=transform)
+    with pytest.raises(ProtocolError, match=match):
+        validate_request(request)
+
+
+def test_frozen_base_camera_is_optional_only_for_review_alignment():
+    request = observation("geometry")
+    request.update(evaluation_only=True, up_camera=[0., 0., 1.], T_base_camera=np.eye(4))
+    validate_request(unpackb(packb(request)))

@@ -2,12 +2,23 @@
 # detector/SAM weights. Missing weights keep ready=false; no model is fetched.
 host: 0.0.0.0
 port: 8091
-enabled_backends: [geometry]
+enabled_backends: [geometry, contact_graspnet]
 device: cuda
 models_root: /models
 models_manifest: models.yaml
-object_policies: object_policies.yaml
+# Unmodified reference files are supplied by a named Docker build context.
+# For host replay use --reference-backend /path/to/chaung_wei_2_jiao_fu/backend.
+reference_backend: /opt/grasp/reference/backend
 detection_confidence: 0.5
+# Same inputs/seed/warmup as tools/offline_grasp/evaluate.py. No extra filters.
+z_range_m: [0.2, 1.5]
+seed: 42
+warmup_runs: 1
+cgn_context: mask
+# Every accepted inference stores its full request, lossless RGB-D and result.
+# Keep this volume writable; archive failures reject inference. Manage retention
+# on the host, because observations are never silently removed by the service.
+archive_root: /opt/grasp/logs/grasp-server
 # Server discards results exceeding this deadline; the GPU slot stays reserved
 # until the actual worker finishes. The robot bridge has its own task deadline.
 inference_timeout_s: 30.0

@@ -19,9 +19,25 @@ RUN sed -i -e "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_APT_MIRROR}|g" \
 COPY config/python/grasp-server-requirements.txt /tmp/grasp-server-requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/grasp-server-requirements.txt
 RUN python -c "import torch,numpy,cv2; assert torch.__version__.split('+')[0] == '2.7.1'; assert torch.version.cuda == '12.6'; assert numpy.__version__ == '1.26.4'"
+COPY config/python/grasp-reference-requirements.txt /tmp/grasp-reference-requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/grasp-reference-requirements.txt
+# The original CGN imports pyrender even for inference. Supply an EGL context
+# for that import without exposing a desktop/X11 socket to the service.
+RUN apt-get update && apt-get install -y --no-install-recommends libegl1 libegl-mesa0 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PYGLET_HEADLESS=true
 COPY src/grasp/grasp_protocol /opt/grasp/src/grasp/grasp_protocol
 COPY src/grasp/grasp_server /opt/grasp/src/grasp/grasp_server
 COPY config/grasp /opt/grasp/config/grasp
+# These files are copied byte-for-byte from the authorized reference checkout,
+# including its local algorithm fixes. models.yaml verifies their actual hashes.
+COPY --from=grasp_reference /backend/config /opt/grasp/reference/backend/config
+COPY --from=grasp_reference /backend/contact_graspnet_ros2/contact_graspnet_ros2/inference_worker.py /opt/grasp/reference/backend/contact_graspnet_ros2/contact_graspnet_ros2/inference_worker.py
+COPY --from=grasp_reference /backend/contact_graspnet_ros2/contact_graspnet_ros2/grasp_selection.py /opt/grasp/reference/backend/contact_graspnet_ros2/contact_graspnet_ros2/grasp_selection.py
+COPY --from=grasp_reference /backend/contact_graspnet_core/contact_graspnet_pytorch /opt/grasp/reference/backend/contact_graspnet_core/contact_graspnet_pytorch
+COPY --from=grasp_reference /backend/contact_graspnet_core/Pointnet_Pointnet2_pytorch /opt/grasp/reference/backend/contact_graspnet_core/Pointnet_Pointnet2_pytorch
+COPY --from=grasp_reference /backend/contact_graspnet_core/gripper_models /opt/grasp/reference/backend/contact_graspnet_core/gripper_models
+COPY --from=grasp_reference /backend/contact_graspnet_core/gripper_control_points /opt/grasp/reference/backend/contact_graspnet_core/gripper_control_points
 # Arbitrary UID is allowed; only /tmp and the explicit logs mount are writable.
 USER 1000:1000
 EXPOSE 8091

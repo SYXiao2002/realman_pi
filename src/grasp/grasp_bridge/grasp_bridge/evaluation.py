@@ -45,7 +45,16 @@ def snapshot(observation, profile, request, *, response=None, plan=None, phase="
     display = np.zeros(depth.shape, np.uint8)
     if len(values):
         display[valid] = 1 + np.clip((values-low)/max(high-low, 1e-6)*254, 0, 254).astype(np.uint8)
-    yy, xx = np.nonzero(valid)
+    # Match offline preview's scene cloud: the original worker's valid z range.
+    # This only affects display, never the frozen RGB-D sent to inference.
+    z_range = (response or {}).get("diagnostics", {}).get("z_range_m")
+    cloud_valid = valid
+    if z_range is not None:
+        bounds = np.asarray(z_range, dtype=float)
+        if bounds.shape != (2,) or not np.isfinite(bounds).all() or bounds[0] >= bounds[1]:
+            raise ValueError("invalid display z range")
+        cloud_valid = valid & (depth > bounds[0]) & (depth < bounds[1])
+    yy, xx = np.nonzero(cloud_valid)
     stride = max(1, math.ceil(len(xx)/4096))
     yy, xx = yy[::stride], xx[::stride]
     zz = depth[yy, xx]
@@ -54,22 +63,39 @@ def snapshot(observation, profile, request, *, response=None, plan=None, phase="
     base_camera = transform(base_camera_value) if base_camera_value is not None else None
     candidates = []
     for candidate in (response or {}).get("candidates", []):
-        candidates.append({**candidate, "T_base_grasp": (
-            base_camera @ transform(candidate["T_camera_grasp"]) if base_camera is not None else None)})
+        item = {**candidate}
+        for suffix in ("", "_before_alignment", "_after_alignment"):
+            camera_pose = candidate.get("T_camera_grasp" + suffix)
+            item["T_base_grasp" + suffix] = (base_camera @ transform(camera_pose)
+                if base_camera is not None and camera_pose is not None else None)
+        candidates.append(item)
+    diagnostics = dict((response or {}).get("diagnostics", {}))
+    segmentation = diagnostics.pop("segmap_png", None)
+    instances = None
+    if segmentation is not None:
+        labels = cv2.imdecode(np.frombuffer(segmentation, np.uint8), cv2.IMREAD_UNCHANGED)
+        if labels is None or labels.shape != depth.shape:
+            raise ValueError("invalid instance segmentation dimensions")
+        colored = cv2.applyColorMap(((labels.astype(np.uint32) * 47) % 256).astype(np.uint8), cv2.COLORMAP_TURBO)
+        instances = color.copy()
+        instances[labels > 0] = cv2.addWeighted(color, .5, colored, .5, 0)[labels > 0]
     return json_value({
         "type": "grasp_evaluation", "schema_version": 1, "read_only": True,
         "observation_id": request["observation_id"], "capture_timestamp_ns": str(request["capture_timestamp_ns"]),
         "review_request_id": request["task_id"], "profile_id": request["config_id"], "profile_name": profile["name"], "arm": profile["arm"],
         "camera_frame": request["camera_frame"], "base_frame": profile["base_frame"], "tool_name": profile["tool_name"],
         "target_label": request["target"]["class_name"], "backend": request["backend"],
+        "cgn_context": request.get("cgn_context", "mask"),
         "model_id": (response or {}).get("model_id"), "gripper": profile["gripper_geometry"],
         "calibration_id": profile["calibration_data"].get("calibration_id"),
         "readiness_problems": profile["readiness_problems"], "execution_ready": False,
         "phase": phase, "detail": detail, "K": K, "T_base_camera": base_camera,
+        "base_camera_transform": observation.get("base_camera_transform"),
         "seed_joint_degrees": observation["seed"], "width": color.shape[1], "height": color.shape[0],
         "images": {"rgb": image_url(color), "depth": image_url(display, ".png"),
-                   "overlay": image_url(observation.get("overlay_bgr", color))},
+                   "overlay": image_url(observation.get("overlay_bgr", color)),
+                   **({"instances": image_url(instances)} if instances is not None else {})},
         "depth_stats": {"valid_pixels": int(valid.sum()), "total_pixels": int(depth.size), "min_m": low, "max_m": high},
-        "cloud": {"xyz_m": points, "rgb": color[yy, xx, ::-1]},
-        "candidates": candidates, "plan": plan, "server_diagnostics": (response or {}).get("diagnostics", {}),
+        "cloud": {"xyz_m": points, "rgb": color[yy, xx, ::-1], "z_range_m": z_range},
+        "candidates": candidates, "plan": plan, "server_diagnostics": diagnostics,
     })

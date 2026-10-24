@@ -255,6 +255,12 @@ services:
       # Keep the camera-health publisher present so the Web calibration page
       # can show the configured left/right wrist inputs during normal bringup.
       - start_camera_calibration:=true
+      # Keep the grasp review Action available on :8765.  The production
+      # default is read-only dry-run: it subscribes to RGB-D/TF/joints and
+      # evaluates plans without creating IK/lease clients or robot commands.
+      - start_grasp_bridge:=${REALMAN_START_GRASP_BRIDGE:-true}
+      - grasp_profile:=${REALMAN_GRASP_PROFILE:-right_wrist}
+      - grasp_dry_run:=${REALMAN_GRASP_DRY_RUN:-true}
       - joint_record_dir:=${REALMAN_JOINT_RECORD_DIR:-/opt/rm65_ws/config/web-control/joint-records}
 
   # Browser action console. It joins an existing ROS graph and serves the

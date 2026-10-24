@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -27,6 +28,7 @@ from std_msgs.msg import Header
 import grasp_bridge.node as bridge_module
 from grasp_bridge.node import GraspBridge
 from grasp_bridge.profiles import load_profile
+from grasp_bridge.geometry import from_pose
 
 PROJECT = Path(__file__).resolve().parents[4]
 
@@ -112,8 +114,6 @@ def test_default_dry_run_has_no_hardware_resources_and_reports_refusal(graph):
 def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, monkeypatch):
     profile = ready_profile()
     profile["readiness_problems"] = ["synthetic test profile"]
-    profile["gripper_geometry"].update(min_opening_m=0., max_opening_m=0.1, finger_depth_m=0.04,
-                                        finger_thickness_m=0.01, clearance_m=0.005)
     monkeypatch.setattr(bridge_module, "load_profile", lambda *a, **k: copy.deepcopy(profile))
     node, client = graph(dry_run=True)
     published = []
@@ -122,7 +122,7 @@ def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, 
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
         "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32) * 0.4,
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., -1.],
+        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": None,
         "T_base_camera": None, "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
     monkeypatch.setattr(bridge_module, "infer", lambda *a, **k: {
@@ -154,6 +154,47 @@ def ready_profile():
     return profile
 
 
+def test_capture_tf_uses_selected_flange_and_image_time_without_tcp_offset():
+    profile = ready_profile()
+    calibration = profile["calibration_data"]
+    calibration.update({key: profile[key] for key in ("camera_serial", "mount_id", "flange_frame", "color_frame")})
+    calibration.update(calibration_id="test-calibration", intrinsics_sha256="test-intrinsics")
+    flange_color = from_pose([.03, -.07, .04], [np.cos(.2), np.sin(.2), 0., 0.])
+    base_flange = from_pose([.2, .3, .4], [np.cos(.3), 0., 0., np.sin(.3)])
+    calibration["T_flange_color"] = flange_color.tolist()
+    calls = []
+    def lookup(*args):
+        calls.append(args)
+        return base_flange.copy()
+    bridge = SimpleNamespace(profile=profile, lookup=lookup)
+    result, info = GraspBridge.camera_at_capture(bridge, 123456789)
+    assert calls == [("r/base_link", "r/link_6", 123456789)]
+    assert info["status"] == "available" and info["capture_timestamp_ns"] == "123456789"
+    point = np.array([.02, -.01, .5, 1.])
+    np.testing.assert_allclose(result @ point, base_flange @ (flange_color @ point))
+    np.testing.assert_allclose(info["T_base_flange"], base_flange)
+    np.testing.assert_allclose(info["T_flange_color"], flange_color)
+
+
+@pytest.mark.parametrize("problem", ["missing_calibration", "invalid_calibration", "calibration_identity_mismatch", "tf_unavailable"])
+def test_capture_tf_diagnoses_failures_without_latest_or_identity_fallback(problem):
+    profile = ready_profile()
+    calibration = profile["calibration_data"]
+    calibration.update({key: profile[key] for key in ("camera_serial", "mount_id", "flange_frame", "color_frame")})
+    calibration.update(calibration_id="test-calibration", intrinsics_sha256="test-intrinsics")
+    if problem == "missing_calibration":
+        calibration["T_flange_color"] = None
+    elif problem == "invalid_calibration":
+        calibration["T_flange_color"][0][0] = 2.
+    elif problem == "calibration_identity_mismatch":
+        calibration["flange_frame"] = "l/link_6"
+    def lookup(parent, child, timestamp):
+        assert problem == "tf_unavailable" and timestamp == 123
+        raise LookupError("extrapolation")
+    result, info = GraspBridge.camera_at_capture(SimpleNamespace(profile=profile, lookup=lookup), 123)
+    assert result is None and info["status"] == problem and info["detail"]
+
+
 @pytest.mark.parametrize("revoke_during_inference, stale_feedback", [(False, False), (True, False), (False, True)])
 def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypatch, revoke_during_inference, stale_feedback):
     profile = ready_profile()
@@ -165,16 +206,20 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
         "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32),
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., -1.],
+        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., 1.],
         "T_base_camera": np.eye(4), "seed": [0.]*6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
     # Measured test geometry is synthetic and never persisted as a production value.
     profile["gripper_geometry"].update(min_opening_m=0., max_opening_m=0.1, finger_depth_m=0.04,
                                         finger_thickness_m=0.01, clearance_m=0.005)
     def inference(*args, **kwargs):
+        np.testing.assert_array_equal(args[1]["T_base_camera"], np.eye(4))
+        np.testing.assert_array_equal(args[1]["up_camera"], [0., 0., 1.])
         if revoke_during_inference:
             node.lease_valid = False
-        return {"candidates": [{"candidate_id": "c1", "T_camera_grasp": T}], "diagnostics": {"test": True}}
+        return {"candidates": [{"candidate_id": "c1", "T_camera_grasp": T, "width_m": .03}],
+                "diagnostics": {"segmap_png": b"binary-label-image", "vertical_axis_camera": np.array([0., 0., -1.]),
+                                "segmap_sha256": "fixture-label-hash", "archive_id": "fixture-archive"}}
     monkeypatch.setattr(bridge_module, "infer", inference)
     monkeypatch.setattr(node, "solve", lambda T, seed, canceled: seed)
     monkeypatch.setattr(node, "lookup", lambda *a: np.eye(4))
@@ -197,6 +242,10 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     assert result.result.profile_id == profile["profile_id"]
     assert result.result.expires_timestamp_ns > result.result.capture_timestamp_ns > 0
     assert result.result.base_frame == "r/base_link"
+    diagnostics = json.loads(result.result.diagnostics_json)["server"]
+    assert diagnostics["archive_id"] == "fixture-archive"
+    assert diagnostics["vertical_axis_camera"] == [0., 0., -1.]
+    assert "segmap_png" not in diagnostics
     np.testing.assert_allclose(result.result.grasp_position_m, [0, 0, 0.4])
     assert node.lease_checks == 4
 

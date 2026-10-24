@@ -13,7 +13,7 @@ def infer(uri, request, *, expected_model_id, connect_timeout_sec, inference_tim
     from websockets.sync.client import connect
 
     validate_request(request)
-    if not expected_model_id:
+    if not expected_model_id and not request.get("evaluation_only", False):
         raise ValueError("pin expected_model_id before live planning")
     if canceled():
         raise PlanningCanceled("planning canceled")
@@ -23,7 +23,7 @@ def infer(uri, request, *, expected_model_id, connect_timeout_sec, inference_tim
         if (not isinstance(hello, dict) or hello.get("type") != "hello"
                 or hello.get("protocol_version") != PROTOCOL_VERSION or hello.get("ready") is not True
                 or request["backend"] not in hello.get("backends", [])
-                or hello.get("model_id") != expected_model_id):
+                or (expected_model_id and hello.get("model_id") != expected_model_id)):
             raise ValueError("algorithm capability/model identity mismatch")
         ws.send(packb(request))
         deadline = time.monotonic() + inference_timeout_sec
@@ -45,6 +45,6 @@ def infer(uri, request, *, expected_model_id, connect_timeout_sec, inference_tim
         validate_response(response, request)
         if response["type"] == "error":
             raise ValueError(f"algorithm {response['code']}: {response.get('message', '')}")
-        if response["model_id"] != expected_model_id:
+        if response["model_id"] != hello.get("model_id"):
             raise ValueError("result model identity changed")
         return response

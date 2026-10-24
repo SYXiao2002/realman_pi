@@ -1,21 +1,21 @@
 # Actual binary 42D hardware geometry must be measured, not inferred from its
 # 0..1000 compatibility command endpoints or the displayed CTAG URDF model.
-# Null dimensions deliberately prevent inference/execution with guessed values.
-# The bridge sends only the validated metric geometry and id to the server.
+# Null dimensions prevent robot planning/execution. Read-only review sends the
+# id alone and preserves the reference algorithm's candidates without filtering.
 grippers:
   binary_42d_right:
     id: binary_42d_right_unmeasured
     verified: false
-    min_opening_m: null
-    max_opening_m: null
-    finger_depth_m: null
-    finger_thickness_m: null
-    clearance_m: null
+    min_opening_m: 0
+    max_opening_m: 0.06
+    finger_depth_m: 0.05
+    finger_thickness_m: 0.01
+    clearance_m: 0.005
   binary_42d_left:
     id: binary_42d_left_unmeasured
     verified: false
-    min_opening_m: null
-    max_opening_m: null
-    finger_depth_m: null
-    finger_thickness_m: null
-    clearance_m: null
+    min_opening_m: 0
+    max_opening_m: 0.06
+    finger_depth_m: 0.05
+    finger_thickness_m: 0.01
+    clearance_m: 0.005

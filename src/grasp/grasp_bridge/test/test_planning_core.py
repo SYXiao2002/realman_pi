@@ -75,9 +75,11 @@ def test_invalid_rotation_and_workspace_escape_rejected():
 
 def test_ik_rejects_first_candidate_then_samples_second_corridor():
     profile = {"T_grasp_tcp": np.eye(4), "approach_m": 0.05, "lift_m": 0.05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
                "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
-    candidates = [{"candidate_id": label, "T_camera_grasp": from_pose([x, 0, 0.5], [1, 0, 0, 0])}
-                  for label, x in (("bad", 0.5), ("good", 0.1))]
+    candidates = [{"candidate_id": label, "width_m": .03, "T_camera_grasp": from_pose([x, 0, 0.5], [1, 0, 0, 0])}
+                  for label, x in (("too-wide", .2), ("bad", 0.5), ("good", 0.1))]
+    candidates[0]["width_m"] = .1
     visited = []
 
     def ik(T, seed):
@@ -88,5 +90,8 @@ def test_ik_rejects_first_candidate_then_samples_second_corridor():
 
     plan = choose_plan(candidates, profile, np.eye(4), [0]*6, ik, sample_step_m=0.01, max_joint_step=5)
     assert plan["candidate_id"] == "good"
-    assert plan["rejections"][0]["reason"] == "unreachable"
+    assert plan["rejections"][0]["reason"] == "candidate exceeds measured gripper opening"
+    assert plan["rejections"][1]["reason"] == "unreachable"
+    assert len(candidates) == 3 and candidates[0]["width_m"] == .1
+    assert all(point[0] != .2 for point in visited)
     assert len(visited) >= 12  # endpoints alone cannot pass this evidence.

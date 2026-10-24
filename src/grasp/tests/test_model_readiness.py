@@ -6,7 +6,7 @@ import pytest
 
 from test_grasp_protocol import observation
 
-from grasp_server.backends import model_identity, verify_model
+from grasp_server.backends import model_identity, source_identity, verify_model
 from grasp_server.server import load_service
 
 
@@ -42,3 +42,13 @@ def test_inference_configuration_is_part_of_model_identity():
     assert original != model_identity({"sha256": "b"}, {"width": 0.03}, {"confidence": 0.5})
     assert original != model_identity({"sha256": "a"}, {"width": 0.04}, {"confidence": 0.5})
     assert original != model_identity({"sha256": "a"}, {"width": 0.03}, {"confidence": 0.7})
+
+
+def test_reference_source_local_changes_require_matching_hash(tmp_path):
+    source = tmp_path / "worker.py"
+    source.write_bytes(b"original algorithm")
+    expected = {source.name: hashlib.sha256(source.read_bytes()).hexdigest()}
+    assert source_identity(tmp_path, expected) == expected
+    source.write_bytes(b"changed algorithm")
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        source_identity(tmp_path, expected)

@@ -1,0 +1,3 @@
+# Imported by the unchanged original CGN runtime even for headless inference.
+trimesh==3.22.0
+pyrender==0.1.45
