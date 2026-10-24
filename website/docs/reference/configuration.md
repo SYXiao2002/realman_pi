@@ -42,7 +42,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | 文件 | 说明 |
 | --- | --- |
 | `control.xml` | 持久输入路由树（`./rm65 bt control`）：模式目录、分支、`ReactiveSequence` 结构 |
-| `move.xml` / `three.xml` | 单臂 / 三臂分阶段 MoveJ（`./rm65 bt l|m|r|three`） |
+| `move.xml` / `three.xml` / `duo.xml` | 单臂 / 三臂 / L-R 双臂分阶段 MoveJ（`./rm65 bt l|m|r|three|duo`） |
 | `tool_x.xml` | 定时笛卡尔速度 |
 | `grasp.xml` | 单腕单次抓取任务；默认 dry-run，执行前要求实测 profile |
 | `pick_task.xml` / `approach_and_grasp.xml` | 旧任务模板，含未注册节点，不能直接执行 |

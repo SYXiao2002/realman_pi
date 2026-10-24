@@ -1,6 +1,6 @@
 ---
 title: 行为树机械臂移动 Demo
-description: 使用 vendored BehaviorTree.CPP-X 执行单臂或三臂同步分阶段 RealMan MoveJ。
+description: 使用 vendored BehaviorTree.CPP-X 执行单臂、双臂或三臂同步分阶段 RealMan MoveJ。
 ---
 
 # 行为树机械臂移动 Demo
@@ -36,26 +36,35 @@ velocity_percent 和 blend_radius_percent 的范围分别为 1..100 和 0..100�
 确认该目标是否安全。
 
 单臂权威树文件为 config/behavior-trees/move.xml，其中 arm_id 和 dry_run 通过黑板重映射，能被
-launch 参数覆盖。三臂权威树文件为 config/behavior-trees/three.xml；每个
-ThreeArmMoveJ 叶节点先确认三路 Action Server 都可用，在同一行为树 tick 中依次提交 l/m/r 三个异步
-goal，并在三路都成功后返回 SUCCESS。任一路失败或超时会使叶节点失败，并取消或移交仍未完成的 goal。
+launch 参数覆盖。三臂权威树文件为 config/behavior-trees/three.xml；双臂 l/r 版本为
+config/behavior-trees/duo.xml。`ThreeArmMoveJ` 的 `arms` 端口可选指定 `l`、`m`、`r` 的非空子集，默认
+`l,m,r`。节点只验证、创建 client、等待 Action Server 并提交被选中的手臂，其余手臂完全跳过。被选中的
+Action Server 都可用后，节点在同一行为树 tick 中提交异步 goal，并等所有选中手臂都成功才返回 SUCCESS。
+任一路失败或超时会使叶节点失败，并取消或移交仍未完成的 goal。
 
-三臂树由有状态 Sequence 编排两个阶段：
+`three.xml` 和 `duo.xml` 都由有状态 Sequence 编排两个阶段。下表是三臂 `three.xml` 的目标；`duo.xml`
+使用相同的全零起始阶段，并在第二阶段使用当前双臂部署的 L/R 目标：
 
 | 阶段 | L（度） | M（度） | R（度） |
 | --- | --- | --- | --- |
 | `all_zero` | `0,0,0,0,0,0` | `0,0,0,0,0,0` | `0,0,0,0,0,0` |
 | `requested_pose` | `24,20,66,24,84,14.5` | `0,18,70,0,90,9` | `15,22,65,23,82,-7.5` |
 
-只有 `all_zero` 的三台机械臂全部完成后，Sequence 才开始 `requested_pose`。两个阶段均使用 10% 速度、
-0% 交融半径和 120 秒 Action 超时。“同时”表示三个 goal 在同一次 tick 中提交并共同等待，不保证三台
-机械臂在物理上完全同一时刻到达。
+双臂 `duo.xml` 的 `requested_pose` 为 L=`0.229,30.124,82.19,-2.241,70.44,174.223`、
+R=`2.583,30.02,93.644,2.532,56.142,-0.285`，不会解析或连接 M 臂。
 
-`ThreeArmMoveJ` 的三个目标端口是 `l_joint_degrees`、`m_joint_degrees`、`r_joint_degrees`，每个
-端口接收六个逗号分隔的有限角度值，默认均为零；该节点固定控制三臂，没有 `arm_id` 端口。公共参数
+只有 `all_zero` 阶段的所有已选机械臂都完成后，Sequence 才开始 `requested_pose`。两个阶段均使用 10% 速度、
+0% 交融半径和 120 秒 Action 超时。“同时”表示选中的 goal 在同一次 tick 中提交并共同等待，不保证机械臂
+在物理上完全同一时刻到达。
+
+`ThreeArmMoveJ` 的目标端口是 `l_joint_degrees`、`m_joint_degrees`、`r_joint_degrees`，每个
+端口接收六个逗号分隔的有限角度值，默认均为零。未选中的目标不会被解析，也不会要求对应 Action Server。公共参数
 `dry_run`、`velocity_percent`、`blend_radius_percent`、`timeout_sec` 默认分别为 `true`、`10`、`0`、
-`120`。成功要求三路 Action 均返回 `SUCCEEDED`，且每个结果消息的 `success=true`。超时从节点初始化
+`120`。成功要求所有已选 Action 均返回 `SUCCEEDED`，且每个结果消息的 `success=true`。超时从节点初始化
 开始计算，包含等待服务器就绪的时间。
+
+没有 M 臂的部署可运行 `./rm65 bt duo`；根元数据只要求 `l,r` 的 `execute_motion` Action。`control.xml`
+仍是独立的三臂输入路由树，其 Pika/Policy 准备动作依赖三臂，因此该硬件配置应选择 `duo.xml` 运行分阶段移动。
 
 ## 腕相机单臂抓取
 

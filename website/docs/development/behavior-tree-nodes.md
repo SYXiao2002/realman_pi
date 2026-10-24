@@ -91,10 +91,12 @@ flowchart TB
 
 ```xml
 <!-- velocity_percent 为字面量，直接写在 XML 中；r_joint_degrees 为黑板重映射，运行时读取 -->
-<ThreeArmMoveJ name="policy_start_pose"
+<ThreeArmMoveJ name="policy_start_pose" arms="l,m,r"
                velocity_percent="10"
                r_joint_degrees="{pika_r_joint_degrees}"/>
 ```
+
+`ThreeArmMoveJ` 默认同时控制 l/m/r；`arms="l,r"` 可用于没有 M 臂的双臂 stage。该端口只接受由 `l`、`m`、`r` 组成的非空、无重复逗号分隔子集。节点仅为选中的手臂校验目标、等待 Action Server 并发送 goal，完成条件也只看这些手臂。
 
 未填写的端口使用 C++ 中的默认值，即上方端口表的"默认值"一列。`name` 不是端口，只用于在监视器和日志中区分同类节点。
 `InputModeGuard` 的 `mode`、`label`、`selectable` 必须是字面量：它们在节点构造时登记到模式目录，Web 选择器和

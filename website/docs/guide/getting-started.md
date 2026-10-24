@@ -150,6 +150,7 @@ ros2 service call /l/recover_motion realman_msgs/srv/RecoverMotion "{}"
 | --- | --- | --- | --- |
 | `./rm65 bt control` | `control.xml` | **持久输入路由器**：让 Web 键盘、Pika、策略输入按"输入模式"取得控制权 | 一直运行，`Ctrl-C` 结束 |
 | `./rm65 bt three` | `three.xml` | 三臂分阶段 MoveJ（每阶段三臂全部成功才进入下一阶段） | one-shot：到达终态后自动退出 |
+| `./rm65 bt duo` | `duo.xml` | L-R 双臂分阶段 MoveJ（每阶段两臂全部成功才进入下一阶段） | one-shot：到达终态后自动退出 |
 | `./rm65 bt l`（或 `m` / `r`） | `move.xml` | 单臂 MoveJ 演示 | one-shot |
 | `./rm65 bt <名称>` | `config/behavior-trees/<名称>.xml` | 任意树，扩展名可省略 | 取决于树 |
 

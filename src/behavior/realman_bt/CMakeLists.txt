@@ -137,6 +137,7 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/move.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/control.xml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/duo.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/three.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/tool_x.xml"
   DESTINATION share/${PROJECT_NAME}/behavior-trees)
@@ -315,6 +316,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_tree_startup_metadata test/test_tree_startup_metadata.py)
   ament_add_pytest_test(test_arm_move_tree test/test_arm_move_tree.py)
   ament_add_pytest_test(test_three_arm_move_tree test/test_three_arm_move_tree.py)
+  ament_add_pytest_test(test_duo_tree test/test_duo_tree.py)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME})

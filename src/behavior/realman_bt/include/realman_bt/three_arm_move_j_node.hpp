@@ -13,8 +13,9 @@
 namespace realman_bt {
 
 /**
- * Starts one MoveJ goal for l, m, and r in the same tree tick and completes
- * only after all three action results report success.
+ * Starts one MoveJ goal for each arm in the configured subset of l, m, and r
+ * in the same tree tick and completes only after all of those action results
+ * report success. The default subset is l, m, and r.
  */
 class ThreeArmMoveJNode final : public bt_core::ActionNode {
  public:
@@ -31,6 +32,7 @@ class ThreeArmMoveJNode final : public bt_core::ActionNode {
  private:
   struct ArmState {
     const char* id{nullptr};
+    bool enabled{true};
     Action::Goal goal{};
     Client::SharedPtr client;
     GoalHandle::SharedPtr goal_handle;
@@ -65,6 +67,7 @@ class ThreeArmMoveJNode final : public bt_core::ActionNode {
   bool dry_run_logged_{false};
   bool failed_{false};
   bool completed_{false};
+  bool goals_sent_{false};
 };
 
 }  // namespace realman_bt

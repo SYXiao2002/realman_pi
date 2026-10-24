@@ -35,6 +35,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | --- | --- |
 | `l` / `m` / `r` | `move.xml`，对单臂 `l`/`m`/`r` 执行 MoveJ |
 | `three` | `three.xml`，三臂分阶段 |
+| `duo` | `duo.xml`，L-R 双臂分阶段 |
 | `control` | `control.xml`，**持久**输入路由器，Ctrl-C 前一直运行 |
 | `<name>` 或 `<name>.xml` | `config/behavior-trees/<name>.xml` |
 
