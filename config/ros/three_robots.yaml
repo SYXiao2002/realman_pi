@@ -38,12 +38,12 @@ robots:
     namespace: r
     frame_prefix: r/
     parent_frame: world
-    x: -1.00176934136
-    y: 0.356032898913
-    z: -0.005193665214
-    roll: -0.0264609215657
-    pitch: -0.00812680208536
-    yaw: -0.00848201144029
+    x: -0.785769299209
+    y: 0.000373995580523
+    z: -0.00246969526487
+    roll: 0.00516762768961
+    pitch: -0.0110046398716
+    yaw: 3.13804295997
 
 # Shared launch behavior. Keep these values here so a deployment can change
 # initial joint posture or the RViz display without editing Python launch code.
