@@ -1022,6 +1022,47 @@ def test_movel_completion_event_emitted_during_submission_is_not_lost():
     assert ownership.is_busy("l") is False
 
 
+def test_stale_failure_event_before_movel_activity_does_not_abort_new_goal():
+    """A no-generation false event may belong to the previous trajectory."""
+    adapter = FakeAdapter()
+    coordinator, adapter, clock, ownership = make_coordinator(adapter=adapter)
+    handle = FakeGoalHandle(replace(pose_goal(CommandType.MOVEL), timeout_sec=0.2))
+    stages = 0
+
+    def stale_then_active_movel(
+        pose: list[float], velocity_percent: int, blend_radius_percent: int, *, connect: bool
+    ) -> int:
+        adapter.calls.append(("movel", list(pose), velocity_percent, blend_radius_percent, connect))
+        coordinator.handle_event(
+            SimpleNamespace(event_type=1, trajectory_state=False, trajectory_connect=0, device=0)
+        )
+        return 0
+
+    adapter.movel = stale_then_active_movel
+
+    def progress() -> None:
+        nonlocal stages
+        stages += 1
+        if stages == 1:
+            adapter.stopped = True
+            coordinator.handle_event(
+                SimpleNamespace(
+                    event_type=1,
+                    trajectory_state=True,
+                    trajectory_connect=0,
+                    device=0,
+                )
+            )
+
+    clock.on_sleep = progress
+    result = coordinator.execute(handle)
+
+    assert result.terminal_state == FakeResult.SUCCEEDED
+    assert result.success is True
+    assert adapter.calls.count(("fast_stop",)) == 0
+    assert ownership.is_busy("l") is False
+
+
 def test_vendor_submission_error_aborts_and_preserves_api2_status():
     adapter = FakeAdapter()
     adapter.move_status = 37

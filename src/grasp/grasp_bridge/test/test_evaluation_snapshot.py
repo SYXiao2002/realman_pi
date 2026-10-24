@@ -21,6 +21,7 @@ def observation(base_camera):
 
 def profile():
     return {"name": "right_wrist", "arm": "r", "base_frame": "r/base_link", "tool_name": "tcp",
+            "workspace_m": [[-.5, -.5, 0.], [.5, .5, 1.]],
             "gripper_geometry": {"verified": False}, "calibration_data": {"calibration_id": None},
             "readiness_problems": ["verified calibration identity", "measured gripper geometry"]}
 
@@ -40,6 +41,21 @@ def test_snapshot_keeps_registered_rgbd_and_full_base_pose():
     assert result["cloud"]["xyz_m"][0] == [-.2, -.2, .5]
     assert result["candidates"][0]["T_base_grasp"][0][3] == 1.
     assert result["images"]["rgb"].startswith("data:image/jpeg;base64,")
+    assert result["workspace_m"] == [[-.5, -.5, 0.], [.5, .5, 1.]]
+
+
+def test_snapshot_marks_each_candidate_with_plan_outcome():
+    candidates = [
+        {"candidate_id": "c1", "T_camera_grasp": np.eye(4).tolist(), "score": .8},
+        {"candidate_id": "c2", "T_camera_grasp": np.eye(4).tolist(), "score": .7},
+    ]
+    result = snapshot(observation(np.eye(4)), profile(), request(), response={"candidates": candidates},
+                      plan={"candidate_id": "c1"}, rejections=[{"candidate_id": "c2", "reason": "IK failed"}],
+                      source="behavior_tree", phase="planned")
+    assert [item["planning_status"] for item in result["candidates"]] == ["selected", "rejected"]
+    assert result["candidates"][1]["planning_reason"] == "IK failed"
+    assert result["source"] == "behavior_tree"
+    assert result["images"] == {}
 
 
 def test_snapshot_does_not_fabricate_unavailable_base_transform():

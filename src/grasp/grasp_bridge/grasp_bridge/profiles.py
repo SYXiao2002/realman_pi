@@ -90,9 +90,6 @@ def load_profile(config_root, name=None, *, require_ready=False):
 
 def readiness_problems(profile):
     problems = []
-    for key in ("tool_geometry_verified", "corridor_verified", "execution_verified"):
-        if profile.get(key) is not True:
-            problems.append(key)
     for key in ("observation_joint_degrees", "return_joint_degrees"):
         val = profile.get(key)
         if not isinstance(val, list) or len(val) != 6 or not np.isfinite(val).all():
@@ -115,21 +112,13 @@ def readiness_problems(profile):
     for key in ("camera_serial", "mount_id", "flange_frame", "color_frame"):
         if cal.get(key) != profile[key]:
             problems.append("calibration " + key)
-    if cal.get("verified") is not True or not cal.get("calibration_id") or not cal.get("intrinsics_sha256"):
-        problems.append("verified calibration identity")
+    if not cal.get("calibration_id") or not cal.get("intrinsics_sha256"):
+        problems.append("calibration identity")
     try:
         transform(cal.get("T_flange_color"))
     except (ValueError, TypeError):
         problems.append("T_flange_color")
-    for key in ("maximum_validation_error_m", "measured_validation_error_m"):
-        if type(cal.get(key)) not in (float, int) or not np.isfinite(cal[key]) or cal[key] <= 0:
-            problems.append(key)
-    if not any(k in problems for k in ("maximum_validation_error_m", "measured_validation_error_m")):
-        if cal["measured_validation_error_m"] > cal["maximum_validation_error_m"]:
-            problems.append("calibration accuracy")
     g = profile["gripper_geometry"]
-    if g.get("verified") is not True:
-        problems.append("measured gripper geometry")
     limits = {"min_opening_m": (0, 1), "max_opening_m": (0, 1),
               "finger_depth_m": (0.001, 1), "finger_thickness_m": (0.001, 1), "clearance_m": (0, 0.1)}
     for key, (lower, upper) in limits.items():

@@ -1,12 +1,13 @@
-# Planning-only bridge. dry_run enables read-only RGB-D/TF subscriptions and
-# policy evaluation, but never creates IK or task-lease clients. Set false only
-# after the profile is fully verified to enable restricted IK planning; this
-# bridge never executes robot or gripper commands.
+# Planning-only bridge. It may run restricted IK planning for grasp.xml but
+# never commands robot or gripper motion. grasp.html always sends evaluation_only.
 version: 1
-dry_run: true
+dry_run: false
+# Shared default for grasp.html and grasp.xml; robot geometry stays in grasp_profiles.yaml.
 profile: right_wrist
 ws_uri: ws://127.0.0.1:8091
 backend: geometry
+# Shared initial target for grasp.html and grasp.xml; operators may select another.
+target_label: eu
 # Match offline evaluate.py; context affects CGN only, not geometric generation.
 cgn_context: mask
 # Maximum elapsed seconds; independently bound capture, inference and each IK.
@@ -15,7 +16,8 @@ inference_timeout_sec: 20.0
 connect_timeout_sec: 3.0
 ik_timeout_sec: 2.0
 # Read-only driver STATUS validates a supplied task lease around planning.
-lease_status_timeout_sec: 1.0
+# Allow a short controller/SDK scheduling delay while validating the BT lease.
+lease_status_timeout_sec: 3.0
 # Device sync is optional; timestamps are always checked. Stop before capture.
 maximum_pair_skew_sec: 0.02
 maximum_capture_age_sec: 0.75
@@ -30,6 +32,11 @@ plan_validity_sec: 30.0
 # Restrict IK branch changes at each straight-line corridor sample.
 maximum_ik_step_degrees: 15.0
 cartesian_sample_step_m: 0.01
+# Pose planning and motion execution are separate. Keep this false for the
+# time-critical path: the controller receives the three MOVEL waypoints and
+# performs its own Cartesian feasibility check. Set true to restore the
+# bridge-side seeded-IK precheck before any motion command is sent.
+ik_precheck: false
 max_candidates: 15
-# Expected server model is explicit; null prevents live plans until pinned.
+# Optional expected server model identity. When set, mismatch still rejects.
 expected_model_id: null

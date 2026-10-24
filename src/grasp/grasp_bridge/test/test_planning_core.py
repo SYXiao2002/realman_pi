@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from grasp_bridge.geometry import from_pose, pose_drift, restricted_waypoints, to_pose
-from grasp_bridge.planner import choose_plan
+from grasp_bridge.planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from grasp_bridge.rgbd import CameraModel, image_array, register_depth, validate_timing
 
 
@@ -95,3 +95,29 @@ def test_ik_rejects_first_candidate_then_samples_second_corridor():
     assert len(candidates) == 3 and candidates[0]["width_m"] == .1
     assert all(point[0] != .2 for point in visited)
     assert len(visited) >= 12  # endpoints alone cannot pass this evidence.
+
+
+def test_geometric_plan_is_independent_of_ik_and_keeps_pose_waypoints():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": 0.05, "lift_m": 0.05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    plan = calculate_plan([candidate], profile, np.eye(4))
+    assert plan["candidate_id"] == "c1"
+    assert all(item["joint_degrees"] is None for item in plan["waypoints"].values())
+    with_seed = attach_seed_joints(plan, [1, 2, 3, 4, 5, 6])
+    assert all(item["joint_degrees"] == [1, 2, 3, 4, 5, 6]
+               for item in with_seed["waypoints"].values())
+
+
+def test_all_rejected_candidates_remain_structured_on_exception():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .05, "lift_m": .05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    with pytest.raises(NoReachableCandidate) as failure:
+        choose_plan([candidate], profile, np.eye(4), [0]*6, lambda *_: (_ for _ in ()).throw(ValueError("IK failed")),
+                    sample_step_m=.01, max_joint_step=15)
+    assert failure.value.rejections == [{"candidate_id": "c1", "reason": "IK failed"}]

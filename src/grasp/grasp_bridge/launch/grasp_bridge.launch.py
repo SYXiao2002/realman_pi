@@ -1,4 +1,4 @@
-"""Explicit planning-only entry; config dry-run is the default."""
+"""Planning-only bridge entry; shared config controls the default profile and mode."""
 
 import os
 from datetime import datetime
@@ -19,8 +19,8 @@ def generate_launch_description():
         SetEnvironmentVariable("RCUTILS_COLORIZED_OUTPUT", "1"),
         SetEnvironmentVariable("ROS_LOG_DIR", str(logs)),
         DeclareLaunchArgument("config_root", default_value=root),
-        DeclareLaunchArgument("profile", default_value="right_wrist"),
-        DeclareLaunchArgument("dry_run", default_value="true"),
+        DeclareLaunchArgument("profile", default_value=""),
+        DeclareLaunchArgument("dry_run", default_value="false"),
         Node(package="grasp_bridge", executable="grasp_bridge_node", name="grasp_bridge", output="screen",
              parameters=[{"config_root": LaunchConfiguration("config_root"),
                           "profile": LaunchConfiguration("profile"),

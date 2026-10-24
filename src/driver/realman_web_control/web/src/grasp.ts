@@ -10,7 +10,7 @@ type Candidate = Record<string, any> & { candidate_id: string; T_camera_grasp: n
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
-  <header class="grasp-topbar"><div><span class="eyebrow">REALMAN / GRASP REVIEW</span><h1>Grasp 离线评估</h1></div><span class="spacer"></span><span id="connection" class="status-pill offline">OFFLINE</span><a class="button ghost" href="/">控制台</a><a class="button ghost" href="/calibration.html">标定</a></header>
+  <header class="grasp-topbar"><div><span class="eyebrow">REALMAN / GRASP REVIEW</span><h1>Grasp 离线评估</h1></div><span class="spacer"></span><span id="connection" class="status-pill offline">OFFLINE</span><a class="button ghost" href="/grasp_plan.html">规划可视化</a><a class="button ghost" href="/">控制台</a><a class="button ghost" href="/calibration.html">标定</a></header>
   <main class="grasp-workspace">
       <section class="panel grasp-panel grasp-wide"><h2>评估上下文</h2><div class="grasp-context">
         <label>机械臂<select id="profile"><option value="right_wrist">右腕 / r</option><option value="left_wrist">左腕 / l</option></select></label>
@@ -30,7 +30,7 @@ app.innerHTML = `
         <div><h3>对齐前 · 原始生成</h3><figure class="grasp-image"><canvas id="projection" aria-label="对齐前 RGB 线框投影"></canvas><figcaption>对齐前 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view" aria-label="对齐前 RGB-D 相机系点云"></canvas><figcaption>对齐前 / 点云</figcaption></figure></div>
         <div><h3>对齐后 · 基座 −Z</h3><figure class="grasp-image"><canvas id="projection-after" aria-label="对齐后 RGB 线框投影"></canvas><figcaption>对齐后 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view-after" aria-label="对齐后 RGB-D 相机系点云"></canvas><figcaption>对齐后 / 点云</figcaption></figure></div>
         </div><p class="hint">同步旋转与缩放 · 默认 Top 5 · 两侧同编号同色。线框沿用原离线预览的算法示意尺寸，不代表实测夹爪。</p><div id="candidate-legend" class="candidate-legend" aria-label="候选显示开关"></div></section>
-      <section class="panel grasp-panel"><h2>Policy 候选</h2><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="6">等待评估结果</td></tr></tbody></table></div></section>
+      <section class="panel grasp-panel"><h2>Policy 候选</h2><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th><th>规划</th><th>拒绝原因</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="8">等待评估结果</td></tr></tbody></table></div></section>
     </div>
     <aside class="grasp-side">
       <section class="panel grasp-panel"><h2>采集信息与 readiness</h2><dl id="details" class="grasp-details"><div><dt>Profile</dt><dd>—</dd></div></dl><div id="readiness" class="readiness-list" role="status">等待 readiness</div></section>
@@ -175,7 +175,10 @@ function renderDiagnostics() {
     seed_joint_degrees: observation.seed_joint_degrees,
     depth_stats: observation.depth_stats, server: observation.server_diagnostics,
     gripper: observation.gripper, readiness_problems: observation.readiness_problems,
-    evaluation_only: true, ik_checked: false, collision_checked: false }, null, 2);
+    evaluation_only: observation.source !== "behavior_tree", ik_checked: observation.phase === "planned" || observation.phase === "rejected",
+    collision_checked: false, workspace_m: observation.workspace_m, candidate_planning_status: candidate?.planning_status,
+    candidate_planning_reason: candidate?.planning_reason, planning_rejections: observation.planning_rejections,
+    plan: observation.plan }, null, 2);
 }
 function reviewRecord() { return { schema: "grasp-review/v1", observation_id: observation?.observation_id,
   profile_id: observation?.profile_id, stage: $<HTMLSelectElement>("#review-stage").value, candidate_id: selectedCandidate, verdict: verdict.value,
@@ -234,12 +237,14 @@ function renderSnapshot(message: EventMessage) {
   for (const item of candidates) {
     const tr = document.createElement("tr"); tr.dataset.id = item.candidate_id;
     const xyz = (T?: number[][] | null) => T?.slice(0, 3).map((row) => row[3].toFixed(3)).join(", ") || "未标定";
-    [item.candidate_id, item.class_name, Number(item.score).toFixed(3), `${(item.width_m * 1000).toFixed(1)} mm`, xyz(item.T_camera_grasp), xyz(item.T_base_grasp)].forEach((value, i) => {
+    [item.candidate_id, item.class_name, Number(item.score).toFixed(3), `${(item.width_m * 1000).toFixed(1)} mm`, xyz(item.T_camera_grasp), xyz(item.T_base_grasp),
+      item.planning_status === "selected" ? "通过 / 选中" : item.planning_status === "rejected" ? "拒绝" : item.planning_status === "not_checked" ? "未检查" : "只读候选",
+      item.planning_reason || "—"].forEach((value, i) => {
       const td = document.createElement("td"); if (!i) { const button = document.createElement("button"); button.textContent = String(value); button.addEventListener("click", () => selectCandidate(item.candidate_id)); td.append(button); }
       else td.textContent = String(value); tr.append(td);
     }); rows.append(tr); reviewCandidate.add(new Option(item.candidate_id, item.candidate_id)); poseCandidate.add(new Option(item.candidate_id, item.candidate_id));
   }
-  if (!candidates.length) { const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = 6; td.textContent = "该 observation 没有 policy 候选"; tr.append(td); rows.append(tr); }
+  if (!candidates.length) { const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = 8; td.textContent = "该 observation 没有 policy 候选"; tr.append(td); rows.append(tr); }
   reviewCandidate.disabled = !candidates.length; $("#export-review").toggleAttribute("disabled", false);
   poseCandidate.disabled = !candidates.length;
   if (previousId === message.observation_id) selectCandidate(previousSelection || candidates[0]?.candidate_id || "");
@@ -247,6 +252,7 @@ function renderSnapshot(message: EventMessage) {
     applyReview(saved); $("#review-status").textContent = ""; }
   status(`${offline ? "离线文件" : "只读观测"} · ${message.phase}${message.detail ? `：${message.detail}` : ""}`, message.phase === "rejected" ? "bad" : "");
 }
+let sharedDefaultsLoaded = false;
 function handle(message: EventMessage) {
   graspMotion.handle(message);
   if (message.type === "hello") { $("#connection").textContent = "CONNECTED"; $("#connection").className = "status-pill ready"; }
@@ -254,10 +260,18 @@ function handle(message: EventMessage) {
     const profiles = Array.isArray(message.profiles) ? message.profiles.filter((p: any) => typeof p.name === "string" && ["r", "l"].includes(p.arm)) : [];
     if (profiles.length && !offline) { const selected = profile.value; profileArms = Object.fromEntries(profiles.map((p: any) => [p.name, p.arm]));
       profile.replaceChildren(...profiles.map((p: any) => new Option(`${p.name} / ${p.arm.toUpperCase()}`, p.name)));
-      profile.value = profileArms[selected] ? selected : message.default_profile || profiles[0].name;
+      profile.value = sharedDefaultsLoaded && profileArms[selected] ? selected : message.default_profile || profiles[0].name;
+      if (!sharedDefaultsLoaded) {
+        for (const [select, value] of [[backend, message.default_backend], [target, message.default_target_label],
+          [cgnContext, message.default_cgn_context]] as const) {
+          if (Array.from(select.options).some((option) => option.value === value)) select.value = value;
+        }
+        sharedDefaultsLoaded = true;
+      }
     }
   } else if (message.type === "grasp_evaluation") {
-    if (offline || !validSnapshot(message) || message.profile_name !== profile.value || message.arm !== profileArms[profile.value]
+    if (offline || message.source === "behavior_tree" || !validSnapshot(message)
+      || message.profile_name !== profile.value || message.arm !== profileArms[profile.value]
       || message.target_label !== target.value || message.backend !== backend.value
       || (message.cgn_context && message.cgn_context !== cgnContext.value)
       || (pendingRequest && message.review_request_id !== pendingRequest) || !newerSnapshot(message, observation)) return;

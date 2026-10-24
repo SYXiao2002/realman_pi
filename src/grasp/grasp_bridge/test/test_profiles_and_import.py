@@ -1,4 +1,4 @@
-"""A solved artifact never silently enables execution or another arm."""
+"""Profile identity and physical input shape stay consistent across clients."""
 
 import json
 from pathlib import Path
@@ -39,12 +39,11 @@ def artifact(profile):
     return value
 
 
-def test_unmeasured_profile_refuses_execution_and_freezes_local_changes(config):
+def test_unmeasured_flags_do_not_block_structural_profile_loading(config):
     first = load_profile(config, "right_wrist")
-    assert "verified calibration identity" in first["readiness_problems"]
-    assert "measured gripper geometry" in first["readiness_problems"]
-    with pytest.raises(ValueError, match="not ready"):
-        load_profile(config, "right_wrist", require_ready=True)
+    assert "verified calibration identity" not in first["readiness_problems"]
+    assert "measured gripper geometry" not in first["readiness_problems"]
+    assert "calibration identity" in first["readiness_problems"]
     (config / "ros/grasp_profiles.local.yaml").write_text(
         "profiles:\n  right_wrist:\n    velocity_percent: 3\n")
     assert first["profile_id"] != load_profile(config, "right_wrist")["profile_id"]
@@ -68,8 +67,8 @@ def test_stage_is_unverified_preserves_other_arm_and_checks_provenance(config):
     staged = stage(config, "right_wrist", path)
     data = yaml.safe_load(staged.read_text())["calibrations"]
     assert set(data) == {"left_wrist", "right_wrist"}
-    assert data["right_wrist"]["verified"] is False
-    assert data["right_wrist"]["maximum_validation_error_m"] is None
+    assert "verified" not in data["right_wrist"]
+    assert "maximum_validation_error_m" not in data["right_wrist"]
     with pytest.raises(ValueError, match="selected-arm"):
         stage(config, "left_wrist", path)
     right["hand_eye"]["r"]["tool_to_camera"][0][3] += 0.1
@@ -85,4 +84,4 @@ def test_comment_only_local_override_is_supported(config):
     result = config / "result.json"
     result.write_text(json.dumps(artifact(load_profile(config, "right_wrist"))))
     stage(config, "right_wrist", result)
-    assert read_yaml(config / "ros/camera_extrinsics.yaml")["calibrations"]["right_wrist"]["verified"] is False
+    assert "verified" not in read_yaml(config / "ros/camera_extrinsics.yaml")["calibrations"]["right_wrist"]

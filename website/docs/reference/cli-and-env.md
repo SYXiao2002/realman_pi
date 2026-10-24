@@ -60,7 +60,7 @@ docker compose --project-directory . -f config/docker/compose.grasp.yaml up -d
 ros2 launch grasp_bridge grasp_bridge.launch.py profile:=right_wrist
 ```
 
-统一 launch 的 `start_grasp_bridge:=true grasp_profile:=right_wrist grasp_dry_run:=true` 也可启动规划节点；`grasp_dry_run:=false` 仅允许真实观测与 IK，执行仍由 BT 负责。实机执行门槛、模型挂载和标定导入命令见[腕相机抓取](../development/grasping)。
+统一 launch 的 `start_grasp_bridge:=true` 启动抓取规划节点，profile/backend 默认读取 `grasp_bridge.yaml`，也可用 `grasp_profile` 覆盖 profile。bridge 允许真实观测与 IK，但只返回计划；机器人执行由 BT 负责。实机运行命令见[腕相机抓取](../development/grasping)。
 
 ## `.env`
 
@@ -97,7 +97,7 @@ Web control 不做任何身份校验：`:8765` 能被访问的浏览器就能发
 | --- | --- | --- |
 | `8765` | `realman_web_control` | 控制页 `/`、标定页 `/calibration.html`、WebSocket |
 | `8770` | `realman_recording` | 录制实时页与 LeRobot 回放页，默认只绑定回环地址；无认证，不要直接暴露 |
-| `8080` | 行为树只读监视器 | 仅在 `./rm65 bt …` 运行期间；所有 `/api/` 写请求返回 `405` |
+| `8080` | 行为树只读监视器 | 行为树运行期间；`grasp.xml` 到达终态后仍常驻，直到停止行为树；所有 `/api/` 写请求返回 `405` |
 | `8091` | 独立 `grasp_server` | 显式启动 `config/docker/compose.grasp.yaml`；默认只绑定回环，ROS bridge 为 WS 客户端 |
 | `18000` | 外部 VLA 策略服务 | `policy_bridge` 作为客户端连接，不由本仓库启动 |
 | `8554`、`8100–8103` | 旧 RTSP/TCP 相机推流 | 已弃用 |

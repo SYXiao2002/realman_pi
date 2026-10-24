@@ -25,21 +25,20 @@ def config_root(tmp_path):
     return root
 
 
-def test_default_profile_keeps_configured_pose_but_stays_unready_without_calibration(config_root):
+def test_default_profile_uses_shared_config_without_manual_approval_gate(config_root):
     params = load_grasp_task_parameters(config_root)
+    assert params["grasp_cycles"] == -1
     assert params["arm_id"] == "r"
     assert params["grasp_gripper"] == "gripper_right"
     assert params["grasp_observation_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
     assert params["grasp_return_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
     assert params["grasp_confirmation_timeout_sec"] == 120.0
     assert params["grasp_target_label"] == "eu"
-    assert params["grasp_execution_ready"] is False
-    assert "calibration" in params["grasp_readiness_detail"]
+    assert "grasp_execution_ready" not in params
 
 
 def test_selected_left_wrist_drives_arm_gripper_and_profile_identity(config_root):
-    (config_root / "ros/grasp_task.local.yaml").write_text("profile: left_wrist\ntarget_label: box\n")
-    (config_root / "ros/grasp_bridge.local.yaml").write_text("profile: left_wrist\ndry_run: false\n")
+    (config_root / "ros/grasp_bridge.local.yaml").write_text("profile: left_wrist\ndry_run: false\ntarget_label: box\n")
     right = load_grasp_task_parameters(config_root, profile_name="right_wrist")
     left = load_grasp_task_parameters(config_root)
     assert left["arm_id"] == "l"
@@ -47,7 +46,7 @@ def test_selected_left_wrist_drives_arm_gripper_and_profile_identity(config_root
     assert left["grasp_base_frame"] == "l/base_link"
     assert left["grasp_profile_id"] != right["grasp_profile_id"]
     assert left["grasp_target_label"] == "box"
-    assert left["grasp_execution_ready"] is False  # Physical acceptance remains required.
+    assert "grasp_execution_ready" not in left
 
 
 @pytest.mark.parametrize("value", ["0", "-1", ".nan", "true", "null"])
@@ -57,17 +56,16 @@ def test_invalid_lease_ttl_is_rejected_before_executor_creation(config_root, val
         load_grasp_task_parameters(config_root)
 
 
-def test_mock_backend_is_never_ready_for_physical_execution(config_root):
-    (config_root / "ros/grasp_task.local.yaml").write_text("backend: mock\n")
-    params = load_grasp_task_parameters(config_root)
-    assert not params["grasp_execution_ready"]
-    assert "mock backend" in params["grasp_readiness_detail"]
+def test_mock_backend_is_rejected_for_physical_execution(config_root):
+    (config_root / "ros/grasp_bridge.local.yaml").write_text("backend: mock\n")
+    with pytest.raises(ValueError, match="mock backend"):
+        load_grasp_task_parameters(config_root)
 
 
 def test_backend_name_matches_wire_protocol(config_root):
-    (config_root / "ros/grasp_task.local.yaml").write_text("backend: contact_graspnet\n")
+    (config_root / "ros/grasp_bridge.local.yaml").write_text("backend: contact_graspnet\n")
     assert load_grasp_task_parameters(config_root)["grasp_backend"] == "contact_graspnet"
-    (config_root / "ros/grasp_task.local.yaml").write_text("backend: cgn\n")
+    (config_root / "ros/grasp_bridge.local.yaml").write_text("backend: cgn\n")
     with pytest.raises(ValueError, match="backend"):
         load_grasp_task_parameters(config_root)
 

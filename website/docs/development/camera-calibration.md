@@ -107,7 +107,7 @@ string message
 
 求解重新读取指定会话的 manifest 和全部已提交样本，验证臂、相机安装、帧、标定板与内参一致性，再检查最低样本数、手眼残差和固定板位姿离散度。采集与求解互斥，并发请求返回失败。没有采样上限，求解使用该臂全部已接受样本。
 
-成功结果含 `schema_version`、`arm_id`、`identity`、内参/哈希、`calibration_id` 和 `hand_eye.<arm>.tool_to_camera`，保存在 `calibration_result.json`，同时通过 `result_json` 返回。默认 `verified_for_grasp: false`：手眼求解通过后仍需用留出数据与实测点验证抓取精度，再按[抓取配置](./grasping)登记验收后的外参。单臂 solve 不写回布局，`layout_updated` 保持 `false`；通过下面的独立服务应用两臂结果。旧的 `all_arms_solved` 和数组响应已移除；新增接口后需重建 `realman_msgs` 和调用方。
+成功结果含 `schema_version`、`arm_id`、`identity`、内参/哈希、`calibration_id` 和 `hand_eye.<arm>.tool_to_camera`，保存在 `calibration_result.json`，同时通过 `result_json` 返回。单臂 solve 不写回布局，`layout_updated` 保持 `false`；通过下面的独立服务应用两臂结果。抓取评估与行为树共用导入的外参，操作者负责确认外参与现场安装相符。旧的 `all_arms_solved` 和数组响应已移除；新增接口后需重建 `realman_msgs` 和调用方。
 
 ### `UpdateCalibrationLayout`
 
@@ -195,7 +195,7 @@ ros2 service call /camera_calibration/solve \
 
 ## 已知限制与测试
 
-每个会话需要覆盖足够的平移与各轴旋转。满足最低样本数不代表可观测性充分，不要在同一个姿态反复采样替代不同姿态。标定板移动、相机安装松动、时间戳错误或末端帧选择错误，都可能导致结果不适合抓取；独立验收通过前保持 `verified_for_grasp: false`。
+每个会话需要覆盖足够的平移与各轴旋转。满足最低样本数不代表可观测性充分，不要在同一个姿态反复采样替代不同姿态。标定板移动、相机安装松动、时间戳错误或末端帧选择错误，都可能导致结果不适合抓取；操作者负责确认数据适用于当前安装。
 
 本接口仅适用于腕部 eye-in-hand 相机。固定全局相机需要独立的外参模型，不能套用该服务。
 

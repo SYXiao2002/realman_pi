@@ -26,7 +26,7 @@ PrepareKeyboardWork 等节点，不替换生产 ./rm65 up 编排，也不会
            -> /l|m|r/cartesian_velocity (realman_msgs/action/CartesianVelocity)
               + /l|m|r/cartesian_velocity/command (geometry_msgs/msg/TwistStamped)
 
-`./rm65 bt` 使用 one-shot 生命周期。执行器到达 `SUCCESS` 或 `FAILURE` 后停止 tick、halt 树，并等待
+普通任务树（如 `move.xml`、`three.xml`）使用 one-shot 生命周期。执行器到达 `SUCCESS` 或 `FAILURE` 后停止 tick、halt 树，并等待
 所有 cancellation drain 成功提交取消请求；快照中的 `pending_cancellations` 归零后，随后写出最终快照、退出 executor，`ros2 launch` 和只读
 监视器也随之退出。三臂 driver 及其 RealMan SDK 连接不退出，下一棵行为树继续复用原有 Action Server。
 
@@ -68,17 +68,18 @@ R=`2.583,30.02,93.644,2.532,56.142,-0.285`，不会解析或连接 M 臂。
 
 ## 腕相机单臂抓取
 
-`config/behavior-trees/grasp.xml` 是单次腕相机抓取树；默认选择右臂，换臂由
+`config/behavior-trees/grasp.xml` 是腕相机抓取树；默认选择右臂，换臂由
 `config/ros/grasp_profiles.yaml` 的完整 profile 决定，不在 XML 中复制臂、相机、TCP 或夹爪身份。
 算法服务使用独立的非 ROS Docker，通过 WebSocket 向 `grasp_bridge` 返回相机坐标候选；
 桥只生成计划，机械臂动作仍由 BT 和 driver 执行。完整观测与坐标链见[腕相机抓取](./grasping)。
 
 ```text
 TaskLease（获取并持续续租）
-  -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
-  -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
-  -> GraspHold -> GraspConfirm（记录观察结果、显式决定是否返回）
-  -> MoveJ 已验收返回位 -> TaskGripper open -> 空闲后释放 lease
+  -> Repeat（按 grasp_task.yaml 的 cycles）
+     -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
+     -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
+     -> GraspHold -> MoveJ 返回位 -> TaskGripper open
+  -> 空闲后释放 lease
 ```
 
 所有节点的端口来自 `providedPorts()`，在[节点参考](./behavior-tree-nodes)列出。`PlanGrasp` 使用
@@ -87,45 +88,36 @@ TaskLease（获取并持续续租）
 BASE 下的 MoveL；它与闭爪步骤都会拒绝过期计划。观察与返回继续使用 `MoveJ`，并传递同一任务 token。
 操作员等待期间计划可能过期；返回使用启动前已验收的关节位，不再次依赖旧观测。
 
-运行参数在 `config/ros/grasp_task.yaml`，几何和物理验收留在 profile 中：
+运行参数在 `config/ros/grasp_task.yaml`，机器人、相机、标定、TCP 和夹爪来自网页评估共用的 profile 配置：
 
 | 配置 | 单位与约束 | 含义 |
 | --- | --- | --- |
 | `profile`、`target_label`、`backend` | 显式身份；后端为 `geometry/contact_graspnet/mock` | `mock` 不允许进入真机执行；目标不能留空 |
 | `lease_ttl_sec`、`acquire_timeout_sec` | 正有限秒数 | lease 有效期和获取上限；整个子树持续续租 |
+| `cycles` | `-1` 或正整数 | 完整抓取轮数；`-1` 持续循环，任一轮失败都会停止 |
 | `motion_timeout_sec`、`plan_timeout_sec`、`gripper_timeout_sec` | 正有限秒数 | 各阶段超时；夹爪上限须覆盖 manager 的到位等待 |
-| `hold_sec`、`confirmation_timeout_sec` | 正有限秒数 | 抬起后短暂停留、等待观察/返回决定的上限 |
+| `hold_sec` | 正有限秒数 | 抬起后的短暂停留 |
 
-默认配置的观察位、返回位、工作区、TCP 补偿和手眼结果仍未实测，因此会明确拒绝真机执行，
-不会代入零位或伪造可用姿态。`corridor_verified` 必须覆盖载物返回路径和释放位，
-`execution_verified` 也须在现场验收后才可置位；IK 通过不等于路径无碰撞。
+BT 不检查人工 `verified`、实测误差或走廊审批字段。结构有效的配置由 `grasp.html` 和 BT 共用，
+现场值是否正确、路径是否安全由操作者负责。BT 仍拒绝缺失/无效矩阵、关节位姿、工作区、工具或夹爪尺寸；
+受限 IK 不是碰撞检测。实机启动先运行 `REALMAN_GRASP_DRY_RUN=false ./rm65 up`，再运行
+`REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
-### 观察确认与返回
+抓取树默认按 `config/ros/grasp_task.yaml` 的 `cycles` 循环完整抓取流程；`-1` 表示持续运行直到手动停止，
+正整数表示完成指定次数。某一轮失败会中断循环、停止 tick 并释放 lease，不会自动重新开夹重试。循环树到达
+`SUCCESS` 或 `FAILURE` 后会停止 tick、完成清理并退出本次 executor；循环运行期间 executor、监视器和 `8765` 的运行状态保持可查看。
+需要结束本次循环会话时，在 `8765` 点击“终止行为树”，
+或调用 `/realman_bt_executor/shutdown`；这不会停止长期运行的 driver。
 
-抬起和夹爪闭合只证明命令执行，不证明夹住物体。`GraspHold` 记录 `held_unverified`；
-随后 `GraspConfirm` 在当前 executor 私有命名空间创建 `~/confirm_grasp`，标准名称为
-`/realman_bt_executor/confirm_grasp`（`realman_msgs/srv/ConfirmGrasp`），并在日志和快照中显示
-`awaiting_confirmation` 及非秘密的 `task_id`。此时仍持有、续租同一 lease，禁止竞争输入。
+`PlanGrasp` 返回 `FAILURE` 时，后续 pregrasp、闭爪和抬升步骤不会执行。请先在 `8080` 的
+`/api/runtime` 快照或 `logs/behavior-trees/<run-id>/runtime.json` 的 `events` 中查看具体原因，常见原因是候选
+超出已验证 TCP/工作区走廊，或受限 IK 拒绝该候选。
 
-请求必须精确匹配当前 `task_id`，且 `observed_outcome` 必须显式为 `VERIFIED_GRASP=1`、
-`FAILED_GRASP=2` 或 `UNVERIFIED=3`。只有 `return_object=true` 才允许沿已验收路径返回并在
-返回 Action 成功后开爪；失败或未确认的观察也可由操作员明确授权返回，诊断仍保留原观察结果。
-服务 `success=true` 表示决定已记录，不表示物理抓取成功；整棵树 `SUCCESS` 表示授权的命令序列完成。
+### 抓取后返回
 
-以下是人工验收时的接口格式，运行前应将 `task_id` 替换为当前等待任务；该调用会授权后续真实返回与释放：
+抬起和夹爪闭合只证明命令执行，不证明夹住物体。行为树会保持夹爪状态并沿配置的返回位继续运行，操作者自行承担现场判断和释放风险。
 
-```bash
-ros2 service call /realman_bt_executor/confirm_grasp realman_msgs/srv/ConfirmGrasp \
-  "{task_id: '当前任务 ID', observed_outcome: 1, return_object: true}"
-```
-
-`return_object=false` 记录观察后终止任务；确认超时、旧任务 ID、无效观察值、重复确认、取消和任一
-阶段失败均不会自动返回或开爪。halt 会撤销确认服务，已排队回调也不能让旧树继续。错误后的物体
-处置需要重新评估现场状态，不能把重新运行整棵树当作持物恢复，因为树首步会开爪。
-
-`dry_run=true` 只验证参数，不获取 lease、不创建规划/运动/夹爪 client，也不创建确认 service；
-测试使用隔离 mock 服务覆盖完整序列、续租等待、旧确认、超时、取消及每个阶段失败。
-未实测 profile 的缺失参数仍会显示校验失败，这是预期的配置门槛。
+`dry_run=true` 只验证参数，不获取 lease、不创建规划/运动/夹爪 client；测试使用隔离 mock 服务覆盖完整序列、续租等待、超时、取消及每个阶段失败。
 
 抓取专用 drain 保留迟到的 lease 授予、规划/MoveL 的非终态 Action 和在途夹爪响应；
 它等待 Action 终态或服务完成后再结束，并通过 driver 的 busy 检查释放 lease。

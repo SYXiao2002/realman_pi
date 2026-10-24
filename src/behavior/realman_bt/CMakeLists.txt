@@ -191,7 +191,9 @@ if(BUILD_TESTING)
   add_executable(test_grasp_nodes test/test_grasp_nodes.cpp)
   target_include_directories(test_grasp_nodes PRIVATE "${BT_VENDOR_ROOT}" "${BT_VENDOR_ROOT}/bt_nodes")
   target_link_libraries(test_grasp_nodes move_j_nodes)
-  target_compile_definitions(test_grasp_nodes PRIVATE GRASP_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml")
+  target_compile_definitions(test_grasp_nodes PRIVATE
+    GRASP_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml"
+    CONFIRMATION_TEST_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/test/data/grasp_confirmation_test.xml")
   ament_target_dependencies(test_grasp_nodes rclcpp rclcpp_action realman_msgs)
   add_test(NAME test_grasp_nodes COMMAND test_grasp_nodes)
   set_tests_properties(test_grasp_nodes PROPERTIES TIMEOUT 45 ENVIRONMENT "ROS_DOMAIN_ID=231;ROS_LOCALHOST_ONLY=1")

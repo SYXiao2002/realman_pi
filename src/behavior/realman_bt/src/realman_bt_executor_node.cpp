@@ -131,10 +131,9 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
       [this](std::shared_ptr<GraspDrain> drain) { enqueueGraspDrain(std::move(drain)); });
   for (const auto* key : {"grasp_profile_name", "grasp_profile_id", "grasp_base_frame",
        "grasp_tool_name", "grasp_gripper", "grasp_target_label", "grasp_backend",
-       "grasp_observation_joint_degrees", "grasp_return_joint_degrees", "grasp_readiness_detail"}) {
+       "grasp_observation_joint_degrees", "grasp_return_joint_degrees"}) {
     blackboard_->set<std::string>(key, declare_parameter<std::string>(key, ""));
   }
-  blackboard_->set<bool>("grasp_execution_ready", declare_parameter<bool>("grasp_execution_ready", false));
   blackboard_->set<int>("grasp_velocity_percent", static_cast<int>(declare_parameter<int64_t>("grasp_velocity_percent", 5)));
   for (const auto& entry : std::vector<std::pair<std::string, double>>{
       {"grasp_lease_ttl_sec", 5.0}, {"grasp_acquire_timeout_sec", 10.0},
@@ -143,6 +142,8 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
       {"grasp_confirmation_timeout_sec", 120.0}}) {
     blackboard_->set<double>(entry.first, declare_parameter<double>(entry.first, entry.second));
   }
+  blackboard_->set<int>("grasp_cycles",
+                        static_cast<int>(declare_parameter<int64_t>("grasp_cycles", 1)));
   factory_.registerNodeType<TaskLeaseNode>("TaskLease");
   factory_.registerNodeType<PlanGraspNode>("PlanGrasp");
   factory_.registerNodeType<GraspWaypointNode>("GraspWaypoint");

@@ -428,7 +428,12 @@ class MotionCoordinator:
                     and self._submission_accepts_early_event
                     and event_generation is None
                 ):
-                    self._submission_event = (generation, trajectory_state)
+                    # A false event without a generation marker is commonly
+                    # the previous command's completion. It cannot prove
+                    # that this submission failed, so only retain an early
+                    # success event for the short-command race.
+                    if trajectory_state:
+                        self._submission_event = (generation, trajectory_state)
                     self._condition.notify_all()
                 return
             if event_generation is not None and event_generation != generation:
@@ -682,7 +687,14 @@ class MotionCoordinator:
                     "waiting for correlated trajectory completion",
                 )
 
-                if completion_event is False:
+                # The SDK event callback has no goal-generation marker.  A
+                # false event can therefore be a stale completion/failure
+                # notification from the previous command, especially while a
+                # new MOVEL is still being submitted.  Do not abort a new
+                # command until its own trajectory has been observed active;
+                # the trajectory query and timeout remain the fail-closed
+                # paths for a command that never starts.
+                if completion_event is False and observed_active_trajectory:
                     return self._fast_controlled_stop(
                         goal_handle,
                         generation,

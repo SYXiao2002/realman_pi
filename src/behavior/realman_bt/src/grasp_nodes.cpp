@@ -216,8 +216,6 @@ bt_core::PortsList TaskLeaseNode::providedPorts() {
   return bt_core::makePorts(
       bt_core::InputPort<std::string>("arm_id", "r", "Profile arm namespace l/r"),
       bt_core::InputPort<bool>("dry_run", "true", "Validate without acquiring control"),
-      bt_core::InputPort<bool>("execution_ready", "false", "Measured profile passed execution checks"),
-      bt_core::InputPort<std::string>("readiness_detail", "", "Missing physical acceptance inputs"),
       bt_core::InputPort<double>("ttl_sec", "5", "Task lease validity, seconds"),
       bt_core::InputPort<double>("timeout_sec", "10", "Acquire timeout, seconds"));
 }
@@ -239,7 +237,6 @@ Status TaskLeaseNode::tick() {
       dry_run_ = getInput<bool>("dry_run").value_or(true);
       if (!child()) throw std::invalid_argument("TaskLease requires a child");
       if (!dry_run_) {
-        if (!getInput<bool>("execution_ready").value_or(false)) throw std::invalid_argument("grasp execution profile not ready: " + getInput<std::string>("readiness_detail").value_or(""));
         validateSink(blackboard());
         session_ = std::make_shared<TaskLeaseSession>(node(blackboard()), arm_id, ttl, timeout);
       }

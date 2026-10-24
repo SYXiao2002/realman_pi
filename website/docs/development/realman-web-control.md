@@ -24,6 +24,8 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 
 ## Grasp 离线评估页
 
+`/grasp_plan.html` 是行为树计划的只读观察页，复用抓取候选的三维渲染器，但没有采集/评估表单、人工复核或 MOVEL 控件。`PlanGrasp` BT 叶节点通过既有 Action 请求规划；bridge 将结果作为 `/grasp_bridge/evaluation` 快照发布，Web 节点缓存并转发。页面显示候选位姿、选中计划、逐候选拒绝原因、采集时机械臂姿态和 profile `workspace_m` 线框。它不启动或控制 BT，也不发送运动、夹爪命令。叶节点不负责打开浏览器，操作者可在任务前后单独打开页面。
+
 `/grasp.html` 的采集、候选评估和人工标注是只读的。它选择 grasp profile、目标类别、policy backend 和 CGN context（mask/box/full），向
 `/grasp_bridge/plan_grasp` 发送带 `evaluation_only=true` 的 `realman_msgs/PlanGrasp` 请求，并显示
 `/grasp_bridge/evaluation` 的原子 JSON 快照：RGB、注册深度、实例分割、候选投影、相机系和基座系 pose、深度反投影
@@ -36,11 +38,11 @@ MOVEL 表单可手动编辑，默认速度为 5%、超时为 30 s，固定使用
 
 布局下方的“接触中心 Pose”通过候选选择器与候选表、人工复核同步，直接展示对齐前后在 color optical 和所选臂 `base_link` 中的 XYZ（m）及单位四元数 WXYZ。基座值优先读取快照对应阶段矩阵，否则仅使用冻结的 `T_base_camera` 与该阶段接触中心矩阵组合，不叠加三臂展示布局偏移。三维布局突出显示所选候选的对齐后接触中心坐标轴（X 闭合、Z 接近）。MOVEL 使用此基座系 XYZ/WXYZ 作为 TCP 目标，因此右臂 `T_grasp_tcp` 必须保持单位矩阵，即 TCP 原点与抓取接触中心、TCP 轴与抓取轴重合；页面不会额外转换工具偏移。缺少基座 Pose 时不能发送；CGN 标注沿用原始 Pose。
 
-`grasp_bridge` 的 `dry_run` 禁止 IK/waypoint 规划，但允许只读 RGB-D、TF 和 policy 请求，便于人在机械臂
+`grasp.html` 的请求始终为 `evaluation_only=true`，只允许只读 RGB-D、TF 与候选评估，不调用 IK/waypoint；bridge 可同时为 `grasp.xml` 提供受限 IK 规划，便于人在机械臂
 保持静止时审阅当前场景。页面参考原项目 `tools/offline_grasp/preview.py`，并排展示两个阶段的 RGB 线框投影和同一份相机系点云；旋转、平移和缩放同步，候选默认 Top 5，同编号同色，可逐项切换显示。结果点云采用原 worker 返回的 `z_range_m`，仅对展示点云裁剪、抽样；完整推理深度与深度统计保持原样。新观测自动按场景范围取景，之后人工选择候选保持观察视角。两个阶段指竖直对齐前后：原生矩阵用于绘图，接触中心矩阵用于规划。线框沿用原离线工具的示意尺寸，不代表实测机器人夹爪。几何对齐复用原项目函数，保持接触中心并将接近轴对齐基座 −Z；CGN 明确提示按原在线规则不执行几何对齐，右侧显示原始结果。
 
 未批准手眼标定时仍可查看图像和相机系点云，但不会生成基座系 pose；缺少冻结 `T_base_camera` 时对齐后候选不可用，页面明确显示原因。缺少夹爪尺寸仍直接调用原项目算法并保留相机系候选。诊断同时展示对齐前后原生矩阵、接触中心与基座矩阵、原点偏移和原始分数。人工复核可标注对齐前、对齐后或前后对照，导出与导入 JSON 保留两阶段数据。旧快照没有对齐字段时右侧显示不可用。改变 profile、目标、后端或 CGN context 会同时清空两侧旧观测。快照的
-`execution_ready` 恒为 `false`，页面列出 readiness 阻断原因。每个快照只接受同一个 `observation_id` 的图像、候选和评价，避免跨帧拼接。
+页面列出 profile 的配置完整性诊断，但不会要求人工填写执行验证标记。每个快照只接受同一个 `observation_id` 的图像、候选和评价，避免跨帧拼接。
 
 构建与浏览器 smoke test：
 

@@ -209,12 +209,12 @@ def generate_launch_description():
                 description="Opt in to planning-only wrist RGB-D grasp bridge.",
             ),
             DeclareLaunchArgument(
-                "grasp_profile", default_value="right_wrist",
-                description="Selected arm/camera/gripper identity in grasp_profiles.yaml.",
+                "grasp_profile", default_value=os.environ.get("REALMAN_GRASP_PROFILE", ""),
+                description="Optional profile override; empty uses grasp_bridge.yaml shared default.",
             ),
             DeclareLaunchArgument(
-                "grasp_dry_run", default_value="true",
-                description="Validate grasp configuration without sensor/IK clients.",
+                "grasp_dry_run", default_value="false",
+                description="Allow restricted IK planning for grasp.xml; bridge never sends robot commands.",
             ),
             DeclareLaunchArgument(
                 "web_control_config_file",

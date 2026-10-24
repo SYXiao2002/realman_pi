@@ -38,7 +38,7 @@ def test_grasp_preflight_tracks_selected_wrist_profile(tmp_path):
     import shutil
     sys.path.insert(0, str(ROOT / "src/grasp/grasp_bridge"))
     config = tmp_path / "config"
-    for filename in ("ros/grasp_task.yaml", "ros/grasp_profiles.yaml", "ros/camera_extrinsics.yaml",
+    for filename in ("ros/grasp_task.yaml", "ros/grasp_bridge.yaml", "ros/grasp_profiles.yaml", "ros/camera_extrinsics.yaml",
                      "ros/cameras_ros2.yaml", "ros/realman_coordinates.yaml", "ros/gripper.yaml",
                      "grasp/gripper_specs.yaml"):
         target = config / filename
@@ -46,7 +46,7 @@ def test_grasp_preflight_tracks_selected_wrist_profile(tmp_path):
         shutil.copyfile(ROOT / "config" / filename, target)
     tree = ROOT / "config/behavior-trees/grasp.xml"
     assert runtime_metadata(tree, config)[:3] == ("r", "r", "execute_motion")
-    (config / "ros/grasp_task.local.yaml").write_text("profile: left_wrist\n")
+    (config / "ros/grasp_bridge.local.yaml").write_text("profile: left_wrist\n")
     assert runtime_metadata(tree, config)[:3] == ("l", "l", "execute_motion")
     assert runtime_metadata(tree, config, "right_wrist")[:3] == ("r", "r", "execute_motion")
 

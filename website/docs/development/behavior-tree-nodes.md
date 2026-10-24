@@ -16,7 +16,7 @@ description: realman_bt 行为树的执行模型、各注册节点的语义与�
 因此代码或 XML 一旦修改，页面会随之更新。只有描述节点作用的文字是手写的，位于 `theme/bt/node-docs.ts`。
 完整注册目录也包含 `grasp.xml` 使用的 `TaskLease`、`PlanGrasp`、`GraspWaypoint`、
 `TaskGripper`、`GraspHold` 和 `GraspConfirm`。当前交互树仍显示 `control.xml`，
-不模拟抓取动作；抓取的顺序、lease 与人工确认契约见[腕相机单臂抓取](./behavior-tree-motion#腕相机单臂抓取)。
+不模拟抓取动作；抓取顺序和 lease 契约见[腕相机单臂抓取](./behavior-tree-motion#腕相机单臂抓取)。`GraspConfirm` 保留为可选节点，不属于当前生产 `grasp.xml`。
 
 ## 一拍的执行过程
 

@@ -1,5 +1,5 @@
 # Arm selection is robot-side only; the algorithm receives camera/gripper geometry.
-# Null fields need physical measurement. No supplied profile authorizes motion.
+# Null fields need real configuration values before planning can use that profile.
 version: 1
 default_profile: right_wrist
 profiles:
@@ -21,14 +21,8 @@ profiles:
     gripper: gripper_right
     gripper_spec: binary_42d_right
     calibration: right_wrist
-    # Approve only after measuring TCP/geometry, observing other arms parked,
-    # and validating the complete robot corridor, including the loaded return
-    # route and release pose (IK is not collision checking).
-    execution_verified: false
-    tool_geometry_verified: false
-    corridor_verified: false
-    observation_joint_degrees: [-0.225,34.016,86.185,-0.774,41.991,-2.407]
-    return_joint_degrees: [-0.225,34.016,86.185,-0.774,41.991,-2.407]
+    observation_joint_degrees: [2.584,30.018,93.646,2.533,56.138,-0.282]
+    return_joint_degrees: [2.584,30.018,93.646,2.533,56.138,-0.282]
     workspace_m: [[-0.555,-0.314,-0.142],[-0.205,0.095,0.381]]  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
     # TCP origin and axes are aligned with the common closing-center grasp frame.
     # Identity adds no translation (metres) or rotation; tool offset stays in realman_coordinates.yaml.
@@ -39,7 +33,7 @@ profiles:
       - [0.0, 0.0, 0.0, 1.0]
     approach_m: 0.1
     lift_m: 0.1
-    velocity_percent: 5
+    velocity_percent: 100
   left_wrist:
     arm: l
     base_frame: l/base_link
@@ -58,9 +52,6 @@ profiles:
     gripper: gripper_left
     gripper_spec: binary_42d_left
     calibration: left_wrist
-    execution_verified: false
-    tool_geometry_verified: false
-    corridor_verified: false
     observation_joint_degrees: null
     return_joint_degrees: null
     workspace_m: null

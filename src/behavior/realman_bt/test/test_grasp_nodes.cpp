@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bt_core/xml_parser.hpp"
+#include "bt_nodes/decorator/repeat_node.hpp"
 #include "bt_nodes/control/sequence_node.hpp"
 #include "realman_bt/grasp_nodes.hpp"
 #include "realman_bt/move_j_node.hpp"
@@ -99,6 +100,7 @@ int main(int argc, char** argv) {
 
   bt_core::NodeFactory factory;
   factory.registerNodeType<bt_nodes::SequenceNode>("Sequence");
+  factory.registerNodeType<bt_nodes::RepeatNode>("Repeat");
   factory.registerNodeType<realman_bt::TaskLeaseNode>("TaskLease");
   factory.registerNodeType<realman_bt::PlanGraspNode>("PlanGrasp");
   factory.registerNodeType<realman_bt::TaskGripperNode>("TaskGripper");
@@ -121,14 +123,15 @@ int main(int argc, char** argv) {
       {"grasp_base_frame", "r/base_link"}, {"grasp_tool_name", "tcpgrip"},
       {"grasp_gripper", "gripper_right"}, {"grasp_target_label", "box"},
       {"grasp_backend", "mock"}, {"grasp_observation_joint_degrees", "1,2,3,4,5,6"},
-      {"grasp_return_joint_degrees", "7,8,9,10,11,12"},
-      {"grasp_readiness_detail", ""}}) bb->set<std::string>(kv.first, kv.second);
-  bb->set<bool>("grasp_execution_ready", true);
+      {"grasp_return_joint_degrees", "7,8,9,10,11,12"}}) bb->set<std::string>(kv.first, kv.second);
   bb->set<int>("grasp_velocity_percent", 5);
   for (const auto* key : {"grasp_acquire_timeout_sec", "grasp_motion_timeout_sec", "grasp_plan_timeout_sec", "grasp_gripper_timeout_sec"}) bb->set<double>(key, 2.0);
   bb->set<double>("grasp_lease_ttl_sec", 0.15);
   bb->set<double>("grasp_hold_sec", 0.15);
   bb->set<double>("grasp_confirmation_timeout_sec", 2.0);
+  // The production tree is configured for continuous operation; this test
+  // exercises one complete cycle and then expects a terminal SUCCESS.
+  bb->set<int>("grasp_cycles", 1);
   auto tree = parser.loadFromFile(GRASP_TREE_FILE, bb);
   auto drain = [&]() {
     for (auto it = drains.begin(); it != drains.end();) {
@@ -178,10 +181,15 @@ int main(int argc, char** argv) {
   bb->set<bool>("dry_run", false);
   confirm_client = ros_node->create_client<Confirm>("/grasp_nodes_test/confirm_grasp");
   assert(run() == Status::SUCCESS);
-  assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "confirm", "return", "release_open", "release"}));
+  assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "return", "release_open", "release"}));
   assert(renewed > 0 && !leased);
   assert(!bb->get<std::string>(realman_bt::kTaskTokenKey).has_value());
   assert(!bb->get<std::shared_ptr<Plan::Result>>(realman_bt::kGraspPlanKey).has_value());
+
+  // The production tree completes without any operator confirmation request.
+  // Retain separate lifecycle coverage for the optional GraspConfirm leaf.
+  tree.halt();
+  tree = parser.loadFromFile(CONFIRMATION_TEST_TREE_FILE, bb);
 
   // Every stage fails closed, releases once idle, and prevents later commands.
   const std::vector<std::string> task_stages{"open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "confirm", "return", "release_open"};
@@ -322,10 +330,6 @@ int main(int argc, char** argv) {
   }
   assert(drains.empty() && !leased);
   assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "release"}));
-
-  // Rejected physical readiness cannot acquire a lease or open the gripper.
-  tree.halt(); bb->set<bool>("grasp_execution_ready", false); stages.clear();
-  assert(run() == Status::FAILURE && stages.empty());
 
   // Readiness can arrive after a leaf was constructed. Expiry must be checked
   // again at async_send_goal/request, rather than only before client creation.

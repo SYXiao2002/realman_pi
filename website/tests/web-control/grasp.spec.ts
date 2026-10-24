@@ -59,6 +59,25 @@ test("grasp page has no horizontal overflow on mobile", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
+test("plan viewer renders behavior-tree candidates and workspace without sending commands", async ({ page }, testInfo) => {
+  await page.route("**/api/layout", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ robots: [{
+    id: "r", transform: { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 }, urdf_url: "/models/test-arm.urdf",
+  }] }) }));
+  await page.route("**/models/test-arm.urdf", (route) => route.fulfill({ contentType: "application/xml", body:
+    '<robot name="plan"><link name="base_link"><visual><geometry><box size="0.1 0.1 0.5"/></geometry></visual></link></robot>' }));
+  await page.goto("grasp_plan.html");
+  const planSnapshot = { ...snapshot, source: "behavior_tree", phase: "rejected", T_base_camera: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    images: {}, workspace_m: [[-.5, -.4, 0], [.5, .4, .8]],
+    candidates: [{ ...snapshot.candidates[0], planning_status: "rejected", planning_reason: "pregrasp: IK branch jump exceeds limit" }],
+    planning_rejections: [{ candidate_id: "c1", reason: "pregrasp: IK branch jump exceeds limit" }] };
+  await page.evaluate((value) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(value) }), planSnapshot);
+  await expect(page.locator("#candidates")).toContainText("pregrasp: IK branch jump exceeds limit");
+  await expect(page.locator("#workspace")).toContainText("min -0.500, -0.400, 0.000");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "c1");
+  await page.locator("#layout").screenshot({ path: testInfo.outputPath("grasp-plan-layout.png") });
+  expect(await page.evaluate(() => (window as any).__graspSent)).toEqual([]);
+});
+
 test("CGN context is sent and changing it clears the previous observation", async ({ page }) => {
   await page.goto("grasp.html");
   await page.locator("#backend").selectOption("contact_graspnet");

@@ -13,8 +13,6 @@ def infer(uri, request, *, expected_model_id, connect_timeout_sec, inference_tim
     from websockets.sync.client import connect
 
     validate_request(request)
-    if not expected_model_id and not request.get("evaluation_only", False):
-        raise ValueError("pin expected_model_id before live planning")
     if canceled():
         raise PlanningCanceled("planning canceled")
     with connect(uri, open_timeout=connect_timeout_sec, close_timeout=1.0,

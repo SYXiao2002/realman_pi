@@ -270,6 +270,14 @@ class WebControlServer:
         headers = {"Cache-Control": "no-store"}
         if not self.config.bt_monitor_url:
             return web.json_response(BT_RUNTIME_UNAVAILABLE, headers=headers)
+        # The monitor keeps the last snapshot briefly while bt-start archives a
+        # terminal run. The launcher is authoritative for whether a tree can
+        # still own the start lock; without this check a refreshed page can
+        # mistake that stale snapshot for a live tree and hide the start UI.
+        if self._bt_launcher_enabled():
+            launcher_status, launcher = await self._bt_launcher_call("GET", "/status")
+            if launcher_status != 200 or not launcher.get("running", False):
+                return web.json_response(BT_RUNTIME_UNAVAILABLE, headers=headers)
         if self._bt_session is None:
             self._bt_session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.config.bt_monitor_timeout_sec)

@@ -185,6 +185,13 @@ export class GraspView {
       if (world && config && snapshot.T_base_camera) {
         const base = new THREE.Group(); base.position.set(config.transform.x, config.transform.y, config.transform.z);
         base.rotation.set(config.transform.roll, config.transform.pitch, config.transform.yaw, "ZYX");
+        if (snapshot.workspace_m) {
+          const workspaceBounds = new THREE.Box3(new THREE.Vector3(...snapshot.workspace_m[0]), new THREE.Vector3(...snapshot.workspace_m[1]));
+          const workspace = new THREE.Box3Helper(workspaceBounds, 0x4ade80);
+          (workspace.material as THREE.Material).transparent = true;
+          (workspace.material as THREE.Material).opacity = 0.85;
+          base.add(workspace);
+        }
         const camera = new THREE.Group(); camera.matrixAutoUpdate = false; camera.matrix.copy(matrix(snapshot.T_base_camera));
         camera.add(pointCloud(snapshot), new THREE.AxesHelper(.10)); base.add(camera);
         const rendered: string[] = [];

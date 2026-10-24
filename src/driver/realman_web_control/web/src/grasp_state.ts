@@ -1,4 +1,4 @@
-const phases: Record<string, number> = { captured: 0, inferred: 1, rejected: 2 };
+const phases: Record<string, number> = { captured: 0, inferred: 1, planned: 2, rejected: 2 };
 const text = (v: any) => typeof v === "string" && v.length > 0 && v.length <= 256;
 const vector = (v: any, length: number) => Array.isArray(v) && v.length === length && v.every((x) => typeof x === "number" && Number.isFinite(x));
 const pose = (v: any) => Array.isArray(v) && v.length === 4 && v.every((row) => vector(row, 4))
@@ -11,14 +11,15 @@ export function validSnapshot(value: any): boolean {
     || value.read_only !== true || value.execution_ready !== false
     || !["observation_id", "profile_id", "profile_name", "review_request_id", "camera_frame", "base_frame", "target_label", "tool_name"].every((key) => text(value[key]))
     || !["l", "r"].includes(value.arm) || !["geometry", "contact_graspnet"].includes(value.backend)
-    || !(value.phase in phases) || typeof value.capture_timestamp_ns !== "string"
+    || !(value.phase in phases) || (value.source !== undefined && !["web_evaluation", "behavior_tree"].includes(value.source))
+    || typeof value.capture_timestamp_ns !== "string"
     || !/^[1-9][0-9]{0,19}$/.test(value.capture_timestamp_ns)
     || !Number.isInteger(value.width) || !Number.isInteger(value.height)
     || value.width < 8 || value.height < 8 || value.width > 2048 || value.height > 2048
     || !Array.isArray(value.K) || value.K.length !== 3 || !value.K.every((row: any) => vector(row, 3))
     || value.K[0][0] <= 0 || value.K[1][1] <= 0 || !vector(value.seed_joint_degrees, 6)
     || (value.T_base_camera !== null && !pose(value.T_base_camera))
-    || !value.images || !["rgb", "depth", "overlay"].every((kind) => dataImage(value.images[kind]))
+    || !value.images || (value.source !== "behavior_tree" && !["rgb", "depth", "overlay"].every((kind) => dataImage(value.images[kind])))
     || !Array.isArray(value.readiness_problems) || !value.readiness_problems.every(text)
     || !value.gripper || !text(value.gripper.id)
     || !value.cloud || !Array.isArray(value.cloud.xyz_m) || !Array.isArray(value.cloud.rgb)
@@ -26,6 +27,9 @@ export function validSnapshot(value: any): boolean {
     || !value.cloud.xyz_m.every((p: any) => vector(p, 3))
     || !value.cloud.rgb.every((p: any) => vector(p, 3) && p.every((n: number) => Number.isInteger(n) && n >= 0 && n <= 255))
     || !Array.isArray(value.candidates) || value.candidates.length > 64) return false;
+  if (value.workspace_m !== undefined && (!Array.isArray(value.workspace_m) || value.workspace_m.length !== 2
+    || !value.workspace_m.every((v: any) => vector(v, 3))
+    || value.workspace_m[0].some((v: number, i: number) => v >= value.workspace_m[1][i]))) return false;
   const ids = new Set<string>();
   return value.candidates.every((candidate: any) => {
     if (!candidate || !text(candidate.candidate_id) || ids.has(candidate.candidate_id)

@@ -2,6 +2,7 @@
 .grasp-topbar h1 { font-size:19px; }
 .grasp-topbar .spacer { flex:1; }
 .grasp-workspace { max-width:1600px; margin:auto; padding:16px 22px 32px; display:grid; grid-template-columns:minmax(0,1.55fr) minmax(320px,.85fr); gap:14px; align-items:start; }
+.plan-viewer { max-width:1600px; margin:auto; padding:16px 22px 32px; display:grid; gap:14px; }
 .grasp-main,.grasp-side { min-width:0; display:grid; gap:14px; }
 .grasp-panel { min-width:0; padding:14px; }
 .grasp-panel h2 { font-size:14px; margin:0 0 12px; }
@@ -65,6 +66,7 @@
 .review-form textarea { min-height:74px; resize:vertical; }
 .grasp-readonly { padding:8px 10px; background:var(--warn-bg); color:var(--text-2); border-left:3px solid var(--warn); font-size:10px; line-height:1.45; }
 @media(max-width:900px) { .grasp-workspace { grid-template-columns:minmax(0,1fr); padding:12px; } .grasp-context { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:640px) { .plan-viewer { padding:12px; gap:10px; } }
 @media(max-width:640px) { .grasp-topbar { flex-wrap:wrap; padding:10px 12px; } .grasp-topbar .spacer { display:none; } .grasp-topbar .button { margin-left:auto; } .grasp-images { grid-template-columns:minmax(0,1fr); } .grasp-details { grid-template-columns:repeat(2,minmax(0,1fr)); } .grasp-workspace { gap:10px; } }
 @media(max-width:640px) { .cloud-frame { grid-column: span 1; } }
 @media(max-width:640px) { .grasp-compare,.grasp-poses { grid-template-columns:minmax(0,1fr); } .layout-canvas { height:360px; } }

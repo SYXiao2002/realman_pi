@@ -48,7 +48,6 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/realman_bt_executor/list_input_modes` | `realman_msgs/ListInputModes` | 按 XML 顺序发现输入模式目录 |
 | `/realman_bt_executor/select_input_mode` | `realman_msgs/SelectInputMode` | 请求模式（`mode_id` + 非空 `requester_id`） |
 | `/realman_bt_executor/input_mode_state` | `realman_msgs/InputModeState` | `ACTIVE` / `SWITCHING` / `FAILED` 及 epoch |
-| `/realman_bt_executor/confirm_grasp` | `realman_msgs/ConfirmGrasp` | 仅在等待人工确认时提供；匹配 task ID，记录观察结果和是否受控放回 |
 | `/realman_bt_executor/bt_status` | `std_msgs/String` | 执行器状态 |
 | `/realman_bt_executor/start` `stop` | `std_srvs/Trigger` | 执行器生命周期 |
 | `/keyboard/<l\|r>/cartesian_velocity` | `geometry_msgs/TwistStamped` | Web 键盘 ingress（由 `realman_web_control` 发布） |
@@ -119,17 +118,17 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 
 ## 腕相机抓取 `grasp_bridge`
 
-`PlanGrasp.cgn_context` 为 `mask`、`box` 或 `full`，空字符串使用 bridge 配置；`evaluation_only=true` 不要求已测量夹爪尺寸、向上向量或固定模型身份，且不产生 waypoint。修改 Action 后需一起重建其所有 client/server。
+`PlanGrasp.cgn_context` 为 `mask`、`box` 或 `full`，空字符串使用 bridge 配置；`evaluation_only=true` 始终只读，不调用 IK 或产生 waypoint。实机 BT 规划沿用同一份 profile、标定、TCP 和夹爪配置，不要求人工 `verified` 标记或固定 model ID；配置结构和服务身份仍会校验。修改 Action 后需一起重建其所有 client/server。
 
 纯规划接口，执行由 BT 编排。契约：[腕相机抓取](../development/grasping)。
 
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
-| `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 坐标转换与受限 IK；可取消，不发送运动/夹爪命令 |
+| `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 抓取几何与 waypoint；按 `grasp_bridge.yaml:ik_precheck` 可选受限 IK；可取消，不发送运动/夹爪命令 |
 | `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
 | `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
 | `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
-| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子评估快照：RGB、深度显示、点云、对齐前后矩阵、readiness；`base_camera_transform` 记录采集时 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录跳过的深度不足实例；按 `observation_id` 和采集时 `T_base_camera` 绑定 |
+| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子快照：离线评估含 RGB/深度显示、点云、对齐矩阵与 readiness；行为树规划含候选结论/拒绝原因、waypoints 与 `workspace_m`（省略图片）；按 `observation_id` 和采集时 `T_base_camera` 绑定，供 `/grasp_plan.html` 展示；`base_camera_transform` 记录 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录深度不足实例 |
 | `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
 | `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D；返回原矩阵/分数/分割与溯源；无 ROS |
 

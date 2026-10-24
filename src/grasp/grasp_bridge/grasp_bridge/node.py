@@ -1,4 +1,4 @@
-"""ROS Action server: capture -> infer -> restricted IK plan, without execution."""
+"""ROS Action server: capture -> infer -> grasp geometry, without execution."""
 
 from collections import deque
 import json
@@ -29,7 +29,7 @@ from grasp_protocol import PROTOCOL_VERSION, validate_request
 
 from .geometry import from_pose, pose_drift, transform, to_pose
 from .evaluation import json_value, snapshot
-from .planner import choose_plan
+from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
 from .rgbd import CameraModel, image_array, rectify_color, register_depth, validate_timing
 from .ws_client import PlanningCanceled, infer
@@ -51,9 +51,9 @@ class GraspBridge(Node):
         self.declare_parameter("config_root", str(default_config_root()))
         self.root = Path(self.get_parameter("config_root").value)
         self.settings = read_yaml(self.root / "ros/grasp_bridge.yaml")
-        self.declare_parameter("profile", self.settings["profile"])
+        self.declare_parameter("profile", "")
         self.declare_parameter("dry_run", self.settings["dry_run"])
-        self.profile_name = self.get_parameter("profile").value
+        self.profile_name = self.get_parameter("profile").value or self.settings["profile"]
         self.profile = load_profile(self.root, self.profile_name)
         self.dry_run = self.get_parameter("dry_run").value
         if type(self.dry_run) is not bool:
@@ -66,6 +66,8 @@ class GraspBridge(Node):
             value = self.settings.get(key)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite positive")
+        if type(self.settings.get("ik_precheck", True)) is not bool:
+            raise ValueError("ik_precheck must be a boolean")
         self.group = ReentrantCallbackGroup()
         self.lock = threading.Lock()
         self.busy = False
@@ -81,21 +83,21 @@ class GraspBridge(Node):
         self.review_status = self.create_publisher(String, "~/review_status", review_qos)
         self.review_status.publish(String(data=json.dumps({
             "type": "grasp_bridge_status", "dry_run": self.dry_run, "read_only": True,
-            "default_profile": self.profile_name, "profiles": [
+            "default_profile": self.profile_name, "default_backend": self.settings["backend"],
+            "default_target_label": self.settings["target_label"],
+            "default_cgn_context": self.settings["cgn_context"], "profiles": [
                 {"name": name, "arm": load_profile(self.root, name)["arm"]} for name in self.profile_names]})))
         self.candidates = self.create_publisher(PoseArray, "~/candidates", 10)
         self.overlay = self.create_publisher(Image, "~/overlay", 2)
         self.server = ActionServer(self, PlanGrasp, "~/plan_grasp", execute_callback=self.execute,
                                    goal_callback=self.goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
                                    callback_group=self.group)
-        # Dry-run allows read-only capture and inference. IK and lease clients
-        # remain absent, so no motion planning/execution path is available.
+        # Geometry and optional IK precheck live here; motion stays in BT nodes.
         self.tf = Buffer(cache_time=Duration(seconds=60))
         self.tf_listener = TransformListener(self.tf, self)
+        self.planning_clients = {}
         if not self.dry_run:
-            self.ik = self.create_client(SolveIk, f"/{self.profile['arm']}/solve_ik", callback_group=self.group)
-            self.task_control = self.create_client(
-                TaskControl, f"/{self.profile['arm']}/task_control", callback_group=self.group)
+            self.select_planning_clients(self.profile["arm"])
         self.subscriptions_owned = []
         for name in self.profile_names:
             profile = load_profile(self.root, name)
@@ -109,6 +111,13 @@ class GraspBridge(Node):
                     qos_profile_sensor_data, callback_group=self.group))
         self.report("configuration", "; ".join(self.profile["readiness_problems"]) or "ready", warning=True)
         self.get_logger().info(f"Planning-only grasp bridge profile={self.profile_name} dry_run={self.dry_run}")
+
+    def select_planning_clients(self, arm):
+        if arm not in self.planning_clients:
+            self.planning_clients[arm] = (
+                self.create_client(SolveIk, f"/{arm}/solve_ik", callback_group=self.group),
+                self.create_client(TaskControl, f"/{arm}/task_control", callback_group=self.group))
+        self.ik, self.task_control = self.planning_clients[arm]
 
     def report(self, phase, detail, *, warning=False):
         message = DiagnosticArray()
@@ -127,7 +136,7 @@ class GraspBridge(Node):
 
     def goal(self, request):
         with self.lock:
-            allowed = self.profile_names if request.evaluation_only else [self.profile_name]
+            allowed = self.profile_names
             if self.busy or (request.profile_name and request.profile_name not in allowed) or not request.task_id:
                 return GoalResponse.REJECT
             self.busy = True
@@ -327,17 +336,19 @@ class GraspBridge(Node):
 
     def execute(self, handle):
         result = PlanGrasp.Result()
-        observation = request = response = None
+        observation = request = response = plan = None
         generation = self.generation
         canceled = lambda: handle.is_cancel_requested or self.generation != generation
         try:
             if self.dry_run and not handle.request.evaluation_only:
                 raise ValueError("configuration dry-run; no hardware clients or observation: " +
                                  "; ".join(self.profile["readiness_problems"]))
-            selected_profile = (handle.request.profile_name or self.profile_name) if handle.request.evaluation_only else self.profile_name
+            selected_profile = handle.request.profile_name or self.profile_name
             self.profile = load_profile(self.root, selected_profile,
                                         require_ready=not handle.request.evaluation_only)
             self.inputs = self.profile_inputs[selected_profile]
+            if not handle.request.evaluation_only:
+                self.select_planning_clients(self.profile["arm"])
             backend = handle.request.backend or self.settings["backend"]
             if backend == "mock":
                 raise ValueError("mock candidates cannot produce live robot plans")
@@ -362,7 +373,7 @@ class GraspBridge(Node):
                        "T_base_camera": observation["T_base_camera"],
                        **{k: observation[k] for k in ("color_bgr", "depth_m", "K", "up_camera")}}
             if handle.request.evaluation_only:
-                self.publish_evaluation(observation, request, phase="captured")
+                self.publish_evaluation(observation, request, source="web_evaluation", phase="captured")
             validate_request(request)
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
@@ -377,7 +388,7 @@ class GraspBridge(Node):
                 if canceled():
                     raise PlanningCanceled("evaluation canceled")
                 self.publish_evaluation(observation, request, response=response, phase="inferred",
-                                        detail="evaluation only; no IK or waypoints")
+                                        source="web_evaluation", detail="evaluation only; no IK or waypoints")
                 result.success = True
                 result.observation_id = request["observation_id"]
                 result.profile_id = self.profile["profile_id"]
@@ -391,11 +402,21 @@ class GraspBridge(Node):
                 handle.succeed()
                 self.report("evaluation", f"{request['observation_id']}: {len(response['candidates'])} candidates")
                 return result
-            self.feedback(handle, "filter", "checking restricted corridor and IK", len(response["candidates"]))
-            plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
-                               lambda T, seed: self.solve(T, seed, canceled),
-                               sample_step_m=self.settings["cartesian_sample_step_m"],
-                               max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled)
+            ik_precheck = self.settings.get("ik_precheck", True)
+            self.feedback(handle, "filter",
+                          "checking restricted corridor and IK" if ik_precheck
+                          else "calculating grasp waypoints; IK precheck disabled",
+                          len(response["candidates"]))
+            if ik_precheck:
+                plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
+                                   lambda T, seed: self.solve(T, seed, canceled),
+                                   sample_step_m=self.settings["cartesian_sample_step_m"],
+                                   max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled)
+            else:
+                plan = attach_seed_joints(
+                    calculate_plan(response["candidates"], self.profile, observation["T_base_camera"], canceled=canceled),
+                    observation["seed"],
+                )
             with self.lock:
                 current_joints = list(self.inputs["joints"])
             if not self.stopped(current_joints, self.get_clock().now().nanoseconds):
@@ -408,7 +429,7 @@ class GraspBridge(Node):
                     or rotation > self.settings["maximum_rotation_drift_rad"]
                     or self.get_clock().now().nanoseconds >= expires):
                 raise ValueError("captured scene/pose has expired; observe again")
-            if load_profile(self.root, self.profile_name)["profile_id"] != self.profile["profile_id"] or canceled():
+            if load_profile(self.root, selected_profile)["profile_id"] != self.profile["profile_id"] or canceled():
                 raise PlanningCanceled("profile changed or task canceled; plan invalidated")
             self.validate_lease(handle.request.lease_token, canceled)
             result.success = True
@@ -419,20 +440,29 @@ class GraspBridge(Node):
             for name, waypoint in plan["waypoints"].items():
                 for field in ("position_m", "quaternion_wxyz", "joint_degrees"):
                     setattr(result, name + "_" + field, waypoint[field])
-            result.message = "planned; restricted corridor only, physical grasp unverified"
+            result.message = ("planned; restricted corridor only, physical grasp unverified"
+                              if ik_precheck else
+                              "planned; IK precheck skipped, controller will validate MOVEL")
             # The lossless label PNG belongs to the binary archive/review image,
             # not the ROS plan JSON. Preserve its hash and archive identity.
             server_diagnostics = {key: value for key, value in response.get("diagnostics", {}).items()
                                   if key != "segmap_png"}
             result.diagnostics_json = json.dumps(json_value({
                 "plan_id": result.plan_id, "observation_id": result.observation_id,
-                "profile_id": result.profile_id, **plan, "server": server_diagnostics}))
+                "profile_id": result.profile_id, "ik_precheck": ik_precheck,
+                **plan, "server": server_diagnostics}))
             self.plans.publish(String(data=result.diagnostics_json))
+            self.publish_evaluation(observation, request, response=response, plan=plan, phase="planned",
+                                    source="behavior_tree", detail=f"selected {plan['candidate_id']}")
             handle.succeed()
             self.report("planned", result.plan_id)
         except Exception as exc:
-            if handle.request.evaluation_only and observation is not None and request is not None:
-                self.publish_evaluation(observation, request, response=response, phase="rejected", detail=str(exc))
+            if observation is not None and request is not None and response is not None:
+                rejections = exc.rejections if isinstance(exc, NoReachableCandidate) else []
+                self.publish_evaluation(observation, request, response=response, plan=plan,
+                                        rejections=rejections,
+                                        source="web_evaluation" if handle.request.evaluation_only else "behavior_tree",
+                                        phase="rejected", detail=str(exc))
             result.success, result.message = False, str(exc)
             if handle.is_cancel_requested:
                 handle.canceled()
@@ -445,9 +475,9 @@ class GraspBridge(Node):
                 self.busy = False
         return result
 
-    def publish_evaluation(self, observation, request, **values):
+    def publish_evaluation(self, observation, request, *, source="web_evaluation", **values):
         try:
-            evaluation = snapshot(observation, self.profile, request, **values)
+            evaluation = snapshot(observation, self.profile, request, source=source, **values)
             self.evaluations.publish(String(data=json.dumps(evaluation, separators=(",", ":"))))
         except (TypeError, ValueError, KeyError) as exc:
             self.get_logger().warning(f"Unable to publish grasp evaluation snapshot: {exc}")

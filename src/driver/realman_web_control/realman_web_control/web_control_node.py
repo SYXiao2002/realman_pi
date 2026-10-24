@@ -1505,7 +1505,7 @@ class WebControlNode(Node):
         except (TypeError, ValueError):
             self.get_logger().warning("ignoring grasp evaluation with invalid timestamp")
             return
-        if timestamp <= 0 or payload["phase"] not in ("captured", "inferred", "rejected"):
+        if timestamp <= 0 or payload["phase"] not in ("captured", "inferred", "planned", "rejected"):
             self.get_logger().warning("ignoring grasp evaluation with invalid identity or phase")
             return
         previous = self._grasp_evaluation
@@ -1517,8 +1517,8 @@ class WebControlNode(Node):
                 if previous_timestamp == timestamp and (
                     payload["observation_id"] != previous["observation_id"]
                     or payload["profile_id"] != previous["profile_id"]
-                    or {"captured": 0, "inferred": 1, "rejected": 2}[payload["phase"]]
-                    <= {"captured": 0, "inferred": 1, "rejected": 2}[previous["phase"]]
+                    or {"captured": 0, "inferred": 1, "planned": 2, "rejected": 2}[payload["phase"]]
+                    <= {"captured": 0, "inferred": 1, "planned": 2, "rejected": 2}[previous["phase"]]
                 ):
                     return
             except (KeyError, TypeError, ValueError):

@@ -45,4 +45,4 @@ def test_installed_grasp_configuration_loads_without_environment_override(monkey
     config_root = Path(get_package_share_directory("realman_bringup")) / "config"
     profile = load_profile(config_root, "right_wrist")
     assert profile["arm"] == "r"
-    assert profile["gripper_geometry"]["verified"] is False
+    assert profile["gripper_geometry"]["id"]

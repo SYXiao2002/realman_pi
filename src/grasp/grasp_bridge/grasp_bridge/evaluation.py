@@ -31,7 +31,7 @@ def image_url(array, extension=".jpg"):
     return f"data:image/{mime};base64," + base64.b64encode(encoded).decode("ascii")
 
 
-def snapshot(observation, profile, request, *, response=None, plan=None, phase="captured", detail=""):
+def snapshot(observation, profile, request, *, response=None, plan=None, rejections=None, source="web_evaluation", phase="captured", detail=""):
     """Keep RGB, registered depth, cloud and candidates in one atomic event.
 
     Points are in rectified color optical coordinates (+X right,+Y down,+Z
@@ -61,6 +61,8 @@ def snapshot(observation, profile, request, *, response=None, plan=None, phase="
     points = np.column_stack(((xx-K[0, 2])*zz/K[0, 0], (yy-K[1, 2])*zz/K[1, 1], zz))
     base_camera_value = observation.get("T_base_camera")
     base_camera = transform(base_camera_value) if base_camera_value is not None else None
+    rejected = {item["candidate_id"]: item["reason"] for item in (rejections or [])}
+    selected_id = (plan or {}).get("candidate_id")
     candidates = []
     for candidate in (response or {}).get("candidates", []):
         item = {**candidate}
@@ -68,6 +70,10 @@ def snapshot(observation, profile, request, *, response=None, plan=None, phase="
             camera_pose = candidate.get("T_camera_grasp" + suffix)
             item["T_base_grasp" + suffix] = (base_camera @ transform(camera_pose)
                 if base_camera is not None and camera_pose is not None else None)
+        item["planning_status"] = ("selected" if item.get("candidate_id") == selected_id
+                                   else "rejected" if item.get("candidate_id") in rejected
+                                   else "not_checked")
+        item["planning_reason"] = rejected.get(item.get("candidate_id"))
         candidates.append(item)
     diagnostics = dict((response or {}).get("diagnostics", {}))
     segmentation = diagnostics.pop("segmap_png", None)
@@ -92,10 +98,13 @@ def snapshot(observation, profile, request, *, response=None, plan=None, phase="
         "phase": phase, "detail": detail, "K": K, "T_base_camera": base_camera,
         "base_camera_transform": observation.get("base_camera_transform"),
         "seed_joint_degrees": observation["seed"], "width": color.shape[1], "height": color.shape[0],
-        "images": {"rgb": image_url(color), "depth": image_url(display, ".png"),
-                   "overlay": image_url(observation.get("overlay_bgr", color)),
-                   **({"instances": image_url(instances)} if instances is not None else {})},
+        "images": ({} if source == "behavior_tree" else
+                   {"rgb": image_url(color), "depth": image_url(display, ".png"),
+                    "overlay": image_url(observation.get("overlay_bgr", color)),
+                    **({"instances": image_url(instances)} if instances is not None else {})}),
         "depth_stats": {"valid_pixels": int(valid.sum()), "total_pixels": int(depth.size), "min_m": low, "max_m": high},
         "cloud": {"xyz_m": points, "rgb": color[yy, xx, ::-1], "z_range_m": z_range},
-        "candidates": candidates, "plan": plan, "server_diagnostics": diagnostics,
+        "candidates": candidates, "plan": plan, "planning_rejections": rejections or [],
+        "workspace_m": profile["workspace_m"], "source": source,
+        "server_diagnostics": diagnostics,
     })

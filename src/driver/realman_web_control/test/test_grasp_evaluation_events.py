@@ -47,11 +47,13 @@ def test_snapshot_cache_advances_only_within_identity(web_node):
     send(web_node, captured)
     send(web_node, snapshot(phase="inferred"))
     assert web_node._grasp_evaluation["phase"] == "inferred"
+    send(web_node, snapshot(phase="planned"))
+    assert web_node._grasp_evaluation["phase"] == "planned"
     send(web_node, snapshot(observation="obs-old", phase="rejected"))
     send(web_node, snapshot(phase="captured"))
     send(web_node, snapshot(phase="inferred"))
     assert web_node._grasp_evaluation["observation_id"] == "obs-1"
-    assert web_node._grasp_evaluation["phase"] == "inferred"
+    assert web_node._grasp_evaluation["phase"] == "planned"
 
 
 def test_snapshot_cache_rejects_invalid_and_oversized_events(web_node):
