@@ -75,3 +75,10 @@ def test_invalid_confirmation_deadline_is_rejected(config_root, value):
     (config_root / "ros/grasp_task.local.yaml").write_text("confirmation_timeout_sec: " + value + "\n")
     with pytest.raises(ValueError, match="confirmation_timeout_sec"):
         load_grasp_task_parameters(config_root)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", ".nan", "true", "null"])
+def test_invalid_motion_result_grace_is_rejected(config_root, value):
+    (config_root / "ros/grasp_task.local.yaml").write_text("motion_result_grace_sec: " + value + "\n")
+    with pytest.raises(ValueError, match="motion_result_grace_sec"):
+        load_grasp_task_parameters(config_root)

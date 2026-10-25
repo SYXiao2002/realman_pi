@@ -65,6 +65,8 @@ class GraspWaypointNode final : public bt_core::ActionNode {
   void onHalted() override;
  private:
   std::shared_ptr<GraspMotionOperation> operation_;
+  std::string waypoint_;
+  double result_grace_sec_{0};
   std::chrono::steady_clock::time_point started_{};
   double timeout_sec_{0};
   bool completed_{false};

@@ -46,8 +46,9 @@ def load_grasp_task_parameters(config_root, *, profile_name=None, target_label=N
         "grasp_velocity_percent": velocity,
     }
     for key in ("lease_ttl_sec", "acquire_timeout_sec", "motion_timeout_sec",
-                "plan_timeout_sec", "gripper_timeout_sec", "hold_sec", "confirmation_timeout_sec"):
-        value = settings.get(key)
+                "plan_timeout_sec", "gripper_timeout_sec", "hold_sec", "confirmation_timeout_sec",
+                "motion_result_grace_sec"):
+        value = settings.get(key, 5.0 if key == "motion_result_grace_sec" else None)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"{key} must be positive finite seconds")
         result["grasp_" + key] = float(value)

@@ -96,6 +96,7 @@ BASE 下的 MoveL；它与闭爪步骤都会拒绝过期计划。观察与返回
 | `lease_ttl_sec`、`acquire_timeout_sec` | 正有限秒数 | lease 有效期和获取上限；整个子树持续续租 |
 | `cycles` | `-1` 或正整数 | 完整抓取轮数；`-1` 持续循环，任一轮失败都会停止 |
 | `motion_timeout_sec`、`plan_timeout_sec`、`gripper_timeout_sec` | 正有限秒数 | 各阶段超时；夹爪上限须覆盖 manager 的到位等待 |
+| `motion_result_grace_sec` | 正有限秒数 | MoveL 提交后额外等待驱动停止和 Action 结果的时间；不延长驱动的运动期限 |
 | `hold_sec` | 正有限秒数 | 抬起后的短暂停留 |
 
 BT 不检查人工 `verified`、实测误差或走廊审批字段。结构有效的配置由 `grasp.html` 和 BT 共用，
@@ -104,14 +105,27 @@ BT 不检查人工 `verified`、实测误差或走廊审批字段。结构有效
 `REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
 抓取树默认按 `config/ros/grasp_task.yaml` 的 `cycles` 循环完整抓取流程；`-1` 表示持续运行直到手动停止，
-正整数表示完成指定次数。某一轮失败会中断循环、停止 tick 并释放 lease，不会自动重新开夹重试。循环树到达
-`SUCCESS` 或 `FAILURE` 后会停止 tick、完成清理并退出本次 executor；循环运行期间 executor、监视器和 `8765` 的运行状态保持可查看。
+正整数表示完成指定次数。某一轮失败会中断抓取流程并释放 lease，不会自动重新开夹重试。
+当前 `grasp.xml` 设置 `realman_stop_on_terminal=false`、`realman_exit_on_terminal=false`，
+因此终态后保留 executor 和诊断页面，等待显式终止；循环运行期间 executor、监视器和 `8765` 的运行状态保持可查看。
 需要结束本次循环会话时，在 `8765` 点击“终止行为树”，
 或调用 `/realman_bt_executor/shutdown`；这不会停止长期运行的 driver。
 
 `PlanGrasp` 返回 `FAILURE` 时，后续 pregrasp、闭爪和抬升步骤不会执行。请先在 `8080` 的
 `/api/runtime` 快照或 `logs/behavior-trees/<run-id>/runtime.json` 的 `events` 中查看具体原因，常见原因是候选
 超出已验证 TCP/工作区走廊，或受限 IK 拒绝该候选。
+
+`GraspWaypoint` 记录带 `pregrasp/grasp/lift` 名称的发送、接收和结果事件；失败原因经
+`Sequence`、`Repeat` 传到根节点，不再只显示泛化的 sequence failure。BT 先读取已就绪的结果，
+再检查从发送时刻计算的 `motion_timeout_sec + motion_result_grace_sec` 等待上限；等待服务端
+本身仍只使用 `motion_timeout_sec`。超时文本包含节点、waypoint、等待阶段和最后一条驱动反馈。
+
+BASE MoveL 的完成事件漏报或短动作的 active 窗口漏采样时，驱动还可用当前关节的 TCP 正解，
+证明末端已持续到达目标且轨迹 inactive。误差和稳定时间由 `realman_motion.yaml` 的
+`pose_goal_position_tolerance_m`、`pose_goal_rotation_tolerance_rad`、`pose_goal_settle_sec` 控制。
+缺少位姿证据、位姿不符、坐标门禁或取消/停止都不会被视为成功；备用完成路径会触发事件通道恢复，
+避免旧回调被下一条动作复用。恢复时沿用下一条动作的有效 task token 获取命令所有权，
+仍拒绝其他任务或过期 lease。详见[普通运动完成契约](./realman-action-development#executemotion-生命周期)。
 
 ### 抓取后返回
 

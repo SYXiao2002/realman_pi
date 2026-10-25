@@ -36,6 +36,8 @@ int main(int argc, char** argv) {
   std::vector<std::string> stages;
   int acquired = 0, renewed = 0, released = 0, gripper_calls = 0, motion_calls = 0, plan_calls = 0;
   bool leased = false, busy = false, delay_plan = false, delay_acquire = false, deny_renew = false;
+  bool delay_motion = false;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Motion>> pending_motion;
   std::string fail_stage;
   std::shared_ptr<rmw_request_id_t> pending_acquire_header;
   std::shared_ptr<Lease::Response> pending_acquire_response;
@@ -92,6 +94,7 @@ int main(int argc, char** argv) {
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }, [](auto) { return rclcpp_action::CancelResponse::ACCEPT; },
       [&](std::shared_ptr<rclcpp_action::ServerGoalHandle<Motion>> handle) {
+    if (delay_motion) { pending_motion = handle; return; }
     auto result = std::make_shared<Motion::Result>();
     result->success = fail_stage != stages.back();
     result->message = result->success ? "complete" : "simulated stage failure";
@@ -128,6 +131,7 @@ int main(int argc, char** argv) {
   for (const auto* key : {"grasp_acquire_timeout_sec", "grasp_motion_timeout_sec", "grasp_plan_timeout_sec", "grasp_gripper_timeout_sec"}) bb->set<double>(key, 2.0);
   bb->set<double>("grasp_lease_ttl_sec", 0.15);
   bb->set<double>("grasp_hold_sec", 0.15);
+  bb->set<double>("grasp_motion_result_grace_sec", 0.15);
   bb->set<double>("grasp_confirmation_timeout_sec", 2.0);
   // The production tree is configured for continuous operation; this test
   // exercises one complete cycle and then expects a terminal SUCCESS.
@@ -185,6 +189,13 @@ int main(int argc, char** argv) {
   assert(renewed > 0 && !leased);
   assert(!bb->get<std::string>(realman_bt::kTaskTokenKey).has_value());
   assert(!bb->get<std::shared_ptr<Plan::Result>>(realman_bt::kGraspPlanKey).has_value());
+
+  // Failure survives Sequence halt, Repeat, and TaskLease cleanup at the root.
+  tree.halt(); stages.clear(); fail_stage = "lift";
+  assert(run() == Status::FAILURE && !leased);
+  assert(tree.root()->failureReason().find("lift") != std::string::npos);
+  assert(tree.root()->failureReason().find("simulated stage failure") != std::string::npos);
+  fail_stage.clear();
 
   // The production tree completes without any operator confirmation request.
   // Retain separate lifecycle coverage for the optional GraspConfirm leaf.
@@ -341,6 +352,32 @@ int main(int argc, char** argv) {
   delayed_plan->pregrasp_position_m = {0.2, 0.1, 0.3};
   delayed_plan->pregrasp_quaternion_wxyz = {1, 0, 0, 0};
   bb->set<std::shared_ptr<Plan::Result>>(realman_bt::kGraspPlanKey, delayed_plan);
+  // The driver's deadline can expire before its bounded stop/result arrives.
+  // Keep ticking beyond the motion deadline and retain the driver's diagnosis.
+  leased = true; delay_motion = true;
+  auto grace_tree = parser.loadFromText(
+      "<root main_tree_to_execute='M'><BehaviorTree ID='M'><GraspWaypoint arm_id='r' waypoint='pregrasp' velocity_percent='5' dry_run='false' timeout_sec='0.2' result_grace_sec='1'/></BehaviorTree></root>", bb);
+  deadline = std::chrono::steady_clock::now() + 3s;
+  while (!pending_motion && std::chrono::steady_clock::now() < deadline) {
+    pump(); assert(grace_tree.tickOnce() == Status::RUNNING);
+  }
+  assert(pending_motion);
+  const auto stop_until = std::chrono::steady_clock::now() + 350ms;
+  while (std::chrono::steady_clock::now() < stop_until) {
+    pump(); assert(grace_tree.tickOnce() == Status::RUNNING);
+  }
+  auto stopped_result = std::make_shared<Motion::Result>();
+  stopped_result->success = false;
+  stopped_result->message = "driver timeout: inactive after controlled stop";
+  pending_motion->abort(stopped_result); pending_motion.reset();
+  auto grace_status = Status::RUNNING;
+  deadline = std::chrono::steady_clock::now() + 500ms;
+  while (grace_status == Status::RUNNING && std::chrono::steady_clock::now() < deadline) {
+    pump(); grace_status = grace_tree.tickOnce();
+  }
+  assert(grace_status == Status::FAILURE);
+  assert(grace_tree.root()->failureReason().find(stopped_result->message) != std::string::npos);
+  grace_tree.halt(); leased = false; delay_motion = false;
   auto delayed_motion = parser.loadFromText(
       "<root main_tree_to_execute='M'><BehaviorTree ID='M'><GraspWaypoint arm_id='l' waypoint='pregrasp' velocity_percent='5' dry_run='false' timeout_sec='2'/></BehaviorTree></root>", bb);
   auto delayed_close = parser.loadFromText(

@@ -137,7 +137,8 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
   blackboard_->set<int>("grasp_velocity_percent", static_cast<int>(declare_parameter<int64_t>("grasp_velocity_percent", 5)));
   for (const auto& entry : std::vector<std::pair<std::string, double>>{
       {"grasp_lease_ttl_sec", 5.0}, {"grasp_acquire_timeout_sec", 10.0},
-      {"grasp_motion_timeout_sec", 30.0}, {"grasp_plan_timeout_sec", 30.0},
+      {"grasp_motion_timeout_sec", 30.0}, {"grasp_motion_result_grace_sec", 5.0},
+      {"grasp_plan_timeout_sec", 30.0},
       {"grasp_gripper_timeout_sec", 25.0}, {"grasp_hold_sec", 1.0},
       {"grasp_confirmation_timeout_sec", 120.0}}) {
     blackboard_->set<double>(entry.first, declare_parameter<double>(entry.first, entry.second));

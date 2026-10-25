@@ -36,6 +36,7 @@ class RepeatNode : public bt_core::DecoratorNode {
   }
 
   bt_core::NodeStatus tick() override {
+    setFailureReason("");
     if (!child()) {
       return bt_core::NodeStatus::FAILURE;
     }
@@ -59,6 +60,7 @@ class RepeatNode : public bt_core::DecoratorNode {
 
       case bt_core::NodeStatus::FAILURE:
         // 子节点失败 → 重复中断，整体失败。
+        setFailureReason(child()->failureReason());
         cycles_done_ = 0;
         return bt_core::NodeStatus::FAILURE;
 
