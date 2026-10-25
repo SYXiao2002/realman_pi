@@ -235,7 +235,7 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
         return
     if stale_feedback:
         assert result.status == GoalStatus.STATUS_ABORTED
-        assert "joint feedback is stale" in result.result.message
+        assert "did not settle with fresh joint feedback" in result.result.message
         assert not result.result.success and not result.result.plan_id
         return
     assert result.status == GoalStatus.STATUS_SUCCEEDED, result.result.message
@@ -248,6 +248,32 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     assert "segmap_png" not in diagnostics
     np.testing.assert_allclose(result.result.grasp_position_m, [0, 0, 0.4])
     assert node.lease_checks == 4
+
+
+def test_post_plan_wait_accepts_transient_motion_after_arm_settles():
+    outcomes = iter((False, False, True))
+    bridge = SimpleNamespace(
+        settings={"post_plan_settle_timeout_sec": 0.2},
+        lock=threading.Lock(),
+        inputs={"joints": []},
+        stopped=lambda *_: next(outcomes),
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1)),
+    )
+    GraspBridge.wait_until_stopped(bridge, lambda: False)
+
+
+def test_post_plan_wait_stops_on_cancel_and_times_out_if_feedback_stays_stale():
+    bridge = SimpleNamespace(
+        settings={"post_plan_settle_timeout_sec": 0.03},
+        lock=threading.Lock(),
+        inputs={"joints": []},
+        stopped=lambda *_: False,
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1)),
+    )
+    with pytest.raises(bridge_module.PlanningCanceled, match="waiting for fresh"):
+        GraspBridge.wait_until_stopped(bridge, lambda: True)
+    with pytest.raises(TimeoutError, match="did not settle with fresh joint feedback"):
+        GraspBridge.wait_until_stopped(bridge, lambda: False)
 
 
 def test_revoked_task_cannot_begin_capture(graph, monkeypatch):

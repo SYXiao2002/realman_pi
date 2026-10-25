@@ -60,6 +60,7 @@ class GraspBridge(Node):
             raise ValueError("dry_run must be a boolean")
         for key in ("capture_timeout_sec", "inference_timeout_sec", "connect_timeout_sec", "ik_timeout_sec",
                     "maximum_pair_skew_sec", "maximum_capture_age_sec", "settle_sec",
+                    "post_plan_settle_timeout_sec",
                     "maximum_joint_velocity_rad_sec", "maximum_joint_state_age_sec", "maximum_view_tilt_rad",
                     "maximum_translation_drift_m", "maximum_rotation_drift_rad", "plan_validity_sec",
                     "maximum_ik_step_degrees", "cartesian_sample_step_m", "lease_status_timeout_sec"):
@@ -214,6 +215,20 @@ class GraspBridge(Node):
             return False
         return bool(np.max(np.abs(np.diff(positions, axis=0)/dt[:, None])) <=
                     self.settings["maximum_joint_velocity_rad_sec"])
+
+    def wait_until_stopped(self, canceled):
+        deadline = time.monotonic() + self.settings["post_plan_settle_timeout_sec"]
+        while time.monotonic() < deadline:
+            if canceled():
+                raise PlanningCanceled("planning canceled while waiting for fresh, settled joint feedback")
+            with self.lock:
+                messages = list(self.inputs["joints"])
+            if self.stopped(messages, self.get_clock().now().nanoseconds):
+                return
+            time.sleep(0.02)
+        raise TimeoutError(
+            "arm did not settle with fresh joint feedback within "
+            f"{self.settings['post_plan_settle_timeout_sec']:.1f} s after planning")
 
     def capture(self, canceled, not_before_ns, *, evaluation_only=False):
         deadline = time.monotonic()+self.settings["capture_timeout_sec"]
@@ -417,10 +432,8 @@ class GraspBridge(Node):
                     calculate_plan(response["candidates"], self.profile, observation["T_base_camera"], canceled=canceled),
                     observation["seed"],
                 )
-            with self.lock:
-                current_joints = list(self.inputs["joints"])
-            if not self.stopped(current_joints, self.get_clock().now().nanoseconds):
-                raise ValueError("arm is moving or joint feedback is stale after planning")
+            self.feedback(handle, "settle", "waiting for fresh, settled joint feedback")
+            self.wait_until_stopped(canceled)
             current = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], 0) @ transform(
                 self.profile["calibration_data"]["T_flange_color"])
             translation, rotation = pose_drift(observation["T_base_camera"], current)
