@@ -1535,3 +1535,37 @@ def test_controller_info_in_mock_mode_makes_no_sdk_calls():
     assert adapter.connect() == 0
 
     assert adapter.controller_info() == {}
+
+
+@pytest.mark.parametrize('method,vendor', [('stop','rm_set_arm_stop'),('slow_stop','rm_set_arm_slow_stop')])
+def test_stop_still_uses_valid_handle_after_state_timeout(adapter, fake_robot, method, vendor):
+    fake_robot.joint_result = (-2, [])
+    state = adapter.get_state()
+    assert not state.connected and state.error_code == -2
+    assert getattr(adapter, method)() == 0
+    assert (vendor,) in fake_robot.calls
+    # A stop attempt does not reopen admission for ordinary commands.
+    assert not adapter.connected
+    assert adapter.movej([0.0]*6, 20, 0, False) != 0
+
+
+def test_configured_sdk_timeout_is_applied_before_connect(monkeypatch):
+    calls = []
+    class Robot:
+        def __init__(self, mode): pass
+        def rm_set_timeout(self, milliseconds): calls.append(('timeout',milliseconds))
+        def rm_create_robot_arm(self, ip, port):
+            calls.append(('connect',ip,port))
+            return SimpleNamespace(id=17)
+    _install_connecting_sdk(monkeypatch, Robot)
+    adapter = RealManSdkAdapter(ip='192.0.2.123',port=8080,thread_mode='RM_TRIPLE_MODE_E',
+                                robot_model='RM65-B',mock_mode=False,sdk_timeout_ms=1000)
+    assert adapter.connect() == 0
+    assert calls == [('timeout',1000),('connect','192.0.2.123',8080)]
+
+
+@pytest.mark.parametrize('value', [0,-1,True,1.5,float('nan')])
+def test_invalid_sdk_timeout_is_rejected(value):
+    with pytest.raises(ValueError,match='sdk_timeout_ms'):
+        RealManSdkAdapter(ip='192.0.2.123',port=8080,thread_mode='RM_TRIPLE_MODE_E',
+                         robot_model='RM65-B',mock_mode=False,sdk_timeout_ms=value)

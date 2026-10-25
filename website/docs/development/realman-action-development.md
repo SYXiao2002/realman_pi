@@ -139,6 +139,8 @@ IDL 文件是唯一权威来源，字段含义如下。数组长度错误、NaN/
 位姿命令不能从关节角可靠推导位置，因此不要把它当作笛卡尔误差。反馈中的
 `active_reference_type/name` 是驱动实际通过坐标管理器验证过的活动坐标。
 
+`/<arm>/controller_info` 的只读回读还包含当前关节/TCP 与错误数组、当前轨迹以及控制器温度、电压和系统错误，可用于区分命令拒绝、轨迹未结束和硬件报警。查询失败按 getter 单独保留状态码。
+
 ## ExecuteMotion 生命周期
 
 一次普通运动必须经过下面的顺序。顺序是安全契约，重构时不能只保留“调用 SDK”而
@@ -153,12 +155,26 @@ IDL 文件是唯一权威来源，字段含义如下。数组长度错误、NaN/
 5. 只有 SDK 提交成功返回后，才打开当前 generation 的事件接收窗口。注册前到达的
    callback、其他 device 或其他 event type 必须丢弃。
 6. 轮询 `current_trajectory`、`current_arm_state` 和关节状态，发布 `EXECUTING` feedback。
-7. 只有同时满足以下条件才允许 `SUCCEEDED`：
+7. 常规完成路径必须同时满足以下条件才允许 `SUCCEEDED`：
    - 当前 generation 收到 trajectory success event；
    - 观察到轨迹曾经 active，之后又明确回到 inactive；
    - 连接没有丢失，且没有发生 stop/cancel/timeout；
    - `MOVEJ` 的六个最终关节都在 `joint_goal_tolerance_deg` 内；
-   - `MOVEL`/`MOVEJ_P` 至少具备事件与 active-to-inactive 证据，不能用关节角冒充位姿到位。
+   - `MOVEL`/`MOVEJ_P` 的常规路径具备事件与 active-to-inactive 证据。
+   对 BASE `MOVEL`，另一个完成路径是在轨迹 inactive、连接正常、坐标门禁允许时，
+   用新读取的六轴关节做当前 TCP 正解，与 BASE 目标的位置和四元数比较。位置、旋转误差须持续
+   满足 `realman_motion.yaml` 的 `pose_goal_position_tolerance_m`、
+   `pose_goal_rotation_tolerance_rad`，且所有关节在 `pose_goal_settle_sec` 内稳定。
+   这条路径可处理漏报完成事件、短动作 active 窗口漏采样；不适用于 WORK/TOOL 或连接轨迹。
+   取消、停止、断线、FK 错误和轨迹仍 active 时不会返回成功；缺少完整事件证据仍须恢复事件通道。
+   feedback/超时日志包含 active 观测、当前轨迹、完成事件和最近的 TCP 误差。
+   通信异常触发快速停止时，结果保留初始故障与 `initial_api2_status`；若停止确认也失败，
+   会追加停止阶段原因，避免后续错误覆盖最初的通信故障。
+   状态查询超时标记连接不可用后，只要原 SDK handle 仍有效，停止仍尝试通过该 handle 下发；
+   普通运动继续被拒绝。自动重连等待当前运动 Action 终态，避免换 handle 与停机竞争。
+   `realman_driver.yaml` 的 `sdk_timeout_ms` 配置 SDK 全局接收等待（正整数毫秒，重启驱动生效）；
+   右臂现场设为 1000 ms，用于覆盖已观测到超过 SDK 默认 500 ms 的控制器回复。
+   它不改变运动截止时间，也不会自动重试失败动作。
 8. cancel 和 driver shutdown 只调用一次 `rm_set_arm_stop()`，立即终止轨迹后进入 `STOPPING`
    并等待 inactive；timeout 仍调用一次 `rm_set_arm_slow_stop()`。显式 `/stop` 同样使用
    `rm_set_arm_stop()`，可以抢占普通运动或速度 session。

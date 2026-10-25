@@ -13,7 +13,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 
 | 文件 | 管什么 | 消费者 | 专题页 |
 | --- | --- | --- | --- |
-| `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂 | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
+| `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂、SDK 接收等待 `sdk_timeout_ms`（正整数毫秒） | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_driver_mock.yaml` | 离线 mock 驱动（TEST-NET 地址，永不连接真机） | `realman_driver_test` 服务 | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_coordinates.yaml` | 每臂工具/工作坐标的**期望状态**（`tcpgrip`、`cell`、`pikabase`），启动时校验并自动修复失配 | 驱动 `CoordinateManager`、BT、Web | [Action 开发与测试](../development/realman-action-development) |
 | `realman_motion.yaml` | 每臂运动限值：普通会话 `max_*`、Pika 专用 `hard_max_*`、控制周期、watchdog、`pose_max_joint_speed_dps` | 驱动、Web、键盘/Pika router | [驱动与运动控制](../development/realman-driver-scaffold#参数) |
@@ -30,7 +30,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
 | `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用和工作区 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `camera_extrinsics.yaml` | 独立腕相机手眼结果、设备身份和物理精度验收；本地覆盖为 `camera_extrinsics.local.yaml`，导入默认未验收 | `grasp_bridge` | [腕相机抓取](../development/grasping) |
-| `grasp_task.yaml` | 目标、租约与各阶段超时、保持时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
+| `grasp_task.yaml` | 目标、租约与各阶段超时、MoveL 结果等待余量、保持时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
 | `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛及可选 `ik_precheck` | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |
@@ -90,3 +90,9 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 2. 限值有两层：普通会话上限（`max_*`）与 Pika 专用硬上限（`hard_max_*`）；调高前者会放宽键盘、Web 和行为树，调高后者只影响 Pika。
 3. 坐标配置是**期望状态**：驱动启动时若回读与配置不一致，会自动写入控制器并回读确认，写失败会关闭该臂的 motion gate。改质心、位姿前确认现场安全。
 4. 同一 ROS domain 内，`config/ros/` 中的话题名是契约；改名要同步更新[接口总表](./ros-interfaces)和消费者测试。
+
+
+`realman_motion.yaml` 的逐臂 `pose_goal_position_tolerance_m`（米）、
+`pose_goal_rotation_tolerance_rad`（弧度）、`pose_goal_settle_sec`（秒）均为正有限数，
+用于 BASE MoveL 在完成事件缺失时以稳定的当前 TCP 位姿确认到位；其它参考系沿用事件完成路径。
+`grasp_task.yaml.motion_result_grace_sec` 为正有限秒数，只延长 BT 等待驱动停止/结果的时间。

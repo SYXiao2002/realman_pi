@@ -1141,7 +1141,7 @@ def test_cancel_callback_issues_fast_stop_before_execution_poll_resumes():
 def test_cancelled_goal_can_start_again_after_event_channel_recovery():
     recovery_calls = []
     coordinator, adapter, clock, ownership = make_coordinator(
-        recover_event_channel=lambda: (
+        recover_event_channel=lambda token: (
             recovery_calls.append(True)
             or coordinator.reconcile_after_connect(connection_reset=True)
         )
@@ -1169,7 +1169,7 @@ def test_cancelled_goal_can_start_again_after_event_channel_recovery():
 def test_invalid_goal_does_not_trigger_event_channel_recovery():
     recovery_calls = []
     coordinator, _, _, _ = make_coordinator(
-        recover_event_channel=lambda: recovery_calls.append(True)
+        recover_event_channel=lambda token: recovery_calls.append(True)
     )
     coordinator._event_channel_quarantined = True
     coordinator._event_channel_recovery_generation = coordinator._generation
@@ -1182,7 +1182,7 @@ def test_invalid_goal_does_not_trigger_event_channel_recovery():
 
 
 def test_failed_event_channel_recovery_keeps_goal_rejected():
-    coordinator, _, _, _ = make_coordinator(recover_event_channel=lambda: False)
+    coordinator, _, _, _ = make_coordinator(recover_event_channel=lambda token: False)
     coordinator._event_channel_quarantined = True
     coordinator._event_channel_recovery_generation = coordinator._generation
 
@@ -2202,6 +2202,27 @@ def test_connection_loss_fast_stops_and_retains_safety_ownership():
     assert ownership.is_busy("l") is False
 
 
+def test_connection_loss_retains_original_error_when_stop_confirmation_fails():
+    coordinator, adapter, clock, ownership = make_coordinator()
+    handle = FakeGoalHandle(movej_goal())
+
+    def disconnect():
+        adapter.connected = False
+        adapter.last_error = -2
+        adapter.state_error_when_stopped = -1
+        adapter.trajectory_error_when_stopped = -1
+
+    clock.on_sleep = disconnect
+    result = coordinator.execute(handle)
+    assert not result.success
+    assert result.terminal_state == FakeResult.ABORTED
+    assert "robot connection lost during motion" in result.message
+    assert "initial_api2_status=-2" in result.message
+    assert "fast stop confirmation" in result.message
+    assert adapter.calls.count(("stop",)) == 1
+    assert ownership.is_busy("l")
+
+
 def test_invalid_current_joint_state_does_not_create_estimated_progress():
     adapter = FakeAdapter()
     adapter.joints = (float("nan"),) * 6
@@ -2224,3 +2245,73 @@ def test_arm_ownership_is_atomic_and_release_is_idempotent():
     ownership.release("l")
     ownership.release("l")
     assert ownership.is_busy("l") is False
+
+
+@pytest.mark.parametrize("missing", ["callback", "active_window"])
+def test_base_movel_uses_settled_tcp_when_event_evidence_is_missing(missing):
+    coordinator, adapter, clock, ownership = make_coordinator()
+    goal = replace(pose_goal(CommandType.MOVEL), reference_type=ReferenceType.BASE, reference_name="base", timeout_sec=1.0)
+    handle = FakeGoalHandle(goal)
+    adapter.forward_kinematics = lambda joints: (0, [*goal.pose_position_m, 0, 0, 0])
+    if missing == "active_window":
+        adapter.stopped = True
+    emitted = False
+
+    def finish():
+        nonlocal emitted
+        if emitted:
+            return
+        emitted = True
+        adapter.stopped = True
+        if missing == "active_window":
+            coordinator.handle_event(SimpleNamespace(event_type=1, trajectory_state=True, device=0))
+
+    clock.on_sleep = finish
+    result = coordinator.execute(handle)
+    assert result.success
+    assert "settled TCP pose" in result.message
+    assert clock.now >= coordinator._pose_goal_settle_sec
+    assert ownership.is_busy("l") is False
+    # A pose proof does not flush native callbacks. Reset is required before
+    # accepting another generation, rather than pretending an event arrived.
+    assert coordinator.event_channel_recovery_required
+
+
+@pytest.mark.parametrize("fault", ["position", "rotation", "fk", "active", "cancel", "nan"])
+def test_base_movel_pose_fallback_never_hides_failed_or_interrupted_motion(fault):
+    coordinator, adapter, clock, _ = make_coordinator()
+    goal = replace(pose_goal(CommandType.MOVEL), reference_type=ReferenceType.BASE, reference_name="base", timeout_sec=0.4)
+    handle = FakeGoalHandle(goal)
+    pose = [*goal.pose_position_m, 0, 0, 0]
+    if fault == "position":
+        pose[0] += 0.01
+    if fault == "rotation":
+        pose[5] = 0.1
+    if fault == "nan":
+        pose[0] = float("nan")
+    adapter.forward_kinematics = lambda joints: (1 if fault == "fk" else 0, pose)
+    if fault != "active":
+        adapter.stopped = True
+    if fault == "cancel":
+        clock.on_sleep = lambda: setattr(handle, "is_cancel_requested", True)
+    result = coordinator.execute(handle)
+    assert not result.success
+    assert "settled TCP pose" not in result.message
+
+
+def test_recovery_receives_next_goal_task_lease_without_bypassing_admission():
+    calls = []
+    coordinator, adapter, _, ownership = make_coordinator(
+        recover_event_channel=lambda token: (
+            calls.append(token)
+            or coordinator.reconcile_after_connect(connection_reset=True)
+        )
+    )
+    adapter.stopped = True
+    lease = ownership.acquire_task("l", "grasp", 60.0)
+    coordinator._event_channel_quarantined = True
+    coordinator._event_channel_recovery_generation = coordinator._generation
+    from dataclasses import asdict
+    goal = SimpleNamespace(**asdict(movej_goal()), task_token=lease.token)
+    assert coordinator.goal_callback(goal) == FakeGoalResponse.ACCEPT
+    assert calls == [lease.token]

@@ -1091,7 +1091,7 @@ def test_connect_reconciles_physical_lockout_with_read_only_trajectory_state():
 
     assert "was_connected = self.adapter.connected" in source
     assert "connection_reset=event_recovery or not was_connected" in source
-    assert "recover_event_channel=lambda: self._recover_event_channel()" in source
+    assert "recover_event_channel=lambda token: self._recover_event_channel(token)" in source
     assert "self.motion_coordinator.event_channel_recovery_required" in source
     assert "self.adapter.disconnect()" in source
     publish_state = source[source.index("    def _publish_state"):]
@@ -1110,6 +1110,8 @@ def test_publish_state_retries_quarantined_event_channel_without_direct_connect(
             get_state=lambda: state,
         ),
         motion_coordinator=SimpleNamespace(event_channel_recovery_required=True),
+        arm_id="l",
+        arm_ownership=SimpleNamespace(task_state=lambda arm: (None, False)),
         auto_connect=True,
         reconnect_interval=5.0,
         _last_connect_attempt=0.0,
@@ -1153,7 +1155,7 @@ def test_event_channel_recovery_serializes_disconnect_delay_and_reconnect():
     class Ownership:
         busy = False
 
-        def acquire(self, arm):
+        def acquire(self, arm, task_token=""):
             assert arm == "l"
             if self.busy:
                 return False
@@ -1243,7 +1245,7 @@ def test_event_channel_recovery_refuses_busy_arm_before_disconnect():
     events = []
     coordinator = SimpleNamespace(event_channel_recovery_required=True)
     ownership = SimpleNamespace(
-        acquire=lambda arm: False,
+        acquire=lambda arm, task_token="": False,
         release=lambda arm: events.append(("release", arm)),
     )
     node = SimpleNamespace(
@@ -1572,3 +1574,51 @@ def test_controller_info_service_reports_adapter_errors_without_raising():
     assert result.success is False
     assert json.loads(result.message)["error"] == "sdk exploded"
     assert messages
+
+
+@requires_ros_action_runtime
+def test_event_recovery_uses_task_token_and_timer_defers_to_lease():
+    from realman_robot_driver.motion_coordinator import ArmOwnership
+    import threading
+    ownership = ArmOwnership()
+    lease = ownership.acquire_task("l", "grasp", 60.0)
+    coordinator = SimpleNamespace(event_channel_recovery_required=True)
+    connects = []
+    def connect(*, event_recovery):
+        assert event_recovery and ownership.motion_is_busy("l")
+        connects.append(True)
+        coordinator.event_channel_recovery_required = False
+        return 0
+    node = SimpleNamespace(
+        arm_id="l", arm_ownership=ownership, motion_coordinator=coordinator,
+        auto_connect=True, reconnect_interval=1.0,
+        _event_recovery_lock=threading.Lock(),
+        _last_event_recovery_attempt=0.0, _event_recovery_delay_sec=0.0,
+        _event_recovery_retry_interval_sec=0.0,
+        _connect_to_robot=connect,
+        get_logger=lambda: SimpleNamespace(warn=lambda _: None, error=lambda _: None),
+    )
+    node._recover_event_channel = lambda: connects.append("timer must defer")
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == []
+    assert RealManDriverNode._recover_event_channel(node, "wrong") is False
+    assert node._last_event_recovery_attempt == 0.0
+    assert RealManDriverNode._recover_event_channel(node, lease.token) is True
+    assert connects == [True]
+    assert ownership.motion_is_busy("l") is False
+    assert ownership.validate_task("l", lease.token)
+
+
+@requires_ros_action_runtime
+def test_state_timeout_does_not_reconnect_during_action_stop():
+    connects=[]
+    coordinator=SimpleNamespace(event_channel_recovery_required=False,active_generation=8)
+    node=SimpleNamespace(auto_connect=True,reconnect_interval=1.0,
+        adapter=SimpleNamespace(connected=False),motion_coordinator=coordinator,
+        _last_connect_attempt=0.0,_connect_to_robot=lambda:connects.append(True),
+        get_logger=lambda:SimpleNamespace(error=lambda _:None))
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == []
+    coordinator.active_generation=None
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == [True]

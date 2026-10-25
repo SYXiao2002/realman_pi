@@ -507,6 +507,9 @@ _MOTION_FIELDS = frozenset(
         "hard_max_angular_accel_radps2",
         "hard_max_linear_accel_mps2",
         "joint_goal_tolerance_deg",
+        "pose_goal_position_tolerance_m",
+        "pose_goal_rotation_tolerance_rad",
+        "pose_goal_settle_sec",
         "stop_timeout_sec",
         "pose_max_joint_speed_dps",
     }
@@ -545,6 +548,9 @@ class MotionSettings:
     hard_max_angular_accel_radps2: float | None = None
     hard_max_linear_accel_mps2: float | None = None
     pose_max_joint_speed_dps: float = DEFAULT_POSE_MAX_JOINT_SPEED_DPS
+    pose_goal_position_tolerance_m: float = 0.002
+    pose_goal_rotation_tolerance_rad: float = 0.02
+    pose_goal_settle_sec: float = 0.2
 
     @property
     def linear_speed_hard_limit_mps(self) -> float:
@@ -679,6 +685,18 @@ class MotionSettings:
                 joint_goal_tolerance_deg=_positive_finite(
                     values.get("joint_goal_tolerance_deg", 0.25),
                     f"robots.{robot}.joint_goal_tolerance_deg",
+                ),
+                pose_goal_position_tolerance_m=_positive_finite(
+                    values.get("pose_goal_position_tolerance_m", 0.002),
+                    f"robots.{robot}.pose_goal_position_tolerance_m",
+                ),
+                pose_goal_rotation_tolerance_rad=_positive_finite(
+                    values.get("pose_goal_rotation_tolerance_rad", 0.02),
+                    f"robots.{robot}.pose_goal_rotation_tolerance_rad",
+                ),
+                pose_goal_settle_sec=_positive_finite(
+                    values.get("pose_goal_settle_sec", 0.2),
+                    f"robots.{robot}.pose_goal_settle_sec",
                 ),
                 stop_timeout_sec=_positive_finite(
                     values.get("stop_timeout_sec", 2.0), f"robots.{robot}.stop_timeout_sec"

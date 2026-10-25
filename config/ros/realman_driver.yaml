@@ -44,6 +44,10 @@
 
 /r/realman_driver:
   ros__parameters:
+    # SDK response deadline in milliseconds. Captured controller replies have
+    # exceeded the SDK default 500 ms; allow 1000 ms without retrying motion.
+    # This does not change motion deadlines, stop protection, or speed limits.
+    sdk_timeout_ms: 1000
     robot_model: RM65-B
     # Right arm controller IPv4 address.
     robot_ip: 192.168.5.124

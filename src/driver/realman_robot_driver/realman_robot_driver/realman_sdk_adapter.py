@@ -54,6 +54,9 @@ class RealManSdkAdapter:
         "rm_get_joint_en_state",
         "rm_get_joint_err_flag",
         "rm_get_arm_all_state",
+        "rm_get_current_arm_state",
+        "rm_get_arm_current_trajectory",
+        "rm_get_controller_state",
     )
 
     def __init__(
@@ -66,7 +69,11 @@ class RealManSdkAdapter:
         mock_mode: bool,
         arm_id: str = "",
         soft_reconnect_attempts: int = 3,
+        sdk_timeout_ms: int = 500,
     ) -> None:
+        if type(sdk_timeout_ms) is not int or sdk_timeout_ms <= 0:
+            raise ValueError("sdk_timeout_ms must be a positive integer in milliseconds")
+        self.sdk_timeout_ms = sdk_timeout_ms
         self.ip = ip
         self.port = port
         self.thread_mode = thread_mode
@@ -174,6 +181,8 @@ class RealManSdkAdapter:
             try:
                 mode = getattr(rm_thread_mode_e, self.thread_mode)
                 robot = RoboticArm(mode)
+                if self.sdk_timeout_ms != 500:
+                    robot.rm_set_timeout(self.sdk_timeout_ms)
                 handle = robot.rm_create_robot_arm(self.ip, self.port)
                 connected = _is_valid_handle(handle)
                 if not connected:
@@ -1020,7 +1029,7 @@ class RealManSdkAdapter:
                 if not allow_disconnect or self._destroying:
                     self._set_failure_locked(-1, "robot is not connected")
                     return None, None, -1
-            elif not self._connected:
+            elif not self._connected and not allow_disconnect:
                 self._set_failure_locked(-1, "robot is not connected")
                 return None, None, -1
             if self._robot is None:

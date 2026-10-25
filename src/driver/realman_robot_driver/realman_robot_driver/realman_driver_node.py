@@ -98,6 +98,7 @@ class RealManDriverNode(Node):
         self.thread_mode = self.declare_parameter("thread_mode", "RM_TRIPLE_MODE_E").value
         self.mock_mode = bool(self.declare_parameter("mock_mode", False).value)
         self.auto_connect = bool(self.declare_parameter("auto_connect", True).value)
+        self.sdk_timeout_ms = self.declare_parameter("sdk_timeout_ms", 500).value
         self.reconnect_interval = float(
             self.declare_parameter("reconnect_interval", 5.0).value
         )
@@ -182,6 +183,7 @@ class RealManDriverNode(Node):
             robot_model=self.robot_model,
             mock_mode=self.mock_mode,
             arm_id=self.arm_id,
+            sdk_timeout_ms=self.sdk_timeout_ms,
         )
         if self.mock_mode:
             self.adapter.configure_mock_coordinate_profile(profile)
@@ -205,9 +207,12 @@ class RealManDriverNode(Node):
             active_reference=lambda reference_type: self._active_references[reference_type],
             action_type=ExecuteMotion,
             trajectory_action_type=ExecuteTrajectory,
-            recover_event_channel=lambda: self._recover_event_channel(),
+            recover_event_channel=lambda token: self._recover_event_channel(token),
             stop_timeout_sec=self.motion_settings.stop_timeout_sec,
             joint_goal_tolerance_deg=self.motion_settings.joint_goal_tolerance_deg,
+            pose_goal_position_tolerance_m=self.motion_settings.pose_goal_position_tolerance_m,
+            pose_goal_rotation_tolerance_rad=self.motion_settings.pose_goal_rotation_tolerance_rad,
+            pose_goal_settle_sec=self.motion_settings.pose_goal_settle_sec,
             logger=self.get_logger(),
             before_motion=lambda: self.velocity_session.prepare_for_ordinary_motion(),
         )
@@ -1182,7 +1187,7 @@ class RealManDriverNode(Node):
                 )
             return -1
 
-    def _recover_event_channel(self) -> bool:
+    def _recover_event_channel(self, task_token: str = "") -> bool:
         """Reset a stale callback channel after a confirmed inactive stop."""
         if not self.motion_coordinator.event_channel_recovery_required:
             return True
@@ -1196,13 +1201,13 @@ class RealManDriverNode(Node):
                 < self._event_recovery_retry_interval_sec
             ):
                 return False
-            self._last_event_recovery_attempt = now
-            owns_arm = self.arm_ownership.acquire(self.arm_id)
+            owns_arm = self.arm_ownership.acquire(self.arm_id, task_token)
             if not owns_arm:
                 self.get_logger().warn(
                     f"Motion event channel recovery refused: arm {self.arm_id} is busy"
                 )
                 return False
+            self._last_event_recovery_attempt = now
             if not self.motion_coordinator.event_channel_recovery_required:
                 return True
             self.get_logger().warn(
@@ -1235,6 +1240,11 @@ class RealManDriverNode(Node):
         now = time.monotonic()
         try:
             if self.motion_coordinator.event_channel_recovery_required:
+                # A task lease spans waypoints; its next goal supplies the
+                # token for recovery. A tokenless timer must not race it.
+                lease, _ = self.arm_ownership.task_state(self.arm_id)
+                if lease is not None:
+                    return
                 if (
                     now - self._last_event_recovery_attempt
                     >= self.reconnect_interval
@@ -1243,6 +1253,9 @@ class RealManDriverNode(Node):
                 return
             if (
                 not self.adapter.connected
+                # Keep the existing handle available for the active action's
+                # stop attempt. Reconnect may only replace it after terminal.
+                and self.motion_coordinator.active_generation is None
                 and now - self._last_connect_attempt >= self.reconnect_interval
             ):
                 self._connect_to_robot()

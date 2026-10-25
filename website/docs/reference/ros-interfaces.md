@@ -28,7 +28,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/<arm>/connect` `disconnect` `stop` `status` | `std_srvs/Trigger` | 连接生命周期、软件受控停止、状态 |
 | `/<arm>/task_control` | `realman_msgs/TaskControl` | 按臂获取、续期、释放/撤销与查询任务租约；同一 token 覆盖机械臂和夹爪 |
 | `/<arm>/recover_motion` | `realman_msgs/RecoverMotion` | 取消后重建事件通道；不发送运动 |
-| `/<arm>/controller_info` | `std_srvs/Trigger` | 只读控制器信息（JSON），用于比对两台控制器 |
+| `/<arm>/controller_info` | `std_srvs/Trigger` | 只读控制器信息（JSON），含版本、关节/TCP、错误、当前轨迹及控制器状态 |
 | `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 关节 FK → 当前位姿（按已验证参考系） |
 | `/<arm>/forward_kinematics` | `realman_msgs/ForwardKinematics` | 任意关节角的 FK |
 | `/<arm>/solve_ik` | `realman_msgs/SolveIk` | 参考系目标 → 关节解（度） |

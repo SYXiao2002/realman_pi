@@ -10,6 +10,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .pose_math import euler_to_quaternion
+from .quaternion_math import normalize
+
 from .motion_types import (
     CommandType,
     FeedbackPhase,
@@ -202,12 +205,15 @@ class MotionCoordinator:
         trajectory_action_type: Any | None = None,
         goal_response_type: Any | None = None,
         cancel_response_type: Any | None = None,
-        recover_event_channel: Callable[[], bool] | None = None,
+        recover_event_channel: Callable[[str], bool] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         poll_period_sec: float = 0.02,
         stop_timeout_sec: float = 2.0,
         joint_goal_tolerance_deg: float = 0.25,
+        pose_goal_position_tolerance_m: float = 0.002,
+        pose_goal_rotation_tolerance_rad: float = 0.02,
+        pose_goal_settle_sec: float = 0.2,
         logger: Any | None = None,
         before_motion: Callable[[], None] | None = None,
     ) -> None:
@@ -224,6 +230,13 @@ class MotionCoordinator:
             raise ValueError(
                 "joint_goal_tolerance_deg must be a positive finite number"
             )
+        for name, value in (
+            ("pose_goal_position_tolerance_m", pose_goal_position_tolerance_m),
+            ("pose_goal_rotation_tolerance_rad", pose_goal_rotation_tolerance_rad),
+            ("pose_goal_settle_sec", pose_goal_settle_sec),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be a positive finite number")
         if action_type is None:
             from realman_msgs.action import ExecuteMotion
 
@@ -259,6 +272,9 @@ class MotionCoordinator:
         self._poll_period_sec = poll_period_sec
         self._stop_timeout_sec = stop_timeout_sec
         self._joint_goal_tolerance_deg = joint_goal_tolerance_deg
+        self._pose_goal_position_tolerance_m = pose_goal_position_tolerance_m
+        self._pose_goal_rotation_tolerance_rad = pose_goal_rotation_tolerance_rad
+        self._pose_goal_settle_sec = pose_goal_settle_sec
         self._logger = logger
 
         self._lock = threading.RLock()
@@ -351,7 +367,7 @@ class MotionCoordinator:
             recovered = False
             if callback is not None:
                 try:
-                    recovered = bool(callback())
+                    recovered = bool(callback(getattr(goal_request, "task_token", "")))
                 except Exception as error:
                     self._log(
                         "error",
@@ -600,6 +616,9 @@ class MotionCoordinator:
             )
             deadline = self._monotonic() + goal.timeout_sec
             observed_active_trajectory = submission_event_received
+            settled_since: float | None = None
+            settled_joints: tuple[float, ...] = ()
+            pose_detail = "pose proof unavailable"
             while True:
                 if self._fast_stop_requested(generation):
                     return self._finish_after_requested_fast_stop(
@@ -684,7 +703,10 @@ class MotionCoordinator:
                     current_joints,
                     progress,
                     api2_status,
-                    "waiting for correlated trajectory completion",
+                    "waiting for correlated trajectory completion; "
+                    f"observed_active={observed_active_trajectory} "
+                    f"trajectory_active={trajectory_active} completion_event={completion_event}; "
+                    + pose_detail,
                 )
 
                 # The SDK event callback has no goal-generation marker.  A
@@ -726,14 +748,69 @@ class MotionCoordinator:
                         current_joints,
                         "motion completed",
                     )
+                # A short BASE MOVEL can finish between trajectory polls, or
+                # lose its SDK completion callback. Use actual TCP convergence,
+                # never inactivity alone, as independent completion evidence.
+                pose_errors = None
+                if (goal.command == CommandType.MOVEL
+                        and goal.reference_type == ReferenceType.BASE
+                        and trajectory_active is False and state_connected is True
+                        and observed_joints):
+                    pose_errors = self._base_pose_errors(goal, observed_joints)
+                if pose_errors is not None:
+                    position_error, rotation_error = pose_errors
+                    pose_detail = (f"position_error_m={position_error:.6f} "
+                                   f"rotation_error_rad={rotation_error:.6f}")
+                else:
+                    pose_detail = "pose proof unavailable"
+                if (pose_errors is not None
+                        and pose_errors[0] <= self._pose_goal_position_tolerance_m
+                        and pose_errors[1] <= self._pose_goal_rotation_tolerance_rad):
+                    if (settled_since is None or any(
+                            abs(a - b) > self._joint_goal_tolerance_deg
+                            for a, b in zip(observed_joints, settled_joints))):
+                        settled_since = self._monotonic()
+                        settled_joints = observed_joints
+                    elif self._monotonic() - settled_since >= self._pose_goal_settle_sec:
+                        # FK and status queries may release the GIL. Recheck
+                        # interruption under the same lock used for SDK submission.
+                        with self._condition:
+                            if (self._fast_stop_generation == generation
+                                    or self._shutdown_generation == generation
+                                    or self._cancel_generation == generation
+                                    or bool(getattr(goal_handle, "is_cancel_requested", False))
+                                    or self._monotonic() >= deadline):
+                                continue
+                            status, inactive = self._read_trajectory()
+                            if (status == 0 and inactive is False
+                                    and self._fast_stop_generation != generation
+                                    and self._shutdown_generation != generation
+                                    and self._cancel_generation != generation
+                                    and not bool(getattr(goal_handle, "is_cancel_requested", False))
+                                    and bool(getattr(self.adapter, "connected", False))
+                                    and self._monotonic() < deadline):
+                                self._mark_event_channel_recovery_ready(generation)
+                                message = "motion completed by settled TCP pose; " + pose_detail
+                                self._log("warn", message + "; resetting unconfirmed event channel")
+                                return self._finish(
+                                    goal_handle, generation, TerminalState.SUCCEEDED,
+                                    0, current_joints, message,
+                                )
+                else:
+                    settled_since = None
+                    settled_joints = ()
                 if self._monotonic() >= deadline:
+                    detail = (f"motion timeout: observed_active={observed_active_trajectory} "
+                              f"trajectory_active={trajectory_active} "
+                              f"completion_event={completion_event}; {pose_detail}")
+                    self._log("warn", detail)
                     return self._controlled_stop(
                         goal_handle,
                         generation,
                         goal,
                         TerminalState.TIMEOUT,
                         current_joints,
-                        "motion timeout",
+                        detail,
                     )
                 self._sleep(self._poll_period_sec)
         except Exception as error:
@@ -1640,7 +1717,7 @@ class MotionCoordinator:
                 if requested_terminal == TerminalState.ABORTED:
                     message = "motion aborted after driver shutdown stop"
                 elif requested_terminal == TerminalState.TIMEOUT:
-                    message = "motion timed out and stopped"
+                    message = "motion timed out and stopped; " + reason
                 else:
                     message = "motion canceled after controlled stop"
                 return self._finish(
@@ -1676,6 +1753,8 @@ class MotionCoordinator:
         result_status: int = 0,
     ) -> Any:
         """Immediately stop a canceled or interrupted submitted motion."""
+        reason = f"{reason}; initial_api2_status={result_status}"
+        self._log("warn", "Stopping motion: " + reason)
         if self._fast_stop_requested(generation):
             return self._finish_after_fast_stop(
                 goal_handle,
@@ -1683,6 +1762,7 @@ class MotionCoordinator:
                 current_joints,
                 terminal_state=requested_terminal,
                 result_status=result_status,
+                reason=reason,
             )
         self._publish_feedback(
             goal_handle,
@@ -1699,6 +1779,7 @@ class MotionCoordinator:
                 goal_handle,
                 generation,
                 current_joints,
+                reason=reason,
             )
         return self._finish_after_fast_stop(
             goal_handle,
@@ -1706,6 +1787,7 @@ class MotionCoordinator:
             current_joints,
             terminal_state=requested_terminal,
             result_status=result_status,
+            reason=reason,
         )
 
     def _request_stop_once(self, generation: int) -> int:
@@ -1913,6 +1995,7 @@ class MotionCoordinator:
         result_status: int = 0,
     ) -> Any:
         """Finish only after a fast stop is known to have reached idle."""
+        context = f"{reason}; " if reason else ""
         status = self._wait_for_fast_stop_status(generation)
         if status is None:
             self._enter_lockout()
@@ -1922,7 +2005,7 @@ class MotionCoordinator:
                 TerminalState.ABORTED,
                 -1,
                 current_joints,
-                "fast stop status did not arrive before the safety deadline",
+                context + "fast stop status did not arrive before the safety deadline",
             )
         if status != 0:
             self._enter_lockout()
@@ -1932,7 +2015,7 @@ class MotionCoordinator:
                 TerminalState.ABORTED,
                 status,
                 current_joints,
-                f"fast stop failed with API2 status {status}",
+                context + f"fast stop failed with API2 status {status}",
             )
 
         deadline = self._monotonic() + self._stop_timeout_sec
@@ -1950,7 +2033,7 @@ class MotionCoordinator:
                     TerminalState.ABORTED,
                     api2_status,
                     current_joints,
-                    "fast stop confirmation reported an API2 error",
+                    context + "fast stop confirmation reported an API2 error",
                 )
             if state_connected is False:
                 self._enter_lockout()
@@ -1960,7 +2043,7 @@ class MotionCoordinator:
                     TerminalState.ABORTED,
                     _nonzero_status(state_status),
                     current_joints,
-                    "robot connection lost while confirming fast stop",
+                    context + "robot connection lost while confirming fast stop",
                 )
             if trajectory_active is False:
                 self._mark_event_channel_recovery_ready(generation)
@@ -1980,7 +2063,7 @@ class MotionCoordinator:
                     TerminalState.ABORTED,
                     -1,
                     current_joints,
-                    "fast stop could not be confirmed by an inactive trajectory",
+                    context + "fast stop could not be confirmed by an inactive trajectory",
                 )
             self._sleep(self._poll_period_sec)
 
@@ -2145,6 +2228,27 @@ class MotionCoordinator:
             abs(actual - expected) <= self._joint_goal_tolerance_deg
             for actual, expected in zip(observed, target)
         )
+
+    def _base_pose_errors(
+        self, goal: ValidatedGoal, joints: tuple[float, ...]
+    ) -> tuple[float, float] | None:
+        try:
+            if not self.coordinate_manager.motion_allowed(self.arm_id):
+                return None
+            status, raw_pose = self.adapter.forward_kinematics(list(joints))
+            pose = _finite_vector(raw_pose, 6)
+            if status != 0 or not pose:
+                return None
+            position_error = math.dist(pose[:3], goal.pose_position_m)
+            actual = euler_to_quaternion(*pose[3:])
+            target = normalize(goal.pose_quaternion_wxyz)
+            dot = abs(sum(a * b for a, b in zip(actual, target)))
+            rotation_error = 2.0 * math.acos(min(1.0, dot))
+            return position_error, rotation_error
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            # Missing/invalid FK cannot become success. Preserve the normal
+            # event path and timeout for adapters without physical pose proof.
+            return None
 
     def _read_trajectory(self) -> tuple[int, bool | None]:
         try:
