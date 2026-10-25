@@ -76,9 +76,10 @@ R=`2.583,30.02,93.644,2.532,56.142,-0.285`，不会解析或连接 M 臂。
 ```text
 TaskLease（获取并持续续租）
   -> Repeat（按 grasp_task.yaml 的 cycles）
-     -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
-     -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
-     -> GraspHold -> MoveJ 返回位 -> TaskGripper open
+     -> Retry（最多 3 次完整尝试）
+        -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
+        -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
+        -> GraspHold -> MoveJ 返回位 -> TaskGripper open
   -> 空闲后释放 lease
 ```
 
@@ -94,7 +95,7 @@ BASE 下的 MoveL；它与闭爪步骤都会拒绝过期计划。观察与返回
 | --- | --- | --- |
 | `profile`、`target_label`、`backend` | 显式身份；后端为 `geometry/contact_graspnet/mock` | `mock` 不允许进入真机执行；目标不能留空 |
 | `lease_ttl_sec`、`acquire_timeout_sec` | 正有限秒数 | lease 有效期和获取上限；整个子树持续续租 |
-| `cycles` | `-1` 或正整数 | 完整抓取轮数；`-1` 持续循环，任一轮失败都会停止 |
+| `cycles` | `-1` 或正整数 | 完整抓取轮数；`-1` 持续循环，每轮最多进行 3 次完整尝试 |
 | `motion_timeout_sec`、`plan_timeout_sec`、`gripper_timeout_sec` | 正有限秒数 | 各阶段超时；夹爪上限须覆盖 manager 的到位等待 |
 | `motion_result_grace_sec` | 正有限秒数 | MoveL 提交后额外等待驱动停止和 Action 结果的时间；不延长驱动的运动期限 |
 | `hold_sec` | 正有限秒数 | 抬起后的短暂停留 |
@@ -105,7 +106,8 @@ BT 不检查人工 `verified`、实测误差或走廊审批字段。结构有效
 `REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
 抓取树默认按 `config/ros/grasp_task.yaml` 的 `cycles` 循环完整抓取流程；`-1` 表示持续运行直到手动停止，
-正整数表示完成指定次数。某一轮失败会中断抓取流程并释放 lease，不会自动重新开夹重试。
+正整数表示完成指定次数。一次尝试失败后会释放该次任务 lease，再从开夹和观察位重新开始，最多尝试 3 次；
+三次均失败时树进入 FAILURE 并释放 lease。此策略可恢复瞬时 TF/感知故障，不会绕过 `PlanGrasp` 的新鲜度、工作区或 IK 校验。
 当前 `grasp.xml` 设置 `realman_stop_on_terminal=false`、`realman_exit_on_terminal=false`，
 因此终态后保留 executor 和诊断页面，等待显式终止；循环运行期间 executor、监视器和 `8765` 的运行状态保持可查看。
 需要结束本次循环会话时，在 `8765` 点击“终止行为树”，
