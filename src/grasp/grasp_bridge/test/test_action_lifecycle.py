@@ -327,5 +327,5 @@ def test_latest_flange_tf_requires_recent_feedback(graph, monkeypatch, offset_se
     value.header.stamp.sec, value.header.stamp.nanosec = divmod(timestamp, 1_000_000_000)
     value.transform.rotation.w = 1.
     monkeypatch.setattr(node.tf, "lookup_transform", lambda *a, **k: value)
-    with pytest.raises(ValueError, match="latest flange TF is stale or future"):
+    with pytest.raises(ValueError, match=r"latest flange TF is stale or future.*parent=r/base_link, child=r/link_6.*age_ms=.*max_age_ms=250.0"):
         node.lookup("r/base_link", "r/link_6", 0)

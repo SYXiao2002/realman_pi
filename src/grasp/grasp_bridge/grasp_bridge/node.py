@@ -158,9 +158,14 @@ class GraspBridge(Node):
         if timestamp_ns == 0:
             now_ns = self.get_clock().now().nanoseconds
             stamp = stamp_ns(value)
-            if (stamp <= 0 or stamp > now_ns + 10_000_000
-                    or now_ns - stamp > self.settings["maximum_joint_state_age_sec"] * 1e9):
-                raise ValueError("latest flange TF is stale or future; pose drift cannot be verified")
+            age_ns = now_ns - stamp
+            max_age_ns = int(self.settings["maximum_joint_state_age_sec"] * 1e9)
+            if stamp <= 0 or stamp > now_ns + 10_000_000 or age_ns > max_age_ns:
+                raise ValueError(
+                    "latest flange TF is stale or future; pose drift cannot be verified "
+                    f"(parent={parent}, child={child}, stamp_ns={stamp}, now_ns={now_ns}, "
+                    f"age_ms={age_ns / 1e6:.1f}, max_age_ms={max_age_ns / 1e6:.1f})"
+                )
         p, q = value.transform.translation, value.transform.rotation
         return from_pose([p.x, p.y, p.z], [q.w, q.x, q.y, q.z])
 

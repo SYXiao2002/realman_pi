@@ -125,6 +125,8 @@ def _launch_nodes(context):
                         {
                             "frame_prefix": frame_prefix,
                             "robot_description": robot_description,
+                            # Match the RealMan driver's reliable publisher.
+                            "qos_overrides./joint_states.subscription.reliability": "reliable",
                         }
                     ],
                 ),
