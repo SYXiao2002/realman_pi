@@ -6,7 +6,7 @@ version: 1
 # Number of complete grasp cycles: -1 keeps repeating until stopped; a positive
 # value runs that many successful cycles. Any failed cycle stops the task.
 cycles: -1
-lease_ttl_sec: 600.0
+lease_ttl_sec: 10800.0
 acquire_timeout_sec: 10.0
 motion_timeout_sec: 30.0
 # Let the driver finish its bounded stop and return diagnostic results before
