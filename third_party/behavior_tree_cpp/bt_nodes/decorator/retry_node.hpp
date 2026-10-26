@@ -35,6 +35,7 @@ class RetryNode : public bt_core::DecoratorNode {
   }
 
   bt_core::NodeStatus tick() override {
+    setFailureReason("");
     if (!child()) {
       return bt_core::NodeStatus::FAILURE;
     }
@@ -56,6 +57,7 @@ class RetryNode : public bt_core::DecoratorNode {
           return bt_core::NodeStatus::RUNNING;
         }
         // 次数耗尽 → 最终失败。
+        setFailureReason(child()->failureReason());
         attempts_done_ = 0;
         return bt_core::NodeStatus::FAILURE;
       }

@@ -203,7 +203,7 @@ BT 在 halt 时先清除内部 token/计划，再移交在途取消与释放；d
 | --- | --- | --- |
 | `Fallback` | 无 | 有状态的优先级列表：依次尝试子节点，第一个 `SUCCESS` 即成功，全部失败才失败；与 `ReactiveFallback` 不同，已在 `RUNNING` 的子节点不会被重新评估 |
 | `Repeat` | `num_cycles`（默认 1，`-1` 无限） | 子节点每成功一次计一轮，达到轮数返回 `SUCCESS`；子节点失败则整体失败。每一轮之间会 `halt()` 子节点 |
-| `Retry` | `num_attempts`（默认 1，`-1` 无限） | 子节点失败时 `halt()` 后重跑，次数含首次；`RUNNING` 不消耗次数 |
+| `Retry` | `num_attempts`（默认 1，`-1` 无限） | 子节点失败时 `halt()` 后重跑，次数含首次；`RUNNING` 不消耗次数；重试耗尽向上传递最后一次子节点失败原因 |
 | `MotionDwellMonitor` | `arm_id`、`dwell_sec`、`tolerance_deg`、`on_dwell` | 子节点运行时，指定的臂在同一姿态停留超过 `dwell_sec` 就 `halt()` 子节点并返回 `on_dwell`（默认 `FAILURE`），见 [动作停留监控](#动作停留监控) |
 | `RetryUnlessFault` | `num_attempts`（默认 1，`-1` 无限）；`timeout_attempts`（默认 0，`-1` 无限）；`timeout_backoff_sec`（默认 0） | 同 `Retry`，但失败的叶节点若已把黑板键 `policy_fault` 置为 `true`，立即返回 `FAILURE`，不再消耗剩余次数；若置位的是 `policy_timeout`，且 `timeout_attempts` 不为 0，则这次失败不占 `num_attempts`，改按 `timeout_attempts` 计数，并在等待 `timeout_backoff_sec` 后重试 |
 

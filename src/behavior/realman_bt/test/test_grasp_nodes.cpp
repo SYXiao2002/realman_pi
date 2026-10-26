@@ -10,6 +10,7 @@
 
 #include "bt_core/xml_parser.hpp"
 #include "bt_nodes/decorator/repeat_node.hpp"
+#include "bt_nodes/decorator/retry_node.hpp"
 #include "bt_nodes/control/sequence_node.hpp"
 #include "realman_bt/grasp_nodes.hpp"
 #include "realman_bt/move_j_node.hpp"
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
   bt_core::NodeFactory factory;
   factory.registerNodeType<bt_nodes::SequenceNode>("Sequence");
   factory.registerNodeType<bt_nodes::RepeatNode>("Repeat");
+  factory.registerNodeType<bt_nodes::RetryNode>("Retry");
   factory.registerNodeType<realman_bt::TaskLeaseNode>("TaskLease");
   factory.registerNodeType<realman_bt::PlanGraspNode>("PlanGrasp");
   factory.registerNodeType<realman_bt::TaskGripperNode>("TaskGripper");
