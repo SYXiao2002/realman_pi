@@ -9,6 +9,10 @@
 .grasp-wide { grid-column:1 / -1; }
 .grasp-layout-heading,.grasp-pose-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
 .grasp-layout-heading h2,.grasp-pose-heading h3 { margin:0; }
+.layout-tools { display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:flex-end; }
+.layout-tools label { display:flex; align-items:center; gap:7px; color:var(--text-2); font-size:11px; white-space:nowrap; }
+.layout-tools input[type="range"] { width:120px; accent-color:var(--primary); }
+.layout-tools output { min-width:42px; color:var(--text-3); font:11px ui-monospace,monospace; }
 .grasp-pose-heading { margin-top:16px; flex-wrap:wrap; }
 .grasp-pose-heading h3,.grasp-pose h3 { font-size:13px; }
 .grasp-pose-heading label { display:flex; align-items:center; gap:8px; color:var(--text-2); font-size:12px; }

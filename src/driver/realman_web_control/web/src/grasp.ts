@@ -19,7 +19,7 @@ app.innerHTML = `
         <label>CGN 点云范围<select id="cgn-context"><option value="mask">mask</option><option value="box">box</option><option value="full">full</option></select></label>
         <button id="evaluate" class="button primary" type="button">采集并评估</button>
       </div><div class="grasp-actions"><span class="grasp-readonly">采集与选择候选不会运动；在基座系 MOVEL 面板点击发送后执行直线运动。</span><span id="state" class="grasp-state">等待 bridge 观测</span></div></section>
-      <section class="panel grasp-panel grasp-wide"><div class="grasp-layout-heading"><h2>采集时机械臂布局</h2><button id="fit-layout" class="button ghost" type="button">重置取景</button></div><canvas id="layout" class="layout-canvas" aria-label="采集时机械臂与对齐后抓取位姿"></canvas><p id="viewer-status" class="hint"></p>
+      <section class="panel grasp-panel grasp-wide"><div class="grasp-layout-heading"><div><h2>采集时机械臂布局</h2><p class="hint">彩色点云由采集 RGB 与注册深度逐像素反投影，点云在相机光学系并按拍照时外参放入基座系。</p></div><div class="layout-tools"><label for="layout-point-size">点大小 <input id="layout-point-size" type="range" min="1" max="20" value="8" step="1"><output id="layout-point-size-value">8 mm</output></label><button id="fit-layout" class="button ghost" type="button">重置取景</button></div></div><canvas id="layout" class="layout-canvas" aria-label="采集时机械臂、RGB 反投影点云与抓取候选"></canvas><p id="viewer-status" class="hint"></p>
         <div class="grasp-pose-heading"><h3>所选候选 · 接触中心 Pose</h3><label>候选<select id="pose-candidate" disabled><option value="">选择候选</option></select></label></div><p id="pose-status" class="hint" role="status">等待评估结果</p>
         <div class="grasp-poses"><section class="grasp-pose"><h3>对齐前</h3><div id="pose-before">—</div></section><section class="grasp-pose"><h3>对齐后</h3><div id="pose-after">—</div></section></div>
       </section>
@@ -30,7 +30,7 @@ app.innerHTML = `
         <div><h3>对齐前 · 原始生成</h3><figure class="grasp-image"><canvas id="projection" aria-label="对齐前 RGB 线框投影"></canvas><figcaption>对齐前 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view" aria-label="对齐前 RGB-D 相机系点云"></canvas><figcaption>对齐前 / 点云</figcaption></figure></div>
         <div><h3>对齐后 · 基座 −Z</h3><figure class="grasp-image"><canvas id="projection-after" aria-label="对齐后 RGB 线框投影"></canvas><figcaption>对齐后 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view-after" aria-label="对齐后 RGB-D 相机系点云"></canvas><figcaption>对齐后 / 点云</figcaption></figure></div>
         </div><p class="hint">同步旋转与缩放 · 默认 Top 5 · 两侧同编号同色。线框沿用原离线预览的算法示意尺寸，不代表实测夹爪。</p><div id="candidate-legend" class="candidate-legend" aria-label="候选显示开关"></div></section>
-      <section class="panel grasp-panel"><h2>Policy 候选</h2><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th><th>规划</th><th>拒绝原因</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="8">等待评估结果</td></tr></tbody></table></div></section>
+      <section class="panel grasp-panel"><h2>Policy 候选</h2><p class="hint">几何候选 ID 格式为“分割实例 ID:该实例内序号”（从 0 开始），如 16:0 表示实例 16 的第 1 个候选。</p><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th><th>规划</th><th>拒绝原因</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="8">等待评估结果</td></tr></table></div></section>
     </div>
     <aside class="grasp-side">
       <section class="panel grasp-panel"><h2>采集信息与 readiness</h2><dl id="details" class="grasp-details"><div><dt>Profile</dt><dd>—</dd></div></dl><div id="readiness" class="readiness-list" role="status">等待 readiness</div></section>
@@ -44,6 +44,7 @@ const profile = $<HTMLSelectElement>("#profile"), target = $<HTMLSelectElement>(
 const backend = $<HTMLSelectElement>("#backend"), reviewCandidate = $<HTMLSelectElement>("#review-candidate");
 const cgnContext = $<HTMLSelectElement>("#cgn-context");
 const poseCandidate = $<HTMLSelectElement>("#pose-candidate");
+const pointSize = $<HTMLInputElement>("#layout-point-size"), pointSizeValue = $<HTMLOutputElement>("#layout-point-size-value");
 const verdict = $<HTMLSelectElement>("#verdict"), notes = $<HTMLTextAreaElement>("#notes");
 const evaluate = $<HTMLButtonElement>("#evaluate"), rows = $("#candidate-rows");
 let socket: WebSocket | undefined, observation: EventMessage | undefined;
@@ -297,6 +298,7 @@ for (const select of [profile, target, backend, cgnContext]) select.addEventList
 reviewCandidate.addEventListener("change", () => selectCandidate(reviewCandidate.value));
 poseCandidate.addEventListener("change", () => selectCandidate(poseCandidate.value));
 $("#fit-layout").addEventListener("click", () => viewer.resetLayoutView());
+pointSize.addEventListener("input", () => { pointSizeValue.value = `${pointSize.value} mm`; viewer.setPointSize(Number(pointSize.value) / 1000); });
 $("#save-review").addEventListener("click", () => { if (!observation) return; try { localStorage.setItem(storageKey(), JSON.stringify(reviewRecord())); $("#review-status").textContent = "已保存在此浏览器"; } catch { $("#review-status").textContent = "本地存储不可用，请导出 JSON"; } });
 $("#export-review").addEventListener("click", () => {
   if (!observation) return; const payload = { schema: "grasp-review/v1", observation, review: reviewRecord() };
