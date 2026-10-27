@@ -142,6 +142,9 @@ export class GraspView {
   }
   resetLayoutView() {
     const view = this.views[2]; if (!view || !this.snapshot) return;
+    // 优先从腕部相机的真实光学位姿取景，使 pose 与相机采集时看到的一致。
+    const config = this.layout?.robots.find((robot: any) => robot.id === this.snapshot.arm);
+    if (config && this.snapshot.T_base_camera && this.applyCameraViewpoint(view, config)) return;
     const bounds = new THREE.Box3().setFromObject(view.data);
     if (bounds.isEmpty()) {
       const active = this.robots.get(this.snapshot.arm);
@@ -155,6 +158,26 @@ export class GraspView {
     view.controls.target.copy(sphere.center);
     view.camera.position.copy(sphere.center).add(new THREE.Vector3(1, -1.4, .9).normalize().multiplyScalar(distance));
     view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
+  }
+  /** 把布局视图放到相机光学中心，沿光学 +Z 注视、图像上方为 -Y；成功返回 true。 */
+  private applyCameraViewpoint(view: any, config: any): boolean {
+    // 与 update() 中一致的基座世界变换：position + Euler(roll, pitch, yaw, "ZYX")。
+    const base = new THREE.Matrix4().compose(
+      new THREE.Vector3(config.transform.x, config.transform.y, config.transform.z),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(config.transform.roll, config.transform.pitch, config.transform.yaw, "ZYX")),
+      new THREE.Vector3(1, 1, 1));
+    const camWorld = base.multiply(matrix(this.snapshot.T_base_camera));
+    const origin = new THREE.Vector3(camWorld.elements[12], camWorld.elements[13], camWorld.elements[14]);
+    // 光学系坐标轴在世界系下的方向：第 2 列为 +Z（前），第 1 列为 +Y（下）。
+    const forward = new THREE.Vector3(camWorld.elements[8], camWorld.elements[9], camWorld.elements[10]);
+    const down = new THREE.Vector3(camWorld.elements[4], camWorld.elements[5], camWorld.elements[6]);
+    if (forward.lengthSq() < 1e-9 || down.lengthSq() < 1e-9) return false;
+    forward.normalize(); down.normalize();
+    view.camera.up.copy(down).negate();          // 图像上方 = -光学 Y
+    view.camera.position.copy(origin);           // 视点位于相机光学中心
+    view.controls.target.copy(origin).add(forward.multiplyScalar(0.5));
+    view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
+    return true;
   }
   update(snapshot: any, selected: string, visible?: Set<string>) {
     const newObservation = snapshot && (snapshot.observation_id !== this.snapshot?.observation_id || snapshot.phase !== this.snapshot?.phase);
