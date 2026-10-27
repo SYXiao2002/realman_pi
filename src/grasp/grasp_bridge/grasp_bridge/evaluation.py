@@ -9,6 +9,11 @@ import numpy as np
 from .geometry import transform
 
 
+# Keep the review payload close to the offline Plotly preview while staying
+# bounded for the WebSocket/UI path. Inference receives the same workspace-cropped depth.
+DISPLAY_CLOUD_MAX_POINTS = 35000
+
+
 def json_value(value):
     if isinstance(value, np.ndarray):
         return json_value(value.tolist())
@@ -31,12 +36,22 @@ def image_url(array, extension=".jpg"):
     return f"data:image/{mime};base64," + base64.b64encode(encoded).decode("ascii")
 
 
+def _workspace_bounds(profile):
+    try:
+        bounds = np.asarray(profile.get("workspace_m"), dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[0] >= bounds[1]):
+        return None
+    return bounds
+
+
 def snapshot(observation, profile, request, *, response=None, plan=None, rejections=None, source="web_evaluation", phase="captured", detail=""):
     """Keep RGB, registered depth, cloud and candidates in one atomic event.
 
     Points are in rectified color optical coordinates (+X right,+Y down,+Z
-    forward). The full depth used by inference is never downsampled; only this
-    display cloud is capped to 4096 points.
+    forward). The depth was cropped to the profile workspace before inference;
+    only this display cloud is capped to DISPLAY_CLOUD_MAX_POINTS points.
     """
     color, depth, K = (np.asarray(observation[key]) for key in ("color_bgr", "depth_m", "K"))
     valid = np.isfinite(depth) & (depth > 0)
@@ -55,12 +70,31 @@ def snapshot(observation, profile, request, *, response=None, plan=None, rejecti
             raise ValueError("invalid display z range")
         cloud_valid = valid & (depth > bounds[0]) & (depth < bounds[1])
     yy, xx = np.nonzero(cloud_valid)
-    stride = max(1, math.ceil(len(xx)/4096))
-    yy, xx = yy[::stride], xx[::stride]
     zz = depth[yy, xx]
-    points = np.column_stack(((xx-K[0, 2])*zz/K[0, 0], (yy-K[1, 2])*zz/K[1, 1], zz))
+    pixels = np.column_stack((xx, yy, np.ones(len(xx))))
+    rays = pixels @ np.linalg.inv(K).T
+    points = rays * (zz / rays[:, 2])[:, None]
     base_camera_value = observation.get("T_base_camera")
     base_camera = transform(base_camera_value) if base_camera_value is not None else None
+    workspace = _workspace_bounds(profile)
+    workspace_crop_status = "applied"
+    if workspace is None:
+        workspace_crop_status = "invalid_workspace"
+        points, yy, xx = points[:0], yy[:0], xx[:0]
+    elif base_camera is None:
+        workspace_crop_status = "missing_base_camera"
+        points, yy, xx = points[:0], yy[:0], xx[:0]
+    else:
+        base_points = points @ base_camera[:3, :3].T + base_camera[:3, 3]
+        workspace_tolerance = np.finfo(depth.dtype).eps * max(1.0, np.max(np.abs(workspace)))
+        inside = np.all((base_points >= workspace[0] - workspace_tolerance)
+                        & (base_points <= workspace[1] + workspace_tolerance), axis=1)
+        points, yy, xx = points[inside], yy[inside], xx[inside]
+    workspace_point_count = len(points)
+    if len(points) > DISPLAY_CLOUD_MAX_POINTS:
+        sample = np.linspace(0, len(points) - 1, DISPLAY_CLOUD_MAX_POINTS, dtype=np.int64)
+        points, yy, xx = points[sample], yy[sample], xx[sample]
+    zz = depth[yy, xx]
     rejected = {item["candidate_id"]: item["reason"] for item in (rejections or [])}
     selected_id = (plan or {}).get("candidate_id")
     candidates = []
@@ -102,8 +136,14 @@ def snapshot(observation, profile, request, *, response=None, plan=None, rejecti
                    {"rgb": image_url(color), "depth": image_url(display, ".png"),
                     "overlay": image_url(observation.get("overlay_bgr", color)),
                     **({"instances": image_url(instances)} if instances is not None else {})}),
-        "depth_stats": {"valid_pixels": int(valid.sum()), "total_pixels": int(depth.size), "min_m": low, "max_m": high},
-        "cloud": {"xyz_m": points, "rgb": color[yy, xx, ::-1], "z_range_m": z_range},
+        "depth_stats": {"valid_pixels": int(valid.sum()), "total_pixels": int(depth.size), "min_m": low, "max_m": high,
+                        "valid_pixels_before_workspace_crop": observation.get("depth_valid_pixels_before_crop"),
+                        "valid_pixels_after_workspace_crop": observation.get("depth_valid_pixels_after_crop",
+                                                                             int(valid.sum()))},
+        "cloud": {"xyz_m": points, "rgb": color[yy, xx, ::-1], "z_range_m": z_range,
+                  "workspace_crop_status": workspace_crop_status,
+                  "workspace_point_count": workspace_point_count,
+                  "displayed_point_count": len(points)},
         "candidates": candidates, "plan": plan, "planning_rejections": rejections or [],
         "workspace_m": profile["workspace_m"], "source": source,
         "server_diagnostics": diagnostics,

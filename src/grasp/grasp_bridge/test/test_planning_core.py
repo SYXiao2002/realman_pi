@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from grasp_bridge.geometry import from_pose, pose_drift, restricted_waypoints, to_pose
 from grasp_bridge.planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
-from grasp_bridge.rgbd import CameraModel, image_array, register_depth, validate_timing
+from grasp_bridge.rgbd import (CameraModel, crop_depth_to_workspace, image_array,
+                               register_depth, validate_timing)
 
 
 def camera(frame="optical"):
@@ -30,6 +31,39 @@ def test_registration_uses_extrinsic_baseline_and_nearest_surface():
     assert registered[4, 4] == 1.0
     assert registered[4, 3] == 0
     assert np.count_nonzero(registered) == 1
+
+
+def test_workspace_depth_crop_uses_camera_to_base_rotation_and_zeroes_outside():
+    depth = np.ones((2, 2), dtype=np.float32)
+    depth[1, 1] = 0
+    K = np.eye(3)
+    T_base_camera = np.eye(4)
+    T_base_camera[:3, :3] = [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]]
+    T_base_camera[:3, 3] = [.5, .5, 0.]
+    before = depth.copy()
+    cropped = crop_depth_to_workspace(
+        depth, K, T_base_camera,
+        [[.49, 1.49, .99], [.51, 1.51, 1.01]])
+    np.testing.assert_array_equal(cropped, [[0., 1.], [0., 0.]])
+    np.testing.assert_array_equal(depth, before)
+
+
+def test_workspace_depth_crop_keeps_float32_boundary_points_with_skew_intrinsics():
+    depth = np.full((3, 3), 0.4, dtype=np.float32)
+    K = np.array([[20., 2., 1.], [0., 20., 1.], [0., 0., 1.]])
+    workspace = [[-0.055, -0.02, 0.39999999],
+                 [0.055, 0.02, 0.40000001]]
+
+    cropped = crop_depth_to_workspace(depth, K, np.eye(4), workspace)
+
+    assert np.count_nonzero(cropped) == 9
+
+
+def test_workspace_depth_crop_rejects_invalid_box_or_missing_transform():
+    with pytest.raises(ValueError, match="workspace"):
+        crop_depth_to_workspace(np.ones((2, 2)), np.eye(3), np.eye(4), [[0, 0, 0], [0, 1, 1]])
+    with pytest.raises(ValueError, match="4x4"):
+        crop_depth_to_workspace(np.ones((2, 2)), np.eye(3), None, [[0, 0, 0], [1, 1, 1]])
 
 
 def test_image_decode_respects_padding_and_depth_units():

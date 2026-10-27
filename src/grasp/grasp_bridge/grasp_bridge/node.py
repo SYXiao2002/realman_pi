@@ -31,8 +31,13 @@ from .geometry import from_pose, pose_drift, transform, to_pose
 from .evaluation import json_value, snapshot
 from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
-from .rgbd import CameraModel, image_array, rectify_color, register_depth, validate_timing
+from .rgbd import (CameraModel, crop_depth_to_workspace, image_array, rectify_color,
+                   register_depth, validate_timing)
 from .ws_client import PlanningCanceled, infer
+
+
+class WorkspaceCropUnavailable(ValueError):
+    """Capture cannot be used safely until workspace RGB-D can be cropped."""
 
 
 def stamp_ns(message):
@@ -263,21 +268,29 @@ class GraspBridge(Node):
                 if approved_intrinsics and camera_identity(cm) != approved_intrinsics:
                     raise ValueError("color intrinsics differ from approved hand-eye calibration")
                 bc, base_camera_transform = self.camera_at_capture(capture_ns)
-                if bc is None and not evaluation_only:
-                    raise ValueError(base_camera_transform["detail"])
+                if bc is None:
+                    message = ("workspace crop requires a valid capture-time base-camera transform: "
+                               + base_camera_transform["detail"])
+                    if base_camera_transform["status"] != "tf_unavailable":
+                        raise WorkspaceCropUnavailable(message)
+                    raise ValueError(message)
                 cd = self.lookup(cm.frame, dm.frame, stamp_ns(depth))
                 up = bc[:3, :3].T @ np.array([0., 0., 1.]) if bc is not None else None
                 if not evaluation_only and up is not None and -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
                     raise ValueError("observation is outside verified near-topdown view range")
                 color_bgr = rectify_color(image_array(color), cm)
                 aligned = register_depth(image_array(depth, depth=True), dm, cm, cd)
-                if np.count_nonzero(aligned) < 64:
+                valid_before_crop = int(np.count_nonzero(aligned))
+                if valid_before_crop < 64:
                     raise ValueError("insufficient registered depth")
                 return {"color_bgr": color_bgr, "depth_m": aligned, "K": cm.K,
                         "up_camera": up, "capture_timestamp_ns": capture_ns,
                         "T_base_camera": bc, "base_camera_transform": base_camera_transform,
+                        "depth_valid_pixels_before_crop": valid_before_crop,
                         "seed": np.rad2deg(streams["joints"][-1].position).tolist(),
                         "source_header": color.header}
+            except WorkspaceCropUnavailable:
+                raise
             except (ValueError, LookupError) as exc:
                 problem = str(exc)
             except Exception as exc:
@@ -379,6 +392,22 @@ class GraspBridge(Node):
             self.feedback(handle, "capture", "waiting for new paired observation")
             observation = self.capture(canceled, self.get_clock().now().nanoseconds,
                                        evaluation_only=handle.request.evaluation_only)
+            depth = np.asarray(observation["depth_m"])
+            valid_before_crop = int(observation.get(
+                "depth_valid_pixels_before_crop",
+                np.count_nonzero(np.isfinite(depth) & (depth > 0))))
+            try:
+                cropped_depth = crop_depth_to_workspace(
+                    depth, observation["K"], observation["T_base_camera"], self.profile["workspace_m"])
+            except ValueError as exc:
+                raise ValueError(f"workspace depth crop failed: {exc}") from exc
+            valid_after_crop = int(np.count_nonzero(cropped_depth))
+            if valid_after_crop < 100:
+                raise ValueError("insufficient workspace depth after crop: "
+                                 f"{valid_after_crop} valid pixels, require at least 100")
+            observation = {**observation, "depth_m": cropped_depth, "workspace_crop_status": "applied",
+                           "depth_valid_pixels_before_crop": valid_before_crop,
+                           "depth_valid_pixels_after_crop": valid_after_crop}
             request = {"type": "infer", "protocol_version": PROTOCOL_VERSION,
                        "task_id": handle.request.task_id, "request_id": uuid.uuid4().hex,
                        "observation_id": uuid.uuid4().hex, "generation": generation,

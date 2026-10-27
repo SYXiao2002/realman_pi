@@ -8,7 +8,7 @@ import cv2
 import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from grasp_bridge.evaluation import snapshot
+from grasp_bridge.evaluation import DISPLAY_CLOUD_MAX_POINTS, snapshot
 
 
 def observation(base_camera):
@@ -33,13 +33,13 @@ def request():
 
 
 def test_snapshot_keeps_registered_rgbd_and_full_base_pose():
-    base_camera = np.eye(4); base_camera[:3, 3] = [1., 2., 3.]
+    base_camera = np.eye(4); base_camera[:3, 3] = [.1, .2, .3]
     candidate = {"candidate_id": "c1", "T_camera_grasp": np.eye(4).tolist(), "score": .8}
     result = snapshot(observation(base_camera), profile(), request(), response={"candidates": [candidate]}, phase="inferred")
     assert result["read_only"] and not result["execution_ready"]
     assert len(result["cloud"]["xyz_m"]) == 64
     assert result["cloud"]["xyz_m"][0] == [-.2, -.2, .5]
-    assert result["candidates"][0]["T_base_grasp"][0][3] == 1.
+    assert result["candidates"][0]["T_base_grasp"][0][3] == .1
     assert result["images"]["rgb"].startswith("data:image/jpeg;base64,")
     assert result["workspace_m"] == [[-.5, -.5, 0.], [.5, .5, 1.]]
 
@@ -66,6 +66,33 @@ def test_snapshot_does_not_fabricate_unavailable_base_transform():
     assert result["T_base_camera"] is None
     assert result["candidates"][0]["T_base_grasp"] is None
     assert result["base_camera_transform"] == obs["base_camera_transform"]
+    assert result["cloud"]["workspace_crop_status"] == "missing_base_camera"
+    assert result["cloud"]["xyz_m"] == []
+
+
+def test_display_cloud_is_cropped_in_base_workspace_but_keeps_camera_coordinates():
+    Tbc = np.eye(4)
+    Tbc[:3, 3] = [.15, 0., 0.]
+    obs = observation(Tbc)
+    p = profile()
+    p["workspace_m"] = [[.1, -.1, .4], [.2, .1, .6]]
+    result = snapshot(obs, p, request(), response={"candidates": []})
+    assert result["cloud"]["workspace_crop_status"] == "applied"
+    assert len(result["cloud"]["xyz_m"]) == 15
+    assert result["cloud"]["workspace_point_count"] == 15
+    assert all(-.05 - 1e-9 <= point[0] <= .05 + 1e-9
+               and -.1 - 1e-9 <= point[1] <= .1 + 1e-9
+               for point in result["cloud"]["xyz_m"])
+    assert all(point[2] == .5 for point in result["cloud"]["xyz_m"])
+
+
+def test_display_cloud_backprojects_skewed_intrinsics_like_workspace_crop():
+    obs = observation(np.eye(4))
+    obs["K"] = np.array([[10., 2., 4.], [0., 10., 4.], [0., 0., 1.]])
+
+    result = snapshot(obs, profile(), request(), response={"candidates": []})
+
+    np.testing.assert_allclose(result["cloud"]["xyz_m"][0], [-.16, -.2, .5])
 
 
 def test_lossless_instance_labels_become_review_image_without_binary_in_json():
@@ -97,6 +124,7 @@ def test_snapshot_keeps_both_alignment_stages_in_same_capture():
 
 def test_display_cloud_matches_original_worker_z_range_without_changing_depth():
     obs = observation(None)
+    obs["T_base_camera"] = np.eye(4)
     obs["depth_m"][0, :4] = [.1, .2, 1.5, 2.]
     before = obs["depth_m"].copy()
     result = snapshot(obs, profile(), request(), response={"diagnostics": {"z_range_m": [.2, 1.5]}})
@@ -104,3 +132,14 @@ def test_display_cloud_matches_original_worker_z_range_without_changing_depth():
     assert result["cloud"]["z_range_m"] == [.2, 1.5]
     assert result["depth_stats"]["valid_pixels"] == 64
     np.testing.assert_array_equal(before, obs["depth_m"])
+
+
+def test_display_cloud_is_dense_but_bounded_for_web_review():
+    obs = observation(np.eye(4))
+    obs["color_bgr"] = np.zeros((240, 240, 3), np.uint8)
+    obs["depth_m"] = np.full((240, 240), 0.5, np.float32)
+    obs["K"] = np.array([[200., 0., 120.], [0., 200., 120.], [0., 0., 1.]])
+    result = snapshot(obs, profile(), request(), response={"candidates": []})
+    assert len(result["cloud"]["xyz_m"]) == DISPLAY_CLOUD_MAX_POINTS
+    assert len(result["cloud"]["rgb"]) == DISPLAY_CLOUD_MAX_POINTS
+    assert DISPLAY_CLOUD_MAX_POINTS > 4096

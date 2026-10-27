@@ -114,6 +114,7 @@ def test_default_dry_run_has_no_hardware_resources_and_reports_refusal(graph):
 def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, monkeypatch):
     profile = ready_profile()
     profile["readiness_problems"] = ["synthetic test profile"]
+    profile["workspace_m"] = [[-.1, -.1, .35], [.1, .1, .45]]
     monkeypatch.setattr(bridge_module, "load_profile", lambda *a, **k: copy.deepcopy(profile))
     node, client = graph(dry_run=True)
     published = []
@@ -121,15 +122,17 @@ def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, 
     T = np.eye(4)
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
-        "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32) * 0.4,
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": None,
-        "T_base_camera": None, "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
+        "color_bgr": np.zeros((16, 16, 3), np.uint8), "depth_m": np.full((16, 16), .4, np.float32),
+        "K": np.array([[20., 0., 8.], [0., 20., 8.], [0., 0., 1.]]), "up_camera": None,
+        "T_base_camera": np.eye(4), "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
-    monkeypatch.setattr(bridge_module, "infer", lambda *a, **k: {
-        "model_id": "fixture-model", "diagnostics": {},
-        "candidates": [{"candidate_id": "c1", "object_id": "1", "class_name": "eu", "backend": "geometry",
-                        "T_camera_grasp": T, "width_m": 0.03, "score": 0.8}],
-    })
+    inferred = {}
+    def inference(_uri, request, **_kwargs):
+        inferred["depth_m"] = request["depth_m"].copy()
+        return {"model_id": "fixture-model", "diagnostics": {},
+                "candidates": [{"candidate_id": "c1", "object_id": "1", "class_name": "eu", "backend": "geometry",
+                                "T_camera_grasp": T, "width_m": 0.03, "score": 0.8}]}
+    monkeypatch.setattr(bridge_module, "infer", inference)
     monkeypatch.setattr(node, "solve", lambda *a: pytest.fail("evaluation called IK"))
     goal_request = goal()
     goal_request.profile_name = "right_wrist"
@@ -141,8 +144,13 @@ def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, 
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.success and not wrapped.result.plan_id
     assert list(node.clients) == []
+    assert np.count_nonzero(inferred["depth_m"]) == 121
+    assert inferred["depth_m"][0, 0] == 0
+    assert inferred["depth_m"][8, 8] == pytest.approx(.4)
     assert [event["phase"] for event in published] == ["captured", "inferred"]
-    assert published[-1]["candidates"][0]["T_base_grasp"] is None
+    assert published[-1]["depth_stats"]["valid_pixels_before_workspace_crop"] == 256
+    assert published[-1]["depth_stats"]["valid_pixels_after_workspace_crop"] == 121
+    assert published[-1]["candidates"][0]["T_base_grasp"] is not None
     assert published[-1]["read_only"] and not published[-1]["execution_ready"]
 
 
@@ -205,8 +213,8 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     T = np.eye(4)
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
-        "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32),
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., 1.],
+        "color_bgr": np.zeros((16, 16, 3), np.uint8), "depth_m": np.ones((16, 16), np.float32) * .4,
+        "K": np.array([[20., 0., 8.], [0., 20., 8.], [0., 0., 1.]]), "up_camera": [0., 0., 1.],
         "T_base_camera": np.eye(4), "seed": [0.]*6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
     # Measured test geometry is synthetic and never persisted as a production value.

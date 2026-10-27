@@ -92,6 +92,41 @@ def rectify_color(color_bgr, model):
     return cv2.undistort(color_bgr, model.K, model.D, None, model.K)
 
 
+def crop_depth_to_workspace(depth_m, K, T_base_camera, workspace_m, *, tolerance_m=None):
+    """Keep registered depth pixels whose 3-D points lie in a base-frame box."""
+    depth = np.asarray(depth_m, dtype=np.float32)
+    intrinsics = np.asarray(K, dtype=np.float64)
+    bounds = np.asarray(workspace_m, dtype=np.float64)
+    if depth.ndim != 2:
+        raise ValueError("depth must be a 2-D array")
+    if (intrinsics.shape != (3, 3) or not np.isfinite(intrinsics).all()
+            or intrinsics[0, 0] <= 0 or intrinsics[1, 1] <= 0
+            or not np.allclose(intrinsics[2], [0., 0., 1.])):
+        raise ValueError("invalid camera intrinsics")
+    T = transform(T_base_camera)
+    if (bounds.shape != (2, 3) or not np.isfinite(bounds).all()
+            or np.any(bounds[0] >= bounds[1])):
+        raise ValueError("workspace must contain finite min/max xyz")
+    if tolerance_m is None:
+        tolerance_m = float(np.finfo(depth.dtype).eps * max(1.0, np.max(np.abs(bounds))))
+    if type(tolerance_m) not in (int, float) or not np.isfinite(tolerance_m) or tolerance_m < 0:
+        raise ValueError("tolerance_m must be finite and non-negative")
+    valid = np.isfinite(depth) & (depth > 0)
+    yy, xx = np.nonzero(valid)
+    cropped = np.zeros_like(depth)
+    if len(xx) == 0:
+        return cropped
+    z = depth[yy, xx].astype(np.float64)
+    pixels = np.column_stack((xx, yy, np.ones(len(xx))))
+    rays = pixels @ np.linalg.inv(intrinsics).T
+    camera_points = rays * (z / rays[:, 2])[:, None]
+    base_points = camera_points @ T[:3, :3].T + T[:3, 3]
+    inside = np.all((base_points >= bounds[0] - tolerance_m)
+                    & (base_points <= bounds[1] + tolerance_m), axis=1)
+    cropped[yy[inside], xx[inside]] = depth[yy[inside], xx[inside]]
+    return cropped
+
+
 def validate_timing(stamps_ns, now_ns, *, skew_sec, age_sec):
     if any(type(s) is not int or s <= 0 for s in stamps_ns):
         raise ValueError("missing capture timestamps")
