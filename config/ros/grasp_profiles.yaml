@@ -21,9 +21,9 @@ profiles:
     gripper: gripper_right
     gripper_spec: binary_42d_right
     calibration: right_wrist
-    observation_joint_degrees: [-94.718,30.016,93.643,2.53,56.138,-0.28]
-    return_joint_degrees: [-94.718,30.016,93.643,2.53,56.138,-0.28]
-    workspace_m: [[-0.224746,0.197308,-0.178959],[0.27423,0.652777,0.355227]]  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
+    observation_joint_degrees: [-92.859,20.661,99.496,-2.71,59.769,-11.048]
+    return_joint_degrees: [-104.82,31.853,99.488,-4.104,39.215,-11.043]
+    workspace_m: [[-0.065849, 0.258881, -0.174517], [0.22735, 0.395776, 0.051534]]  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
     # TCP origin and axes are aligned with the common closing-center grasp frame.
     # Identity adds no translation (metres) or rotation; tool offset stays in realman_coordinates.yaml.
     T_grasp_tcp:
