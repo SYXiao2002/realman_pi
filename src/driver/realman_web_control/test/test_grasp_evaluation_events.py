@@ -56,10 +56,16 @@ def test_snapshot_cache_advances_only_within_identity(web_node):
     assert web_node._grasp_evaluation["phase"] == "planned"
 
 
+def test_snapshot_cache_accepts_dense_review_payload(web_node):
+    payload = {**snapshot(), "cloud_payload": "x" * (3 * 1024 * 1024)}
+    send(web_node, payload)
+    assert web_node._grasp_evaluation["observation_id"] == "obs-1"
+
+
 def test_snapshot_cache_rejects_invalid_and_oversized_events(web_node):
     send(web_node, {**snapshot(), "capture_timestamp_ns": "0"})
     send(web_node, {**snapshot(), "phase": "planning"})
     web_node._grasp_evaluation_message(String(data="{"))
-    web_node._grasp_evaluation_message(String(data=" " * (2 * 1024 * 1024 + 1)))
+    web_node._grasp_evaluation_message(String(data=" " * (8 * 1024 * 1024 + 1)))
     assert web_node._grasp_evaluation is None
     assert web_node._server.events == []

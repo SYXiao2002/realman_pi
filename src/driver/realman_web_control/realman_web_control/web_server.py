@@ -23,6 +23,11 @@ from .model_manifest import resolve_model_asset
 from .protocol import ProtocolError, parse_message
 
 
+# Grasp evaluation snapshots contain a bounded RGB-D review cloud. Keep the
+# WebSocket frame limit above that payload while retaining a hard upper bound.
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class WebServerConfig:
     bind_host: str
@@ -118,8 +123,8 @@ def load_server_config(path: str | Path) -> WebServerConfig:
         raise ValueError("server.port must be from 1 through 65535")
     if not 1 <= config.max_clients <= 128:
         raise ValueError("server.max_clients must be from 1 through 128")
-    if not 1024 <= config.max_message_bytes <= 1_048_576:
-        raise ValueError("server.max_message_bytes must be from 1024 through 1048576")
+    if not 1024 <= config.max_message_bytes <= MAX_MESSAGE_BYTES:
+        raise ValueError(f"server.max_message_bytes must be from 1024 through {MAX_MESSAGE_BYTES}")
     return config
 
 

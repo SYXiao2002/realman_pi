@@ -10,8 +10,8 @@ server:
   # http(s) origins only when a separate trusted frontend is deliberately used.
   allowed_origins: [same-origin]
   max_clients: 8
-  # Reject oversized WebSocket frames before parsing JSON.
-  max_message_bytes: 65536
+  # Evaluation snapshots carry up to 35,000 RGB-D points; keep the frame bounded at 8 MiB.
+  max_message_bytes: 8388608
 
 # Optional running input router is discovered over ROS; its XML owns the catalog.
 input_mode:

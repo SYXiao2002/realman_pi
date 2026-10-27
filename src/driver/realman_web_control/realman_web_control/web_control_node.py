@@ -53,7 +53,7 @@ from .keyboard_control_bridge import KeyboardControlBridge
 from .model_manifest import build_manifest
 from .protocol import ProtocolError, reject_if_read_only
 from .tf_pose import transform_stamped_pose
-from .web_server import WebControlServer, load_server_config
+from .web_server import MAX_MESSAGE_BYTES, WebControlServer, load_server_config
 
 
 ARMS = ("l", "m", "r")
@@ -1485,7 +1485,9 @@ class WebControlNode(Node):
         self._server.send_event(payload)
 
     def _grasp_evaluation_message(self, message: String) -> None:
-        if len(message.data.encode("utf-8")) > 2 * 1024 * 1024:
+        # Dense RGB-D review clouds mirror the offline Plotly preview and can
+        # be several MiB; keep a bounded ROS-to-WebSocket handoff.
+        if len(message.data.encode("utf-8")) > MAX_MESSAGE_BYTES:
             self.get_logger().warning("ignoring oversized grasp evaluation")
             return
         try:

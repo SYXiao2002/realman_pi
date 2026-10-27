@@ -6,7 +6,7 @@ import pytest
 import yaml
 from aiohttp import web
 
-from realman_web_control.web_server import WebControlServer, WebServerConfig, load_server_config
+from realman_web_control.web_server import MAX_MESSAGE_BYTES, WebControlServer, WebServerConfig, load_server_config
 
 
 def test_input_mode_timing_is_loaded_from_root_config_without_runtime_defaults(tmp_path):
@@ -18,6 +18,7 @@ def test_input_mode_timing_is_loaded_from_root_config_without_runtime_defaults(t
     config = load_server_config(path)
     assert config.discovery_period_sec == 0.75
     assert config.web_override_timeout_sec == 2.5
+    assert config.max_message_bytes == MAX_MESSAGE_BYTES
 
 
 @pytest.mark.parametrize("field", ["discovery_period_sec", "web_override_timeout_sec"])

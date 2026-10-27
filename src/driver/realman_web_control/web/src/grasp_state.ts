@@ -23,7 +23,7 @@ export function validSnapshot(value: any): boolean {
     || !Array.isArray(value.readiness_problems) || !value.readiness_problems.every(text)
     || !value.gripper || !text(value.gripper.id)
     || !value.cloud || !Array.isArray(value.cloud.xyz_m) || !Array.isArray(value.cloud.rgb)
-    || value.cloud.xyz_m.length > 4096 || value.cloud.rgb.length !== value.cloud.xyz_m.length
+    || value.cloud.xyz_m.length > 35000 || value.cloud.rgb.length !== value.cloud.xyz_m.length
     || !value.cloud.xyz_m.every((p: any) => vector(p, 3))
     || !value.cloud.rgb.every((p: any) => vector(p, 3) && p.every((n: number) => Number.isInteger(n) && n >= 0 && n <= 255))
     || !Array.isArray(value.candidates) || value.candidates.length > 64) return false;

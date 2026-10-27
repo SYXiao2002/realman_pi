@@ -11,7 +11,8 @@ const snapshot = {
   K: [[10, 0, 4], [0, 10, 4], [0, 0, 1]], T_base_camera: null,
   seed_joint_degrees: [0, 1, 2, 3, 4, 5], width: 8, height: 8,
   images: { rgb: "data:image/png;base64,iVBORw0KGgo=", depth: "data:image/png;base64,iVBORw0KGgo=", overlay: "data:image/png;base64,iVBORw0KGgo=" },
-  cloud: { xyz_m: [[0, 0, 0.5]], rgb: [[255, 0, 0]] }, depth_stats: { valid_pixels: 1 },
+  cloud: { xyz_m: [[0, 0, 0.5]], rgb: [[255, 0, 0]], workspace_crop_status: "applied",
+    workspace_point_count: 1, displayed_point_count: 1 }, depth_stats: { valid_pixels: 1 },
   candidates: [{ candidate_id: "c1", class_name: "eu", score: 0.9, width_m: 0.04,
     T_camera_grasp: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], T_base_grasp: null }],
   plan: null, server_diagnostics: {},
@@ -44,7 +45,8 @@ test("grasp page keeps evaluation read-only and binds one observation", async ({
   await expect(page.locator("#details")).toContainText("只读");
   await expect(page.locator("#readiness")).toContainText("verified calibration identity");
   await expect(page.locator("#plan")).toContainText("evaluation only");
-  await expect(page.locator("#viewer-status")).toContainText("点云为相机光学系");
+  await expect(page.locator("#cloud-view")).toHaveAttribute("data-candidates", "c1");
+  await expect(page.locator("#viewer-status")).toContainText("已按 base_frame 工作区裁切点云");
   expect(await page.locator("#cloud-view").evaluate((canvas: HTMLCanvasElement) => canvas.width > 0 && canvas.height > 0)).toBe(true);
   await page.locator("#save-review").click();
   await expect(page.locator("#review-status")).toHaveText("已保存在此浏览器");
@@ -59,6 +61,28 @@ test("grasp page has no horizontal overflow on mobile", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
+test("grasp page accepts the bounded dense review cloud", async ({ page }, testInfo) => {
+  await page.goto("grasp.html");
+  const dense = {
+    ...snapshot,
+    cloud: {
+      xyz_m: Array.from({ length: 35_000 }, (_, index) => [
+        ((index % 200) - 100) / 1000,
+        (Math.floor(index / 200) - 87.5) / 1000,
+        0.5 + Math.sin(index) / 1000,
+      ]),
+      rgb: Array.from({ length: 35_000 }, () => [120, 160, 200]),
+      workspace_crop_status: "applied",
+      workspace_point_count: 35_000,
+      displayed_point_count: 35_000,
+    },
+  };
+  await page.evaluate((value) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(value) }), dense);
+  await expect(page.locator("#candidate-rows")).toContainText("c1");
+  await expect(page.locator("#plan")).toContainText("evaluation only");
+  await page.locator("#cloud-view").screenshot({ path: testInfo.outputPath("dense-review-cloud.png") });
+});
+
 test("plan viewer renders behavior-tree candidates and workspace without sending commands", async ({ page }, testInfo) => {
   await page.route("**/api/layout", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ robots: [{
     id: "r", transform: { x: 0, y: 0, z: 0, roll: 0, pitch: 0, yaw: 0 }, urdf_url: "/models/test-arm.urdf",
@@ -68,12 +92,29 @@ test("plan viewer renders behavior-tree candidates and workspace without sending
   await page.goto("grasp_plan.html");
   const planSnapshot = { ...snapshot, source: "behavior_tree", phase: "rejected", T_base_camera: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
     images: {}, workspace_m: [[-.5, -.4, 0], [.5, .4, .8]],
-    candidates: [{ ...snapshot.candidates[0], planning_status: "rejected", planning_reason: "pregrasp: IK branch jump exceeds limit" }],
+    candidates: [
+      { ...snapshot.candidates[0], candidate_id: "1:0", object_id: "1", planning_status: "rejected", planning_reason: "pregrasp: IK branch jump exceeds limit" },
+      { ...snapshot.candidates[0], candidate_id: "1:1", object_id: "1", planning_status: "rejected" },
+      { ...snapshot.candidates[0], candidate_id: "2:0", object_id: "2", planning_status: "not_checked" },
+    ],
     planning_rejections: [{ candidate_id: "c1", reason: "pregrasp: IK branch jump exceeds limit" }] };
   await page.evaluate((value) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(value) }), planSnapshot);
   await expect(page.locator("#candidates")).toContainText("pregrasp: IK branch jump exceeds limit");
   await expect(page.locator("#workspace")).toContainText("min -0.500, -0.400, 0.000");
-  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "c1");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "1:0");
+  await page.locator("#pose-visibility-mode").selectOption("instance");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "1:0,1:1");
+  await page.locator("#pose-visibility-target").selectOption("2");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "2:0");
+  await page.locator("#pose-visibility-mode").selectOption("all");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "1:0,1:1,2:0");
+  await page.locator("#pose-visibility-mode").selectOption("pose");
+  await page.locator("#pose-visibility-target").selectOption("2:0");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "2:0");
+  await page.locator("#candidates tr").filter({ hasText: "1:1" }).click();
+  await expect(page.locator("#pose-visibility-mode")).toHaveValue("pose");
+  await expect(page.locator("#pose-visibility-target")).toHaveValue("1:1");
+  await expect(page.locator("#layout")).toHaveAttribute("data-candidates", "1:1");
   await page.locator("#layout").screenshot({ path: testInfo.outputPath("grasp-plan-layout.png") });
   expect(await page.evaluate(() => (window as any).__graspSent)).toEqual([]);
 });
@@ -100,7 +141,7 @@ const alignedSnapshot = () => {
   return { ...snapshot, T_base_camera: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
     images: { rgb: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", depth: snapshot.images.depth, overlay: snapshot.images.overlay },
     server_diagnostics: { vertical_alignment_status: "applied" },
-    candidates: Array.from({ length: 6 }, (_, i) => ({ ...snapshot.candidates[0], candidate_id: "c" + (i + 1), backend: "geometry", object_id: "1",
+    candidates: Array.from({ length: 6 }, (_, i) => ({ ...snapshot.candidates[0], candidate_id: "c" + (i + 1), backend: "geometry", object_id: i < 3 ? "1" : "2",
       T_camera_native_grasp: before, T_camera_native_grasp_aligned: after,
       T_camera_grasp_before_alignment: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .5], [0, 0, 0, 1]],
       T_camera_grasp_after_alignment: contact, T_camera_grasp: contact,
@@ -112,12 +153,29 @@ test("before/after views share ranks, visibility, camera and exported stage data
   await page.evaluate((value) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(value) }), alignedSnapshot());
   await expect(page.locator("#alignment-status")).toContainText("接触中心保持不变");
   for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
-    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c1,c2,c3,c4,c5");
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c1");
+  }
+  await page.locator("#pose-visibility-mode").selectOption("instance");
+  for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c1,c2,c3");
+  }
+  await page.locator("#pose-visibility-target").selectOption("2");
+  for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c4,c5,c6");
+  }
+  await page.locator("#pose-visibility-mode").selectOption("all");
+  for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c1,c2,c3,c4,c5,c6");
+  }
+  await page.locator("#pose-visibility-mode").selectOption("pose");
+  await page.locator("#pose-visibility-target").selectOption("c2");
+  for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c2");
   }
   await page.getByRole("checkbox", { name: "显示 #6 c6", exact: true }).check();
   await page.getByRole("checkbox", { name: "显示 #1 c1", exact: true }).uncheck();
   for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) {
-    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c2,c3,c4,c5,c6");
+    await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "c2,c6");
   }
   const originalCamera = await page.locator("#cloud-view").getAttribute("data-view");
   await page.locator("#cloud-view").scrollIntoViewIfNeeded();
@@ -141,7 +199,7 @@ test("before/after views share ranks, visibility, camera and exported stage data
   for (const id of ["cloud-view", "cloud-view-after", "projection", "projection-after"]) await expect(page.locator("#" + id)).toHaveAttribute("data-candidates", "");
   await page.locator("#review-file").setInputFiles({ name: "review.json", mimeType: "application/json", buffer: Buffer.from(exported) });
   await expect(page.locator("#review-status")).toContainText("已导入离线评估");
-  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c1,c2,c3,c4,c5");
+  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c2");
   await expect(page.locator("#movel-execute")).toBeDisabled();
   await expect(page.locator("#movel-ready")).toContainText("离线导入仅供审阅");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
@@ -165,7 +223,7 @@ test("missing calibration and CGN remain explicit rather than claiming alignment
     ...missing, backend: "contact_graspnet", server_diagnostics: { vertical_alignment_status: "backend_not_applicable" },
     candidates: missing.candidates.map((candidate) => ({ ...candidate, backend: "contact_graspnet", vertical_alignment: { ...candidate.vertical_alignment, status: "backend_not_applicable" } })) });
   await expect(page.locator("#alignment-status")).toContainText("不执行几何竖直对齐");
-  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c1,c2,c3,c4,c5");
+  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c1");
 });
 
 test("insufficient instance is listed while valid poses remain visible", async ({ page }) => {
@@ -175,7 +233,7 @@ test("insufficient instance is listed while valid poses remain visible", async (
     { object_id: "7", valid_points: 0, minimum_points: 32, reason: "insufficient_valid_depth" }];
   await page.evaluate((snapshot) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(snapshot) }), value);
   await expect(page.locator("#details")).toContainText("#7：0/32 点");
-  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c1,c2,c3,c4,c5");
+  await expect(page.locator("#cloud-view-after")).toHaveAttribute("data-candidates", "c1");
 });
 
 test("large capture layout shows aligned contact poses and keeps candidate selection in sync", async ({ page }, testInfo) => {

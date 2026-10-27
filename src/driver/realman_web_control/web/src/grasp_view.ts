@@ -45,11 +45,11 @@ function dispose(group: THREE.Object3D) {
     else item.material?.dispose(); });
   group.clear();
 }
-function pointCloud(snapshot: any, size: number) {
+function pointCloud(snapshot: any, sizePx: number) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(snapshot.cloud.xyz_m.flat(), 3));
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(snapshot.cloud.rgb.flat().map((v: number) => v / 255), 3));
-  return new THREE.Points(geometry, new THREE.PointsMaterial({ size, vertexColors: true, sizeAttenuation: true }));
+  return new THREE.Points(geometry, new THREE.PointsMaterial({ size: sizePx, vertexColors: true, sizeAttenuation: false }));
 }
 function candidatePose(candidate: any, gripper: any, selected: boolean, frame: number[][], color: string, rank: number) {
   const group = new THREE.Group(); group.matrixAutoUpdate = false; group.matrix.copy(matrix(frame));
@@ -75,7 +75,7 @@ export class GraspView {
   private layout: any;
   private robots = new Map<string, any>();
   private loadGeneration = 0;
-  private pointSize = .008;
+  private pointSize = 1.5;
   constructor(cloudCanvas: HTMLCanvasElement, alignedCanvas: HTMLCanvasElement, fleetCanvas: HTMLCanvasElement,
     private message: (text: string) => void) {
     try {
@@ -115,9 +115,9 @@ export class GraspView {
   private describe(view: any) {
     view.canvas.dataset.view = JSON.stringify({ position: view.camera.position.toArray(), target: view.controls.target.toArray() });
   }
-  setPointSize(size: number) {
-    if (!Number.isFinite(size)) return;
-    this.pointSize = Math.min(.02, Math.max(.001, size));
+  setPointSize(sizePx: number) {
+    if (!Number.isFinite(sizePx)) return;
+    this.pointSize = Math.min(8, Math.max(1, sizePx));
     this.update(this.snapshot, this.selected, this.visible);
   }
   async setLayout(layout: any) {
@@ -177,7 +177,9 @@ export class GraspView {
       }
       for (const [index, stage] of (["before", "after"] as Stage[]).entries()) {
         const optical = this.views[index]; if (!optical) continue;
-        optical.data.add(pointCloud(snapshot, this.pointSize));
+        if (snapshot.cloud.workspace_crop_status === "applied") {
+          optical.data.add(pointCloud(snapshot, this.pointSize));
+        }
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
           const frame = stageFrame(candidate, stage);
@@ -200,7 +202,8 @@ export class GraspView {
           base.add(workspace);
         }
         const camera = new THREE.Group(); camera.matrixAutoUpdate = false; camera.matrix.copy(matrix(snapshot.T_base_camera));
-        camera.add(pointCloud(snapshot, this.pointSize), new THREE.AxesHelper(.10)); base.add(camera);
+        if (snapshot.cloud.workspace_crop_status === "applied") camera.add(pointCloud(snapshot, this.pointSize));
+        camera.add(new THREE.AxesHelper(.10)); base.add(camera);
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
           const native = candidate.vertical_alignment?.applied ? stageFrame(candidate, "after") : stageFrame(candidate, "before");
@@ -228,6 +231,16 @@ export class GraspView {
       if (!snapshot) view.canvas.dataset.candidates = "";
       view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
     });
+    const cropStatus = snapshot?.cloud?.workspace_crop_status;
+    if (cropStatus === "applied") {
+      this.message(`已按 base_frame 工作区裁切点云：${snapshot.cloud.workspace_point_count} 点，显示 ${snapshot.cloud.displayed_point_count} 点。`);
+    } else if (snapshot && cropStatus === "missing_base_camera") {
+      this.message("缺少采集时 T_base_camera，无法判断 workspace 内点云；点云已隐藏。");
+    } else if (snapshot && cropStatus === "invalid_workspace") {
+      this.message("workspace_m 无效，无法裁切工作区点云；点云已隐藏。");
+    } else if (snapshot) {
+      this.message("快照没有 workspace 裁切标记，点云已隐藏。");
+    }
     if (newObservation) this.resetLayoutView();
   }
 }
