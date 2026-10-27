@@ -409,6 +409,7 @@ class WebControlServer:
             return None
         sample_count = 0
         arm_id = ""
+        purpose = ""
         recoverable = False
         try:
             try:
@@ -419,6 +420,7 @@ class WebControlServer:
                 if not isinstance(identity, dict):
                     raise ValueError("session identity must be an object")
                 arm_id = str(identity.get("arm_id", ""))
+                purpose = str(manifest.get("purpose", ""))
                 recoverable = manifest.get("schema_version") == 1 and arm_id in ("l", "r")
             except (OSError, ValueError, TypeError):
                 manifest = {}
@@ -446,6 +448,7 @@ class WebControlServer:
                     directory.stat().st_mtime, tz=timezone.utc
                 ).isoformat(),
                 "arm_id": arm_id,
+                "purpose": purpose,
                 "sample_count": sample_count,
                 "recoverable": recoverable,
                 "solved": (directory / "calibration_result.json").is_file(),

@@ -36,6 +36,7 @@ from realman_msgs.srv import (
     SelectInputMode,
     SolveCalibration,
     UpdateCalibrationLayout,
+    VerifyCalibration,
     SolveIk,
 )
 from sensor_msgs.msg import JointState
@@ -321,6 +322,11 @@ class WebControlNode(Node):
             "/camera_calibration/solve",
             callback_group=self._callback_group,
         )
+        self._verify_calibration_client = self.create_client(
+            VerifyCalibration,
+            "/camera_calibration/verify",
+            callback_group=self._callback_group,
+        )
         self._web_subscriptions.append(
             self.create_subscription(
                 String,
@@ -503,6 +509,8 @@ class WebControlNode(Node):
             self._update_calibration_layout(client_id, message)
         elif message_type == "solve_calibration":
             self._solve_calibration(client_id, message)
+        elif message_type == "verify_calibration":
+            self._verify_calibration(client_id, message)
         elif message_type == "plan_grasp":
             self._plan_grasp(client_id, message)
         else:
@@ -871,6 +879,7 @@ class WebControlNode(Node):
         request.session_id = message["session_id"]
         request.start_new_session = message["start_new_session"]
         request.arm_id = message["arm_id"]
+        request.purpose = message.get("purpose", "")
         future = client.call_async(request)
         future.add_done_callback(
             lambda completed: self._calibration_capture_response(
@@ -977,6 +986,64 @@ class WebControlNode(Node):
                 "mean_reprojection_error_px": 0.0,
                 "layout_updated": False,
                 "layout_backup_file": "",
+                "message": str(error),
+            }
+        self._server.send_event(event, client_id)
+
+    def _verify_calibration(self, client_id: str, message: dict[str, Any]) -> None:
+        client = self._verify_calibration_client
+        if not client.service_is_ready():
+            raise ProtocolError(
+                "calibration_unavailable",
+                "/camera_calibration/verify is not available",
+                message["request_id"],
+            )
+        request = VerifyCalibration.Request()
+        request.arm_id = message["arm_id"]
+        request.baseline_session_id = message["baseline_session_id"]
+        request.verify_session_id = message["verify_session_id"]
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._calibration_verify_response(
+                client_id, message["request_id"], completed
+            )
+        )
+
+    def _calibration_verify_response(self, client_id: str, request_id: str, future: Any) -> None:
+        try:
+            response = future.result()
+            event = {
+                "type": "calibration_verify_result",
+                "request_id": request_id,
+                "success": bool(response.success),
+                "arm_id": response.arm_id,
+                "verify_session_id": response.verify_session_id,
+                "sample_count": int(response.sample_count),
+                "translation_spread_m": float(response.translation_spread_m),
+                "rotation_spread_rad": float(response.rotation_spread_rad),
+                "mean_reprojection_error_px": float(response.mean_reprojection_error_px),
+                "max_reprojection_error_px": float(response.max_reprojection_error_px),
+                "passed": bool(response.passed),
+                "result_file": response.result_file,
+                "result_json": response.result_json,
+                "message": response.message,
+            }
+        except Exception as error:
+            self.get_logger().error(f"Web calibration verify failed: {error}")
+            event = {
+                "type": "calibration_verify_result",
+                "request_id": request_id,
+                "success": False,
+                "arm_id": "",
+                "verify_session_id": "",
+                "sample_count": 0,
+                "translation_spread_m": 0.0,
+                "rotation_spread_rad": 0.0,
+                "mean_reprojection_error_px": 0.0,
+                "max_reprojection_error_px": 0.0,
+                "passed": False,
+                "result_file": "",
+                "result_json": "",
                 "message": str(error),
             }
         self._server.send_event(event, client_id)

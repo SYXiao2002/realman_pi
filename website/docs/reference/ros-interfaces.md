@@ -87,8 +87,9 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/camera_left/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 左腕 Gemini 305（`CV2856D0008H`）原始深度；设备内帧同步开启 |
 | `/camera_right/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 右腕 Gemini 305（`CV2856D0002E`）原始深度；`depth_registration=false` |
 | `/camera_global/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后全局 Gemini 335L（`CP28563000CK`）原始深度；`depth_registration=false` |
-| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF |
-| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 按 `arm_id/session_id` 求解独立手眼 |
+| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF；`purpose: verify` 标记固定板检验样本，隔离出求解/布局候选 |
+| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 按 `arm_id/session_id` 求解独立手眼；拒绝 `purpose: verify` 会话 |
+| `/camera_calibration/verify` | `realman_msgs/VerifyCalibration` | 用已求解 `baseline_session_id` 对固定板 `verify_session_id` 反算标定板位姿离散度，写 `verification_result.json` 并返回 `passed` |
 | `/camera_calibration/update_layout` | `realman_msgs/UpdateCalibrationLayout` | 用户选择 `left_session_id/right_session_id`，更新右臂布局并备份 YAML；重新 bringup 后基座 TF 生效 |
 | `/camera_calibration/camera_health` | `std_msgs/String`（JSON） | 每秒发布，供 Web 标定页面使用 |
 | `/camera_calibration/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 标定节点诊断 |

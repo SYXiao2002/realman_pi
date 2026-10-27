@@ -138,6 +138,7 @@ def test_calibration_messages_require_one_supported_arm():
         '"session_id":"","start_new_session":true,"arm_id":"r"}'
     )
     assert capture["arm_id"] == "r"
+    assert capture["purpose"] == ""
     solved = parse_message(
         '{"type":"solve_calibration","request_id":"solve-1","session_id":"session-1","arm_id":"r"}'
     )
@@ -155,6 +156,37 @@ def test_calibration_messages_require_one_supported_arm():
     for arm in ("m", "", ["l", "r"]):
         with pytest.raises(ProtocolError, match="arm_id"):
             parse_message(json.dumps({"type": "solve_calibration", "request_id": "s", "arm_id": arm}))
+
+
+def test_calibration_capture_purpose_is_constrained():
+    verify = parse_message(
+        '{"type":"capture_calibration_sample","request_id":"cap-v",'
+        '"session_id":"","start_new_session":true,"arm_id":"r","purpose":"verify"}'
+    )
+    assert verify["purpose"] == "verify"
+    with pytest.raises(ProtocolError, match="purpose"):
+        parse_message(
+            '{"type":"capture_calibration_sample","request_id":"cap-x",'
+            '"session_id":"","start_new_session":true,"arm_id":"r","purpose":"calibrate"}'
+        )
+
+
+def test_verify_calibration_message_is_normalized():
+    parsed = parse_message(
+        '{"type":"verify_calibration","request_id":"ver-1","arm_id":"r",'
+        '"baseline_session_id":"session-a","verify_session_id":"session-b"}'
+    )
+    assert parsed == {
+        "type": "verify_calibration",
+        "request_id": "ver-1",
+        "arm_id": "r",
+        "baseline_session_id": "session-a",
+        "verify_session_id": "session-b",
+    }
+    with pytest.raises(ProtocolError, match="baseline_session_id"):
+        parse_message(
+            '{"type":"verify_calibration","request_id":"ver-2","arm_id":"r","verify_session_id":"session-b"}'
+        )
 
 
 def test_kinematics_messages_are_normalized():

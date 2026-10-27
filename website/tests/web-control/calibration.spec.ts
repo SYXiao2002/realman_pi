@@ -244,3 +244,71 @@ test("a right-only calibration configuration hides unconfigured arms", async ({ 
   await expect(page.locator("#calibration-arm")).toHaveValue("r");
   await expect(page.locator("#capture")).toBeEnabled();
 });
+
+test("calibration page runs the fixed-board verification flow", async ({ page }) => {
+  await page.route("**/api/calibration", async (route) => {
+    const response = await route.fetch();
+    const config = await response.json();
+    config.verification = {
+      sample_count: 2,
+      maximum_translation_spread_m: 0.01,
+      maximum_rotation_spread_rad: 0.02,
+      maximum_reprojection_error_px: 1.0,
+    };
+    await route.fulfill({ response, json: config });
+  });
+  await page.route("**/api/calibration/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [
+        { session_id: "session-baseline", arm_id: "r", sample_count: 30, recoverable: true, solved: true },
+        { session_id: "session-verify-old", arm_id: "r", sample_count: 2, recoverable: true, solved: false, purpose: "verify" },
+      ] }),
+    });
+  });
+  await page.goto("calibration.html");
+  await expect(page.locator("#config-state")).toHaveText("CONFIG LOADED");
+  await expect(page.locator("#verify-target")).toHaveText("2");
+  // Verification sessions stay out of the history list; the solved baseline is selectable.
+  await expect(page.locator("#session-history option[value=session-verify-old]")).toHaveCount(0);
+  await expect(page.locator("#verify-baseline option[value=session-baseline]")).toHaveCount(1);
+  await page.locator("#verify-baseline").selectOption("session-baseline");
+  await expect(page.locator("#verify-capture")).toBeEnabled();
+  await expect(page.locator("#verify-run")).toBeDisabled();
+
+  for (const count of [1, 2]) {
+    await page.locator("#verify-capture").click();
+    const request = await page.evaluate(() => JSON.parse((window as any).__calibrationMessages.at(-1)));
+    expect(request.type).toBe("capture_calibration_sample");
+    expect(request.purpose).toBe("verify");
+    expect(request.start_new_session).toBe(count === 1);
+    await page.evaluate(({ requestId, sampleCount }) => {
+      (window as any).__calibrationSocket.emit("message", { data: JSON.stringify({
+        type: "calibration_capture_result", request_id: requestId, success: true,
+        session_id: "session-verify", batch_id: "batch-verify", arm_id: "r",
+        sample_count: sampleCount, message: "captured",
+      }) });
+    }, { requestId: request.request_id, sampleCount: count });
+  }
+  await expect(page.locator("#verify-count")).toHaveText("已采 2/2");
+  await expect(page.locator("#verify-state")).toHaveText("READY");
+  await expect(page.locator("#verify-run")).toBeEnabled();
+
+  await page.locator("#verify-run").click();
+  const run = await page.evaluate(() => JSON.parse((window as any).__calibrationMessages.at(-1)));
+  expect(run.type).toBe("verify_calibration");
+  expect(run.arm_id).toBe("r");
+  expect(run.baseline_session_id).toBe("session-baseline");
+  expect(run.verify_session_id).toBe("session-verify");
+  await page.evaluate((requestId) => {
+    (window as any).__calibrationSocket.emit("message", { data: JSON.stringify({
+      type: "calibration_verify_result", request_id: requestId, success: true, passed: true,
+      arm_id: "r", verify_session_id: "session-verify", sample_count: 2,
+      translation_spread_m: 0.001, rotation_spread_rad: 0.002,
+      mean_reprojection_error_px: 0.2, max_reprojection_error_px: 0.4,
+      message: "verified",
+    }) });
+  }, run.request_id);
+  await expect(page.locator("#verify-state")).toHaveText("PASSED");
+  await expect(page.locator("#verify-metrics")).toContainText("标定精度合格");
+});

@@ -302,6 +302,38 @@ def solve_hand_eye(samples: list[dict[str, Any]], method: str) -> dict[str, Any]
     }
 
 
+def verify_hand_eye(samples: list[dict[str, Any]], tool_to_camera: Any) -> dict[str, Any]:
+    """Score a fixed-board session against an already-solved hand-eye transform.
+
+    The board never moves, so every sample's base->board estimate
+    (base_to_tool @ tool_to_camera @ target_to_camera) should coincide. Their
+    spread plus the ChArUco reprojection error quantify repeatability without
+    re-fitting the calibration.
+    """
+
+    if len(samples) < 2:
+        raise ValueError("at least two verification samples are required")
+    tool = np.asarray(tool_to_camera, dtype=np.float64)
+    if tool.shape != (4, 4) or not np.all(np.isfinite(tool)):
+        raise ValueError("tool_to_camera must be a finite 4x4 transform")
+    board_poses = [
+        np.asarray(sample["base_to_tool"], dtype=np.float64)
+        @ tool
+        @ np.asarray(sample["target_to_camera"], dtype=np.float64)
+        for sample in samples
+    ]
+    board_pose, translation_spread, rotation_spread = mean_transform_and_spread(board_poses)
+    reprojection = [float(sample.get("reprojection_error_px", 0.0)) for sample in samples]
+    return {
+        "sample_count": len(samples),
+        "base_to_board": board_pose,
+        "translation_spread_m": float(translation_spread),
+        "rotation_spread_rad": float(rotation_spread),
+        "mean_reprojection_error_px": float(np.mean(reprojection)),
+        "max_reprojection_error_px": float(np.max(reprojection)),
+    }
+
+
 def mean_transform_and_spread(poses: list[np.ndarray]) -> tuple[np.ndarray, float, float]:
     if not poses:
         raise ValueError("at least one transform is required")

@@ -270,7 +270,7 @@ def test_coordinate_service_contracts_are_exact():
     _assert_interface_contract(
         ROOT / "srv/CaptureCalibrationSample.srv",
         [
-            ["string session_id", "bool start_new_session", "string arm_id"],
+            ["string session_id", "bool start_new_session", "string arm_id", "string purpose"],
             [
                 "bool success",
                 "string session_id",
@@ -283,6 +283,27 @@ def test_coordinate_service_contracts_are_exact():
                 "string latest_image_path",
                 "string detection_status",
                 "string detection_message",
+                "string message",
+            ],
+        ],
+    )
+
+    _assert_interface_contract(
+        ROOT / "srv/VerifyCalibration.srv",
+        [
+            ["string arm_id", "string baseline_session_id", "string verify_session_id"],
+            [
+                "bool success",
+                "string arm_id",
+                "string verify_session_id",
+                "uint32 sample_count",
+                "float64 translation_spread_m",
+                "float64 rotation_spread_rad",
+                "float64 mean_reprojection_error_px",
+                "float64 max_reprojection_error_px",
+                "bool passed",
+                "string result_file",
+                "string result_json",
                 "string message",
             ],
         ],

@@ -25,7 +25,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `three_robots.yaml` | 通用三臂在 `world` 中的布局与型号（由用户选择左右已求解会话后更新右臂位姿）；保留中臂模型参考，不决定实际启用的驱动 | 描述包、RViz、网站 3D 预览、标定布局写回 | [三臂可视化](../development/three-arm-visualization) |
 | `end_effectors.yaml` | 左右末端显示模型（AG2F90-C 占位）与安装位姿，中臂无挂载；被文档站三维场景和 `:8765` Web 控制页读取（后者随夹爪位置反馈实时开合），RViz/驱动 TF 尚未包含 | `website/scripts/sync-three-robots.mjs`、`model_manifest.py` | [夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型) |
 | `cameras_ros2.yaml` | 四台 Orbbec 的串号、launch 文件；`defaults` 共享彩色/深度宽高、fps、format，`cameras.<namespace>.parameters` 逐机覆盖，当前左右腕与后全局 `enable_depth=true`，两腕 `enable_frame_sync=true`；可由 `cameras_ros2.local.yaml` 或 `RM65_CAMERAS_LOCAL_CONFIG` 深合并覆盖；修改后停止相机再启动，重复 `up` 不热更新 | `host_cameras.py`、`rm65_camera_ros2` | [相机指南](../guide/cameras) |
-| `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
+| `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、固定板精度检验阈值（`verification`）、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
 | `recording.yaml` | 录制根目录、订阅/预检清单、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770`；当前只要求左右双臂和两只夹爪，使用独立双臂数据集标识 | `realman_recording` | [数据录制平台](../development/recording-platform) |
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
 | `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用和工作区 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |

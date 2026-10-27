@@ -29,6 +29,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SelectInputMode.srv"
   "srv/CaptureCalibrationSample.srv"
   "srv/SolveCalibration.srv"
+  "srv/VerifyCalibration.srv"
   "srv/UpdateCalibrationLayout.srv"
   DEPENDENCIES action_msgs builtin_interfaces std_msgs
 )

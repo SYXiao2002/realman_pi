@@ -24,6 +24,28 @@ def test_project_calibration_config_has_independent_wrist_inputs():
     assert config["sampling"]["minimum_samples_per_arm"] == 30
 
 
+def test_verification_limits_are_normalized():
+    config = load_config(CONFIG)
+    verification = config["verification"]
+    assert verification["sample_count"] == 10
+    for key in (
+        "maximum_translation_spread_m",
+        "maximum_rotation_spread_rad",
+        "maximum_reprojection_error_px",
+    ):
+        assert verification[key] > 0
+    # Verification is tighter than the solver because the board never moves.
+    assert verification["maximum_translation_spread_m"] < config["solver"]["maximum_board_translation_spread_m"]
+
+
+def test_verification_defaults_fill_missing_section(tmp_path):
+    config = yaml.safe_load(CONFIG.read_text())
+    del config["verification"]
+    path = tmp_path / "no-verify.yaml"
+    path.write_text(yaml.safe_dump(config))
+    assert load_config(path)["verification"]["sample_count"] == 10
+
+
 def test_invalid_calibration_config_is_rejected(tmp_path):
     path = tmp_path / "invalid.yaml"
     path.write_text("cameras: {left: {image_topic: /image}}\n", encoding="utf-8")

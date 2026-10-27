@@ -163,6 +163,7 @@ request ID 相同的 `ACTIVE/web` 状态作为确认立即转发，否则 web �
 `web_override_timeout_sec` 后以 `input_mode_timeout` 被丢弃。
 `software_stop` 绕过路由；夹爪、恢复、标定、运动学、位姿和记录操作均是 mode-neutral（包括
 `gripper_command`、`recover_motion`、`capture_calibration_sample`、`solve_calibration`、
+`update_calibration_layout`、`verify_calibration`、
 `get_current_pose`、`solve_ik`、`list_joint_records`、`save_joint_record`、`delete_joint_record` 与
 `apply_joint_record`）。Policy 输入叶目前只是 RUNNING 占位；Pika 和 keyboard 输入叶记录行为树控制权，
 实际 robot session 分别由 `pika_control_router` 和 `keyboard_control_router` 管理。
@@ -659,7 +660,7 @@ PYTHONPATH=src/driver/realman_web_control \
 
 前端源代码在 `src/driver/realman_web_control/web/src/`，控制页面和
 `calibration.html` 标定页面共用一个 WebSocket 服务。标定页先选择左臂或右臂，展示当前单臂输入健康、
-样本/会话、保存样本与求解操作、检测预览和结果；切臂后独立管理会话，见[单臂手眼标定](./camera-calibration)。前端构建配置在
+样本/会话、保存样本与求解操作、检测预览和结果，并提供固定板“标定精度检验”面板（`capture_calibration_sample` 携 `purpose: "verify"` 采集、`verify_calibration` 计算）；切臂后独立管理会话，见[单臂手眼标定](./camera-calibration)。前端构建配置在
 `config/web-control/vite.config.mjs`。普通 ROS 镜像不依赖 Node，提交的 `static/` 是可复现
 构建产物；源码变更后在仓库 `website/` 目录执行：
 

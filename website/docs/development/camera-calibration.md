@@ -55,10 +55,15 @@ flowchart LR
 | `solver.maximum_hand_eye_residual` | 手眼方程残差门槛 |
 | `solver.maximum_board_translation_spread_m` | 全部样本反算的固定板平移离散度，米 |
 | `solver.maximum_board_rotation_spread_rad` | 全部样本反算的固定板旋转离散度，弧度 |
+| `verification.sample_count` | 固定板精度检验会话的最低样本数（最小 3）；默认 10 |
+| `verification.maximum_translation_spread_m` | 检验通过的反算标定板平移离散度上限，米 |
+| `verification.maximum_rotation_spread_rad` | 检验通过的反算标定板旋转离散度上限，弧度 |
+| `verification.maximum_reprojection_error_px` | 检验通过的最大重投影误差上限，像素 |
+| `services.verify` | `VerifyCalibration` 服务名；默认 `/camera_calibration/verify` |
 
 `sampling.required_arms` 已移除；配置不再接受中腕或重复相机绑定。支持仅配置右腕，也支持左右腕均配置但独立使用。生产相机的帧同步由设备能力和相机配置控制；本标定服务检查时间戳并使用图像时刻 TF，不依赖多相机同步。
 
-## 两个 ROS service
+## ROS service 接口
 
 ### `CaptureCalibrationSample`
 
@@ -68,6 +73,7 @@ flowchart LR
 string session_id
 bool start_new_session
 string arm_id
+string purpose
 ---
 bool success
 string session_id
@@ -84,6 +90,8 @@ string message
 ```
 
 首次调用使用空 `session_id`、`start_new_session: true` 和 `arm_id: r`。后续请求使用返回的会话 ID、`start_new_session: false` 和相同臂。新建请求若同时带有非空 ID 会被拒绝。ROS 调用的空 `arm_id` 使用配置默认值；Web 协议要求显式传入 `r` 或 `l`。
+
+`purpose` 只接受空串或 `verify`：空串是正常标定会话，`verify` 把样本标记为固定板精度检验会话（见 [`VerifyCalibration`](#verifycalibration)）。`purpose` 在建会话时写入 manifest，同一会话后续采样必须传入一致的值，否则拒绝。检验会话不进入求解候选（`SolveCalibration` 对 `purpose: verify` 的会话直接失败）也不进入布局候选，`GET /api/calibration/sessions` 摘要通过 `purpose` 字段暴露该标记供前端过滤。
 
 服务只检查所选腕的消息健康状态、非零时间戳、配置的光学帧、分辨率和 ChArUco 角点，随后查询图像时刻 TF。通过后，一张原始 PNG、一张角点/坐标轴预览和样本 JSON 写入隐藏暂存目录，全部成功后才提交并增加计数。失败时尽可能保存最近画面供排查，返回检测或 TF 错误；不会写入一个可用于求解的半成品样本。
 
@@ -135,6 +143,41 @@ string message
 ros2 service call /camera_calibration/update_layout \
   realman_msgs/srv/UpdateCalibrationLayout \
   "{left_session_id: 'session-...', right_session_id: 'session-...'}"
+```
+
+### `VerifyCalibration`
+
+服务名：`/camera_calibration/verify`（配置项 `services.verify`）。
+
+```text
+string arm_id
+string baseline_session_id
+string verify_session_id
+---
+bool success
+string arm_id
+string verify_session_id
+uint32 sample_count
+float64 translation_spread_m
+float64 rotation_spread_rad
+float64 mean_reprojection_error_px
+float64 max_reprojection_error_px
+bool passed
+string result_file
+string result_json
+string message
+```
+
+精度检验面向已求解的单臂：操作者保持标定板不动，手动把当前臂挪到 `verification.sample_count` 个不同姿态，用 `purpose: verify` 采成一个独立检验会话，再用已求解的基准会话反算标定板位姿的重复性。它不发送机器人运动命令，也不依赖关节角回放。
+
+节点先用 `baseline_session_id` 读取 `calibration_result.json`（复用布局更新的身份/哈希/标定板校验）得到 `tool_to_camera`，再 `restore_session` 加载 `verify_session_id`：会话 manifest 的 `purpose` 必须为 `verify`，已提交样本数必须不少于 `verification.sample_count`，否则 `success: false`。每个样本按 `T_base_board = T_base_tool · T_tool_camera · T_camera_board` 反算，`verify_hand_eye` 用 `mean_transform_and_spread` 汇总平移/旋转离散度与重投影误差。
+
+`passed` 要求平移离散度、旋转离散度和最大重投影误差同时不超过 `verification` 的三个阈值（因板不动，阈值比 `solver` 更严）。结果写入检验会话目录下的 `verification_result.json`（`.json.tmp` 原子替换，含 `base_to_board`、各项指标、阈值快照和 `passed`），并通过 `result_json` 返回。检验结果不写 `calibration_result.json`，因此检验会话在 `GET /api/calibration/sessions` 中 `solved` 仍为 `false`，不会污染布局下拉。采样、求解、布局写回与检验共用同一把操作锁，并发请求返回失败。
+
+```bash
+ros2 service call /camera_calibration/verify \
+  realman_msgs/srv/VerifyCalibration \
+  "{arm_id: r, baseline_session_id: 'session-...', verify_session_id: 'session-...'}"
 ```
 
 ## 构建、启动与验证
@@ -189,7 +232,9 @@ ros2 service call /camera_calibration/solve \
 
 默认选择右臂。切换到左臂后，当前会话、预览和结果会清空，要求新建或加载左臂会话。请求进行中禁用切臂、加载、清理与删除操作，避免把结果关联到另一臂。预览通过 `/api/calibration/preview/<relative-log-path>` 提供，限定在日志根目录下的 PNG/JPEG。
 
-历史列表来自 `GET /api/calibration/sessions`，响应包含 `session_id`、`arm_id`、`sample_count`、`recoverable`、`solved` 和创建时间。页面筛选当前臂，会显示旧格式会话但禁用加载。节点仍会对加载的磁盘会话做完整身份校验，列表中的 `recoverable` 只是格式检查。
+历史列表来自 `GET /api/calibration/sessions`，响应包含 `session_id`、`arm_id`、`sample_count`、`recoverable`、`solved`、`purpose` 和创建时间。页面筛选当前臂，会显示旧格式会话但禁用加载；`purpose: verify` 的检验会话从主历史列表中过滤掉，只作为检验面板的候选。节点仍会对加载的磁盘会话做完整身份校验，列表中的 `recoverable` 只是格式检查。
+
+“标定精度检验”（VERIFY）面板面向当前臂：下拉框只列出当前臂已求解且非检验的会话作为基准，选定后保持标定板不动、手动挪臂并点击“采集检验样本”，每次发送 `purpose: "verify"` 的 `capture_calibration_sample` 消息并累加到一个独立检验会话；采满 `verification.sample_count`（页面从 `/api/calibration` 读取）后“计算标定精度”可用，发送 `verify_calibration` 消息（携 `arm_id`、`baseline_session_id`、`verify_session_id`）。节点返回 `calibration_verify_result` 事件，面板展示平移/旋转离散度、平均/最大重投影误差和 PASSED/FAILED 结论；“重开检验会话”清空当前检验会话以便重新采集，切臂也会重置检验状态。检验面板同样不发送机器人运动命令。
 
 刷新默认附带 `delete_empty=true`，仅清理没有已提交样本记录的空会话；非空旧格式或损坏记录会保留以便检查。显式选择会话并确认删除后，`DELETE /api/calibration/sessions/<session_id>` 会永久删除该会话的图片、样本和结果。接口只接受直接 `session-*` 子目录，拒绝路径穿越。保留数据应先归档到 `logs/camera_calibration/archives/`。
 
@@ -198,6 +243,8 @@ ros2 service call /camera_calibration/solve \
 每个会话需要覆盖足够的平移与各轴旋转。满足最低样本数不代表可观测性充分，不要在同一个姿态反复采样替代不同姿态。标定板移动、相机安装松动、时间戳错误或末端帧选择错误，都可能导致结果不适合抓取；操作者负责确认数据适用于当前安装。
 
 本接口仅适用于腕部 eye-in-hand 相机。固定全局相机需要独立的外参模型，不能套用该服务。
+
+精度检验衡量的是固定板反算位姿的重复性（离散度），不是相对真值的绝对精度：若基准手眼本身存在系统偏差，检验仍可能 PASSED。检验依赖一个已求解的基准会话和一张真正保持不动的标定板；采样姿态应覆盖不同旋转，否则离散度会低估实际误差。
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -211,4 +258,4 @@ npm run test:web-control -- tests/web-control/calibration.spec.ts
 npm run build
 ```
 
-测试覆盖单臂独立采样/求解、图像时刻 TF、另一臂离线、身份不一致、并发拒绝、旧会话保留及左右臂页面切换；软件测试不替代实机手眼精度验收。
+测试覆盖单臂独立采样/求解、图像时刻 TF、另一臂离线、身份不一致、并发拒绝、旧会话保留、左右臂页面切换，以及固定板精度检验（`verify_hand_eye` 纯函数、`VerifyCalibration` 服务对已求解基准打分、非检验会话被拒、VERIFY 面板采集/计算 e2e）；软件测试不替代实机手眼精度验收。

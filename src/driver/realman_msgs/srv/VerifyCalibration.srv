@@ -1,0 +1,18 @@
+# Accuracy check for an already-solved arm: replay a fixed-board verification
+# session against the baseline hand-eye result and report board-pose spread.
+string arm_id
+string baseline_session_id
+string verify_session_id
+---
+bool success
+string arm_id
+string verify_session_id
+uint32 sample_count
+float64 translation_spread_m
+float64 rotation_spread_rad
+float64 mean_reprojection_error_px
+float64 max_reprojection_error_px
+bool passed
+string result_file
+string result_json
+string message

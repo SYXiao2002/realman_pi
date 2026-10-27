@@ -30,6 +30,7 @@ def node_module(monkeypatch):
         services.CaptureCalibrationSample = SimpleNamespace(Request=object, Response=object)
         services.SolveCalibration = SimpleNamespace(Request=object, Response=object)
         services.UpdateCalibrationLayout = SimpleNamespace(Request=object, Response=object)
+        services.VerifyCalibration = SimpleNamespace(Request=object, Response=object)
         monkeypatch.setitem(sys.modules, "realman_msgs", package)
         monkeypatch.setitem(sys.modules, "realman_msgs.srv", services)
     return importlib.import_module("realman_camera_calibration.camera_calibration_node")
@@ -77,7 +78,7 @@ def callback_node(tmp_path, monkeypatch, node_module):
         get_logger=lambda: logger,
         get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=100_000_000_000)),
     )
-    for name in ("_capture_locked", "_solve_locked", "_start_session", "_load_session", "_session_directory", "_camera_health_state"):
+    for name in ("_capture_locked", "_solve_locked", "_verify_locked", "_baseline_tool_to_camera", "_start_session", "_load_session", "_session_directory", "_camera_health_state"):
         setattr(node, name, MethodType(getattr(node_module.CameraCalibrationNode, name), node))
     node._message_stamp_ns = node_module.CameraCalibrationNode._message_stamp_ns
     node._timestamp_delay_sec = node_module.CameraCalibrationNode._timestamp_delay_sec
@@ -160,3 +161,120 @@ def test_one_arm_solves_independently_and_never_updates_base_layout(callback_nod
     assert np.allclose(result["hand_eye"][arm]["tool_to_camera"], expected)
     assert result["verified_for_grasp"] is False
     assert "relative_base_poses" not in result
+
+
+def test_verify_scores_a_fixed_board_session_against_a_solved_baseline(callback_node, node_module):
+    node, _ = callback_node
+    arm = "r"
+    intrinsics = {"k": [1.0] * 9}
+    intrinsics_hash = content_hash(intrinsics)
+    rng = np.random.default_rng(5)
+
+    def rotation():
+        axis = rng.normal(size=3)
+        return cv2.Rodrigues(axis / np.linalg.norm(axis) * 0.6)[0]
+
+    expected = transform_matrix(rotation(), [0.05, 0.01, 0.12])
+    board_in_base = transform_matrix(rotation(), [0.4, 0.1, 0.8])
+
+    def write_samples(directory, manifest, count, tag):
+        sample_dir = directory / "batches" / tag
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            base_to_tool = transform_matrix(rotation(), rng.uniform(-0.3, 0.3, 3))
+            target_to_camera = np.linalg.inv(expected) @ np.linalg.inv(base_to_tool) @ board_in_base
+            sample = {
+                "arm_id": arm, "identity": manifest["identity"],
+                "sample_id": f"{arm}-{index:04d}-{tag}", "intrinsics_sha256": manifest["intrinsics_sha256"],
+                "base_to_tool": base_to_tool.tolist(), "target_to_camera": target_to_camera.tolist(),
+                "reprojection_error_px": 0.1,
+            }
+            (sample_dir / f"{index:04d}.json").write_text(json.dumps(sample))
+
+    node._start_session(arm)
+    baseline_id = node._session_id
+    baseline_manifest = node._manifests[baseline_id]
+    baseline_manifest.update(intrinsics=intrinsics, intrinsics_sha256=intrinsics_hash)
+    baseline_dir = node._session_directory(baseline_id)
+    write_manifest(baseline_dir, baseline_manifest)
+    write_samples(baseline_dir, baseline_manifest, node._config["sampling"]["minimum_samples_per_arm"], "baseline")
+    solve_response = SimpleNamespace(success=False)
+    node_module.CameraCalibrationNode._solve(
+        node, SimpleNamespace(arm_id=arm, session_id=baseline_id), solve_response
+    )
+    assert solve_response.success, solve_response.message
+
+    node._start_session(arm, "verify")
+    verify_id = node._session_id
+    assert verify_id != baseline_id
+    verify_manifest = node._manifests[verify_id]
+    assert verify_manifest["purpose"] == "verify"
+    verify_manifest.update(intrinsics=intrinsics, intrinsics_sha256=intrinsics_hash)
+    verify_dir = node._session_directory(verify_id)
+    write_manifest(verify_dir, verify_manifest)
+    write_samples(verify_dir, verify_manifest, node._config["verification"]["sample_count"], "verify")
+
+    response = SimpleNamespace(success=False)
+    node_module.CameraCalibrationNode._verify(
+        node,
+        SimpleNamespace(arm_id=arm, baseline_session_id=baseline_id, verify_session_id=verify_id),
+        response,
+    )
+    assert response.success, response.message
+    assert response.passed is True
+    assert response.sample_count == node._config["verification"]["sample_count"]
+    assert response.translation_spread_m < 1.0e-6
+    assert (verify_dir / "verification_result.json").is_file()
+
+
+def test_verify_rejects_a_session_that_is_not_tagged_for_verification(callback_node, node_module):
+    node, _ = callback_node
+    arm = "r"
+    intrinsics = {"k": [1.0] * 9}
+    intrinsics_hash = content_hash(intrinsics)
+    rng = np.random.default_rng(9)
+
+    def rotation():
+        axis = rng.normal(size=3)
+        return cv2.Rodrigues(axis / np.linalg.norm(axis) * 0.6)[0]
+
+    expected = transform_matrix(rotation(), [0.05, 0.01, 0.12])
+    board_in_base = transform_matrix(rotation(), [0.4, 0.1, 0.8])
+
+    def build(tag, purpose, count):
+        node._start_session(arm, purpose)
+        session_id = node._session_id
+        manifest = node._manifests[session_id]
+        manifest.update(intrinsics=intrinsics, intrinsics_sha256=intrinsics_hash)
+        directory = node._session_directory(session_id)
+        write_manifest(directory, manifest)
+        sample_dir = directory / "batches" / tag
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(count):
+            base_to_tool = transform_matrix(rotation(), rng.uniform(-0.3, 0.3, 3))
+            target_to_camera = np.linalg.inv(expected) @ np.linalg.inv(base_to_tool) @ board_in_base
+            sample = {
+                "arm_id": arm, "identity": manifest["identity"],
+                "sample_id": f"{arm}-{index:04d}-{tag}", "intrinsics_sha256": manifest["intrinsics_sha256"],
+                "base_to_tool": base_to_tool.tolist(), "target_to_camera": target_to_camera.tolist(),
+                "reprojection_error_px": 0.1,
+            }
+            (sample_dir / f"{index:04d}.json").write_text(json.dumps(sample))
+        return session_id
+
+    baseline_id = build("baseline", "", node._config["sampling"]["minimum_samples_per_arm"])
+    solve_response = SimpleNamespace(success=False)
+    node_module.CameraCalibrationNode._solve(
+        node, SimpleNamespace(arm_id=arm, session_id=baseline_id), solve_response
+    )
+    assert solve_response.success, solve_response.message
+    # A normal (untagged) session must not be accepted as a verification set.
+    plain_id = build("plain", "", node._config["verification"]["sample_count"])
+    response = SimpleNamespace(success=False)
+    node_module.CameraCalibrationNode._verify(
+        node,
+        SimpleNamespace(arm_id=arm, baseline_session_id=baseline_id, verify_session_id=plain_id),
+        response,
+    )
+    assert not response.success
+    assert "verification session" in response.message

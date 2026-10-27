@@ -2,6 +2,9 @@
 string session_id
 bool start_new_session
 string arm_id
+# Empty for a normal calibration session; "verify" tags fixed-board accuracy
+# samples so they stay out of the solve/layout candidate lists.
+string purpose
 ---
 bool success
 string session_id

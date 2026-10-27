@@ -225,3 +225,26 @@ def test_malformed_sample_records_are_preserved_during_empty_cleanup(tmp_path, m
     assert session.is_dir()
     assert summaries[0]["sample_count"] == 0
     assert summaries[0]["recoverable"] is False
+
+
+def test_session_summary_exposes_the_verify_purpose_marker(tmp_path):
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    root = static_root / "logs" / "camera_calibration"
+    identity = {"arm_id": "r", "serial": "right-camera", "mount_id": "right-wrist-v1"}
+    plain = root / "session-20260821T100001.000000Z"
+    verify = root / "session-20260821T100002.000000Z"
+    for directory, purpose in ((plain, None), (verify, "verify")):
+        batch = directory / "batches" / "batch-1"
+        batch.mkdir(parents=True)
+        manifest = {"schema_version": 1, "identity": identity, "intrinsics_sha256": "hash"}
+        if purpose:
+            manifest["purpose"] = purpose
+        (directory / "session.json").write_text(json.dumps(manifest))
+        sample = {"arm_id": "r", "identity": identity, "intrinsics_sha256": "hash", "base_to_tool": [[1.0]]}
+        (batch / "r-0000.json").write_text(json.dumps(sample))
+
+    summaries, _ = _server(static_root)._list_calibration_sessions()
+    by_id = {item["session_id"]: item for item in summaries}
+    assert by_id["session-20260821T100001.000000Z"]["purpose"] == ""
+    assert by_id["session-20260821T100002.000000Z"]["purpose"] == "verify"

@@ -12,6 +12,7 @@ from realman_camera_calibration.calibration_math import (
     relative_pose_from_board_poses,
     solve_hand_eye,
     transform_matrix,
+    verify_hand_eye,
 )
 from realman_camera_calibration.layout_update import update_layout_file
 
@@ -104,6 +105,61 @@ def test_hand_eye_solver_recovers_synthetic_tool_camera_transform():
     solved = solve_hand_eye(samples, "TSAI")
     assert solved["mean_residual_m"] < 1.0e-9
     assert np.allclose(np.asarray(solved["tool_to_camera"]), expected, atol=1.0e-8)
+
+
+def test_verify_hand_eye_reports_zero_spread_for_a_consistent_fixed_board():
+    rng = np.random.default_rng(11)
+
+    def random_rotation():
+        vector = rng.normal(size=3)
+        rotation, _ = cv2.Rodrigues(vector / np.linalg.norm(vector) * 0.8)
+        return rotation
+
+    tool_to_camera = transform_matrix(random_rotation(), [0.1, 0.02, 0.3])
+    board_in_base = transform_matrix(random_rotation(), [0.2, 0.1, 0.8])
+    samples = []
+    for _ in range(10):
+        base_to_tool = transform_matrix(random_rotation(), rng.uniform(-0.4, 0.4, 3))
+        target_to_camera = np.linalg.inv(tool_to_camera) @ np.linalg.inv(base_to_tool) @ board_in_base
+        samples.append(
+            {
+                "base_to_tool": base_to_tool.tolist(),
+                "target_to_camera": target_to_camera.tolist(),
+                "reprojection_error_px": 0.2,
+            }
+        )
+    metrics = verify_hand_eye(samples, tool_to_camera)
+    assert metrics["sample_count"] == 10
+    assert metrics["translation_spread_m"] < 1.0e-6
+    assert metrics["rotation_spread_rad"] < 1.0e-6
+    assert metrics["max_reprojection_error_px"] == 0.2
+    assert np.allclose(metrics["base_to_board"], board_in_base, atol=1.0e-6)
+
+
+def test_verify_hand_eye_detects_an_inconsistent_board_estimate():
+    tool_to_camera = np.eye(4)
+    board_in_base = transform_matrix(np.eye(3), [0.2, 0.1, 0.8])
+    samples = []
+    for offset in (0.0, 0.05):
+        base_to_tool = np.eye(4)
+        shifted_board = transform_matrix(np.eye(3), board_in_base[:3, 3] + [offset, 0.0, 0.0])
+        target_to_camera = np.linalg.inv(tool_to_camera) @ np.linalg.inv(base_to_tool) @ shifted_board
+        samples.append(
+            {
+                "base_to_tool": base_to_tool.tolist(),
+                "target_to_camera": target_to_camera.tolist(),
+                "reprojection_error_px": 0.1,
+            }
+        )
+    metrics = verify_hand_eye(samples, tool_to_camera)
+    assert metrics["translation_spread_m"] > 0.02
+
+
+def test_verify_hand_eye_rejects_too_few_samples():
+    import pytest
+
+    with pytest.raises(ValueError, match="at least two"):
+        verify_hand_eye([{"base_to_tool": np.eye(4).tolist(), "target_to_camera": np.eye(4).tolist()}], np.eye(4))
 
 
 def test_layout_update_preserves_comments_and_composes_relative_pose(tmp_path):

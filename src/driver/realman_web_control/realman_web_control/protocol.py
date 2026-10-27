@@ -182,12 +182,16 @@ def _parse_capture_calibration_sample(message: dict[str, Any]) -> dict[str, Any]
     if not isinstance(start_new_session, bool):
         raise ProtocolError("invalid_field", "start_new_session must be a boolean", request_id)
     arm_id = _calibration_arm_id(message)
+    purpose = _string(message.get("purpose", ""), "purpose", maximum=16, allow_empty=True)
+    if purpose not in ("", "verify"):
+        raise ProtocolError("invalid_field", "purpose must be empty or 'verify'", request_id)
     return {
         "type": "capture_calibration_sample",
         "request_id": request_id,
         "session_id": session_id,
         "start_new_session": start_new_session,
         "arm_id": arm_id,
+        "purpose": purpose,
     }
 
 
@@ -197,6 +201,16 @@ def _parse_solve_calibration(message: dict[str, Any]) -> dict[str, Any]:
         "request_id": _request_id(message),
         "session_id": _string(message.get("session_id", ""), "session_id", maximum=128, allow_empty=True),
         "arm_id": _calibration_arm_id(message),
+    }
+
+
+def _parse_verify_calibration(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "verify_calibration",
+        "request_id": _request_id(message),
+        "arm_id": _calibration_arm_id(message),
+        "baseline_session_id": _string(message.get("baseline_session_id"), "baseline_session_id", maximum=128),
+        "verify_session_id": _string(message.get("verify_session_id"), "verify_session_id", maximum=128),
     }
 
 
@@ -505,6 +519,7 @@ _ARMLESS_PARSERS = {
     "keyboard_state": _parse_keyboard_state,
     "capture_calibration_sample": _parse_capture_calibration_sample,
     "solve_calibration": _parse_solve_calibration,
+    "verify_calibration": _parse_verify_calibration,
     "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
     "plan_grasp": _parse_plan_grasp,
