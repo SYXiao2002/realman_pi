@@ -7,6 +7,9 @@ grippers:
     max_opening_m: 0.06
     finger_depth_m: 0.05
     finger_thickness_m: 0.01
+    # Y-direction (into-page) width of each finger pad; left finger is +X, right is -X.
+    # Visualization only: not used by the clearance/opening filter. Palm body is not modelled.
+    finger_width_m: 0.02
     clearance_m: 0.005
   binary_42d_left:
     id: binary_42d_left_unmeasured
@@ -14,4 +17,7 @@ grippers:
     max_opening_m: 0.06
     finger_depth_m: 0.05
     finger_thickness_m: 0.01
+    # Y-direction (into-page) width of each finger pad; left finger is +X, right is -X.
+    # Visualization only: not used by the clearance/opening filter. Palm body is not modelled.
+    finger_width_m: 0.02
     clearance_m: 0.005

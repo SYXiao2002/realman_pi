@@ -37,6 +37,36 @@ export function wirePoints(candidate: any, gripper: any): THREE.Vector3[] {
   return [[-half, 0, 0], [-half, 0, -depth], [half, 0, -depth], [half, 0, 0]]
     .map((point) => new THREE.Vector3(...point));
 }
+/** Two real-scale finger boxes from profile gripper_geometry; palm intentionally omitted.
+ *  Frame convention matches wirePoints: origin = closing centre, X = closing, Z = approach,
+ *  fingers extend toward -Z. Left finger sits at +X, right finger at -X. */
+export function boxGripper(candidate: any, gripper: any, color: string): THREE.Group | null {
+  const depth = Number(gripper?.finger_depth_m), thick = Number(gripper?.finger_thickness_m);
+  if (!Number.isFinite(depth) || depth <= 0 || !Number.isFinite(thick) || thick <= 0) return null;
+  // finger_width_m is optional; fall back to a square cross-section rather than inventing a dimension.
+  const width = Number.isFinite(Number(gripper?.finger_width_m)) && Number(gripper.finger_width_m) > 0
+    ? Number(gripper.finger_width_m) : thick;
+  const clear = Number(gripper?.clearance_m) || 0;
+  const low = Number(gripper?.min_opening_m) || 0;
+  const high = Number(gripper?.max_opening_m);
+  // Fingers hold the object width plus two-sided clearance, clamped to the measured opening range.
+  let opening = Number(candidate.width_m) + 2 * clear;
+  opening = Math.max(opening, low);
+  if (Number.isFinite(high)) opening = Math.min(opening, high);
+  // Closing centre along local +Z: native frames (T_camera_native_grasp) carry the wrist origin,
+  // offset from the contact by wrist_offset_m; common-protocol frames already origin at the contact.
+  const contactZ = candidate.T_camera_native_grasp
+    ? Number(candidate.vertical_alignment?.wrist_offset_m) || 0 : 0;
+  const material = new THREE.MeshStandardMaterial({ color, metalness: .1, roughness: .6 });
+  const group = new THREE.Group();
+  for (const side of [-1, 1]) {
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(thick, width, depth), material);
+    // Fingertips sit at the closing centre; fingers extend toward the palm (-Z from contact).
+    finger.position.set(side * (opening / 2 + thick / 2), 0, contactZ - depth / 2);
+    group.add(finger);
+  }
+  return group;
+}
 function dispose(group: THREE.Object3D) {
   group.traverse((item: any) => { item.geometry?.dispose();
     const materials = Array.isArray(item.material) ? item.material : [item.material];
@@ -54,9 +84,13 @@ function pointCloud(snapshot: any, sizePx: number) {
 function candidatePose(candidate: any, gripper: any, selected: boolean, frame: number[][], color: string, rank: number) {
   const group = new THREE.Group(); group.matrixAutoUpdate = false; group.matrix.copy(matrix(frame));
   group.add(new THREE.AxesHelper(selected ? .065 : .03));
-  const points = wirePoints(candidate, gripper);
-  if (points.length) group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
-    new THREE.LineBasicMaterial({ color })));
+  const boxes = boxGripper(candidate, gripper, color);
+  if (boxes) group.add(boxes);
+  else {
+    const points = wirePoints(candidate, gripper);
+    if (points.length) group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({ color })));
+  }
   const labelCanvas = document.createElement("canvas"); labelCanvas.width = 128; labelCanvas.height = 48;
   const ctx = labelCanvas.getContext("2d")!; ctx.fillStyle = color; ctx.font = "bold 30px sans-serif";
   ctx.fillText(`#${rank + 1}`, 4, 34);
@@ -75,7 +109,7 @@ export class GraspView {
   private layout: any;
   private robots = new Map<string, any>();
   private loadGeneration = 0;
-  private pointSize = 1.5;
+  private pointSize = 3.5;
   constructor(cloudCanvas: HTMLCanvasElement, alignedCanvas: HTMLCanvasElement, fleetCanvas: HTMLCanvasElement,
     private message: (text: string) => void) {
     try {
@@ -109,7 +143,7 @@ export class GraspView {
         });
         renderer.render(scene, camera);
       }
-      this.message("点云为相机光学系；对齐前后视角同步。拖动旋转、滚轮缩放。布局显示所选臂的采集姿态、点云和候选；对齐后接触中心的红 X 为闭合方向，绿 Y，蓝 Z 为接近方向。线框为算法示意尺寸。");
+      this.message("点云为相机光学系；对齐前后视角同步。布局以所选抓取 pose 为轨道中心：左键旋转、滚轮缩放、右键平移，初始视角对齐腕部相机俯视。对齐后接触中心的红 X 为闭合方向，绿 Y，蓝 Z 为接近方向。线框为算法示意尺寸。");
     } catch (error) { this.message(`WebGL 渲染失败：${String(error)}`); }
   }
   private describe(view: any) {
@@ -142,9 +176,11 @@ export class GraspView {
   }
   resetLayoutView() {
     const view = this.views[2]; if (!view || !this.snapshot) return;
-    // 优先从腕部相机的真实光学位姿取景，使 pose 与相机采集时看到的一致。
-    const config = this.layout?.robots.find((robot: any) => robot.id === this.snapshot.arm);
-    if (config && this.snapshot.T_base_camera && this.applyCameraViewpoint(view, config)) return;
+    // turntable 极轴固定为世界竖直：俯视抓取点也不会像“相机 up=光学−Y”那样在极点翻滚。
+    view.camera.up.set(0, 0, 1);
+    // 优先以“实际抓取 pose”为轨道中心、从腕部相机光心俯视，使初始画面≈采集视角；
+    // 缺少外参或抓取 pose 时回退到点云/机械臂包围球取景。
+    if (this.frameOnGraspPose(view)) return;
     const bounds = new THREE.Box3().setFromObject(view.data);
     if (bounds.isEmpty()) {
       const active = this.robots.get(this.snapshot.arm);
@@ -159,25 +195,56 @@ export class GraspView {
     view.camera.position.copy(sphere.center).add(new THREE.Vector3(1, -1.4, .9).normalize().multiplyScalar(distance));
     view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
   }
-  /** 把布局视图放到相机光学中心，沿光学 +Z 注视、图像上方为 -Y；成功返回 true。 */
-  private applyCameraViewpoint(view: any, config: any): boolean {
-    // 与 update() 中一致的基座世界变换：position + Euler(roll, pitch, yaw, "ZYX")。
+  /** 以所选抓取 pose 为轨道中心、从腕部相机光心俯视取景；成功返回 true。
+   *  OrbitControls 保持启用：左键绕抓取点公转、滚轮缩放、右键平移，交互与其它视图一致。 */
+  private frameOnGraspPose(view: any): boolean {
+    const config = this.layout?.robots.find((robot: any) => robot.id === this.snapshot.arm);
+    if (!config) return false;
+    // 与 update() 一致的基座世界变换：position + Euler(roll, pitch, yaw, "ZYX")。
     const base = new THREE.Matrix4().compose(
       new THREE.Vector3(config.transform.x, config.transform.y, config.transform.z),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(config.transform.roll, config.transform.pitch, config.transform.yaw, "ZYX")),
       new THREE.Vector3(1, 1, 1));
-    const camWorld = base.multiply(matrix(this.snapshot.T_base_camera));
-    const origin = new THREE.Vector3(camWorld.elements[12], camWorld.elements[13], camWorld.elements[14]);
-    // 光学系坐标轴在世界系下的方向：第 2 列为 +Z（前），第 1 列为 +Y（下）。
-    const forward = new THREE.Vector3(camWorld.elements[8], camWorld.elements[9], camWorld.elements[10]);
-    const down = new THREE.Vector3(camWorld.elements[4], camWorld.elements[5], camWorld.elements[6]);
-    if (forward.lengthSq() < 1e-9 || down.lengthSq() < 1e-9) return false;
-    forward.normalize(); down.normalize();
-    view.camera.up.copy(down).negate();          // 图像上方 = -光学 Y
-    view.camera.position.copy(origin);           // 视点位于相机光学中心
-    view.controls.target.copy(origin).add(forward.multiplyScalar(0.5));
+    const target = this.selectedGraspWorldPoint(base);
+    if (!target) return false;
+    view.controls.target.copy(target);
+    // 初始视点放到腕部相机光心，朝向≈采集画面。无外参、或光心与抓取点连线接近平行世界
+    // 竖直（OrbitControls 会在极点退化翻滚）时，退让到标准斜俯视，保证轨道交互始终自然。
+    let position: THREE.Vector3;
+    if (this.snapshot.T_base_camera) {
+      const camWorld = base.clone().multiply(matrix(this.snapshot.T_base_camera));
+      const eye = new THREE.Vector3(camWorld.elements[12], camWorld.elements[13], camWorld.elements[14]);
+      const span = eye.distanceTo(target);
+      const offAxis = new THREE.Vector3().subVectors(target, eye).cross(new THREE.Vector3(0, 0, 1)).length();
+      position = (span < 1e-3 || offAxis < .15 * span)
+        ? target.clone().add(new THREE.Vector3(1, -1.4, .9).normalize().multiplyScalar(Math.max(span, .35)))
+        : eye;
+    } else {
+      position = target.clone().add(new THREE.Vector3(1, -1.4, .9).normalize().multiplyScalar(.45));
+    }
+    view.camera.position.copy(position);
     view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
     return true;
+  }
+  /** 所选候选（无选中则取 rank 最高）的实际抓取 pose 世界坐标；与 update() 里 marker 同源。 */
+  private selectedGraspWorldPoint(base: THREE.Matrix4): THREE.Vector3 | null {
+    const list = this.snapshot?.candidates;
+    if (!Array.isArray(list) || !list.length) return null;
+    const candidate = list.find((c: any) => c.candidate_id === this.selected) || list[0];
+    if (!candidate) return null;
+    // 优先后端给出的基座系 pose（对齐后 > 通用 > 对齐前）；否则用冻结外参 T_base_camera
+    // 把接触中心/原生矩阵换算到基座系，与 pose 卡片和布局 marker 完全一致。
+    const baseRows = candidate.T_base_grasp_after_alignment || candidate.T_base_grasp
+      || candidate.T_base_grasp_before_alignment;
+    let local: THREE.Matrix4 | null = null;
+    if (baseRows) local = matrix(baseRows);
+    else if (this.snapshot.T_base_camera) {
+      const cam = contactFrame(candidate, "after") || stageFrame(candidate, "after")
+        || contactFrame(candidate, "before") || stageFrame(candidate, "before");
+      if (cam) local = matrix(this.snapshot.T_base_camera).multiply(matrix(cam));
+    }
+    if (!local) return null;
+    return new THREE.Vector3(local.elements[12], local.elements[13], local.elements[14]).applyMatrix4(base);
   }
   update(snapshot: any, selected: string, visible?: Set<string>) {
     const newObservation = snapshot && (snapshot.observation_id !== this.snapshot?.observation_id || snapshot.phase !== this.snapshot?.phase);
@@ -252,7 +319,8 @@ export class GraspView {
     }
     this.views.forEach((view) => {
       if (!snapshot) view.canvas.dataset.candidates = "";
-      view.controls.update(); view.renderer.render(view.scene, view.camera); this.describe(view);
+      view.controls.update();
+      view.renderer.render(view.scene, view.camera); this.describe(view);
     });
     const cropStatus = snapshot?.cloud?.workspace_crop_status;
     if (cropStatus === "applied") {
