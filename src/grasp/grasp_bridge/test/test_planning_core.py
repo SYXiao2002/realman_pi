@@ -10,7 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from grasp_bridge.geometry import from_pose, pose_drift, restricted_waypoints, to_pose
+from grasp_bridge.geometry import (adjust_geometry_response, from_pose, pose_drift,
+                                   restricted_waypoints, to_pose)
 from grasp_bridge.planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from grasp_bridge.rgbd import (CameraModel, crop_depth_to_workspace, image_array,
                                register_depth, validate_timing)
@@ -95,6 +96,57 @@ def test_capture_chain_and_grasp_tool_offset_compose_once():
         p, q = to_pose(T)
         np.testing.assert_allclose(from_pose(p, q), T, atol=1e-10)
     assert pose_drift(points["grasp"], points["lift"])[0] == pytest.approx(0.1)
+
+
+def test_bridge_geometry_offset_moves_all_contact_stages_and_preserves_native_pose():
+    Tbc = np.eye(4)
+    Tbc[:3, :3] = [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]]
+    native = from_pose([.1, .2, .5], [1, 0, 0, 0])
+    before = native.copy(); before[2, 3] += .09
+    after = before.copy(); after[:3, :3] = np.diag([1., -1., -1.])
+    response = {"candidates": [{
+        "candidate_id": "c1", "backend": "geometry", "T_camera_native_grasp": native,
+        "T_camera_grasp": after, "T_camera_grasp_before_alignment": before,
+        "T_camera_grasp_after_alignment": after, "metrics": {"native_origin_offset_m": .09},
+    }], "diagnostics": {"archive_id": "frozen"}}
+
+    adjusted = adjust_geometry_response(response, {"backend": "geometry", "T_base_camera": Tbc}, offset_m=.2)
+    candidate = adjusted["candidates"][0]
+    down_camera = Tbc[:3, :3].T @ [0., 0., -.2]
+    for field, original in (("T_camera_grasp", after),
+                            ("T_camera_grasp_before_alignment", before),
+                            ("T_camera_grasp_after_alignment", after)):
+        np.testing.assert_allclose(candidate[field][:3, 3], original[:3, 3] + down_camera)
+        np.testing.assert_array_equal(candidate[field][:3, :3], original[:3, :3])
+    np.testing.assert_array_equal(candidate["T_camera_native_grasp"], native)
+    assert candidate["metrics"]["geometry_center_offset_m"] == .2
+    assert adjusted["diagnostics"]["geometry_center_offset_source"] == "grasp_bridge"
+
+
+def test_bridge_geometry_offset_is_consumed_by_planner_and_not_cgn():
+    candidate = {"candidate_id": "c1", "backend": "geometry", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    response = adjust_geometry_response({"candidates": [candidate]},
+                                        {"backend": "geometry", "T_base_camera": np.eye(4)},
+                                        offset_m=.2)
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .01, "lift_m": .01,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": 1., "clearance_m": 0.},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    plan = calculate_plan(response["candidates"], profile, np.eye(4))
+    assert plan["waypoints"]["grasp"]["position_m"] == pytest.approx([0., 0., .3])
+    cgn = {"candidate_id": "cgn", "backend": "contact_graspnet",
+           "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    cgn_adjusted = adjust_geometry_response({"candidates": [cgn]},
+                                             {"backend": "contact_graspnet", "T_base_camera": np.eye(4)},
+                                             offset_m=.2)
+    np.testing.assert_array_equal(cgn_adjusted["candidates"][0]["T_camera_grasp"], cgn["T_camera_grasp"])
+
+
+def test_bridge_geometry_offset_falls_back_to_candidate_approach_axis_without_calibration():
+    candidate = {"candidate_id": "c1", "backend": "geometry",
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    adjusted = adjust_geometry_response({"candidates": [candidate]}, {"backend": "geometry"}, offset_m=.01)
+    np.testing.assert_allclose(adjusted["candidates"][0]["T_camera_grasp"][:3, 3], [0., 0., .51])
 
 
 def test_invalid_rotation_and_workspace_escape_rejected():
