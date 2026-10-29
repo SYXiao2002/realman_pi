@@ -1,7 +1,7 @@
 import "./theme.css";
 import "./grasp.css";
 import { Quaternion } from "three";
-import { GraspView, matrix, wirePoints, stageFrame, contactFrame, rankColor, type Stage } from "./grasp_view";
+import { GraspView, matrix, wirePoints, contactFrame, rankColor, type Stage } from "./grasp_view";
 import { validSnapshot, newerSnapshot } from "./grasp_state";
 import { GraspMotion } from "./grasp_motion";
 
@@ -121,7 +121,7 @@ function drawProjection() {
     const K = observation.K;
     const rendered: string[] = [];
     for (const [rank, item] of candidates.entries()) {
-      const frame = stageFrame(item, stage);
+      const frame = contactFrame(item, stage);
       if (!frame || !visibleCandidates.has(item.candidate_id)) continue;
       const T = matrix(frame), points = wirePoints(item, observation.gripper).map((p) => p.applyMatrix4(T));
       const origin = { x: frame[0][3], y: frame[1][3], z: frame[2][3] };

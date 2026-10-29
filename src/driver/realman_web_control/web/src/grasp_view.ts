@@ -6,14 +6,7 @@ import URDFLoader from "urdf-loader";
 export const matrix = (rows: number[][]) => new THREE.Matrix4().set(...rows.flat());
 export const rankColor = (rank: number) => ["#e41a1c", "#00bfff", "#ffbf00", "#bb66ff", "#00dd77"][rank % 5];
 export type Stage = "before" | "after";
-export function stageFrame(candidate: any, stage: Stage): number[][] | null {
-  if (stage === "before") return candidate.T_camera_native_grasp || candidate.T_camera_grasp_before_alignment || candidate.T_camera_grasp;
-  if (candidate.vertical_alignment?.applied) return candidate.T_camera_native_grasp_aligned || candidate.T_camera_grasp_after_alignment;
-  // The reference online service only aligns geometric grasps.
-  if (candidate.vertical_alignment?.status === "backend_not_applicable") return stageFrame(candidate, "before");
-  return null;
-}
-/** Contact-centre frames for numeric poses and the selected alignment marker. */
+/** Contact-centre frames shared by numeric poses, gripper geometry and pose markers. */
 export function contactFrame(candidate: any, stage: Stage): number[][] | null {
   if (stage === "before") return candidate.T_camera_grasp_before_alignment
     || (!candidate.vertical_alignment?.applied ? candidate.T_camera_grasp : null);
@@ -23,12 +16,14 @@ export function contactFrame(candidate: any, stage: Stage): number[][] | null {
 }
 export function wirePoints(candidate: any, gripper: any): THREE.Vector3[] {
   if (candidate.T_camera_native_grasp) {
-    // Byte-for-byte coordinates from offline_grasp/preview.py wire_points.
-    // Algorithm glyph only: these dimensions do not describe the robot tool.
+    // Offline preview glyph dimensions, rebased from the native wrist to the contact centre.
+    // These dimensions do not describe the robot tool.
     const half = Number(candidate.width_m) / 2;
     const [palm, tip] = candidate.backend === "contact_graspnet" ? [.0584, .1053] : [.05, .09];
+    const contactOffset = Number(candidate.vertical_alignment?.wrist_offset_m) || 0;
     return [[0, 0, 0], [0, 0, palm], [-half, 0, palm], [-half, 0, tip],
-      [-half, 0, palm], [half, 0, palm], [half, 0, tip]].map((p) => new THREE.Vector3(...p));
+      [-half, 0, palm], [half, 0, palm], [half, 0, tip]]
+      .map(([x, y, z]) => new THREE.Vector3(x, y, z - contactOffset));
   }
   // Common protocol: origin is closing centre, X closing, Z approach.
   // Show measured fingers only; never borrow Panda/URDF dimensions.
@@ -53,16 +48,13 @@ export function boxGripper(candidate: any, gripper: any, color: string): THREE.G
   let opening = Number(candidate.width_m) + 2 * clear;
   opening = Math.max(opening, low);
   if (Number.isFinite(high)) opening = Math.min(opening, high);
-  // Closing centre along local +Z: native frames (T_camera_native_grasp) carry the wrist origin,
-  // offset from the contact by wrist_offset_m; common-protocol frames already origin at the contact.
-  const contactZ = candidate.T_camera_native_grasp
-    ? Number(candidate.vertical_alignment?.wrist_offset_m) || 0 : 0;
+  // The caller supplies a contact-centre frame, so fingers extend toward local -Z.
   const material = new THREE.MeshStandardMaterial({ color, metalness: .1, roughness: .6 });
   const group = new THREE.Group();
   for (const side of [-1, 1]) {
     const finger = new THREE.Mesh(new THREE.BoxGeometry(thick, width, depth), material);
     // Fingertips sit at the closing centre; fingers extend toward the palm (-Z from contact).
-    finger.position.set(side * (opening / 2 + thick / 2), 0, contactZ - depth / 2);
+    finger.position.set(side * (opening / 2 + thick / 2), 0, -depth / 2);
     group.add(finger);
   }
   return group;
@@ -233,14 +225,13 @@ export class GraspView {
     const candidate = list.find((c: any) => c.candidate_id === this.selected) || list[0];
     if (!candidate) return null;
     // 优先后端给出的基座系 pose（对齐后 > 通用 > 对齐前）；否则用冻结外参 T_base_camera
-    // 把接触中心/原生矩阵换算到基座系，与 pose 卡片和布局 marker 完全一致。
+    // 把接触中心矩阵换算到基座系，与 pose 卡片和布局 marker 完全一致。
     const baseRows = candidate.T_base_grasp_after_alignment || candidate.T_base_grasp
       || candidate.T_base_grasp_before_alignment;
     let local: THREE.Matrix4 | null = null;
     if (baseRows) local = matrix(baseRows);
     else if (this.snapshot.T_base_camera) {
-      const cam = contactFrame(candidate, "after") || stageFrame(candidate, "after")
-        || contactFrame(candidate, "before") || stageFrame(candidate, "before");
+      const cam = contactFrame(candidate, "after") || contactFrame(candidate, "before");
       if (cam) local = matrix(this.snapshot.T_base_camera).multiply(matrix(cam));
     }
     if (!local) return null;
@@ -272,7 +263,7 @@ export class GraspView {
         }
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
-          const frame = stageFrame(candidate, stage);
+          const frame = contactFrame(candidate, stage);
           if (frame && this.visible.has(candidate.candidate_id)) {
             optical.data.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, frame, rankColor(rank), rank));
             rendered.push(candidate.candidate_id);
@@ -293,17 +284,16 @@ export class GraspView {
         }
         const camera = new THREE.Group(); camera.matrixAutoUpdate = false; camera.matrix.copy(matrix(snapshot.T_base_camera));
         if (snapshot.cloud.workspace_crop_status === "applied") camera.add(pointCloud(snapshot, this.pointSize));
-        camera.add(new THREE.AxesHelper(.10)); base.add(camera);
+        base.add(camera);
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
-          const native = candidate.vertical_alignment?.applied ? stageFrame(candidate, "after") : stageFrame(candidate, "before");
-          if (native && this.visible.has(candidate.candidate_id)) {
-            const frame = matrix(snapshot.T_base_camera).multiply(matrix(native));
+          const contact = candidate.vertical_alignment?.applied ? contactFrame(candidate, "after") : contactFrame(candidate, "before");
+          if (contact && this.visible.has(candidate.candidate_id)) {
+            const frame = matrix(snapshot.T_base_camera).multiply(matrix(contact));
             const rows = Array.from({ length: 4 }, (_, r) => Array.from({ length: 4 }, (_, c) => frame.elements[c * 4 + r]));
             base.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, rows, rankColor(rank), rank));
             rendered.push(candidate.candidate_id);
-            const contact = contactFrame(candidate, "after");
-            if (candidate.candidate_id === selected && candidate.vertical_alignment?.applied && contact) {
+            if (candidate.candidate_id === selected && candidate.vertical_alignment?.applied) {
               const marker = new THREE.Group(); marker.matrixAutoUpdate = false;
               marker.matrix.copy(matrix(snapshot.T_base_camera).multiply(matrix(contact)));
               marker.add(new THREE.AxesHelper(.12), new THREE.Mesh(new THREE.SphereGeometry(.006),
