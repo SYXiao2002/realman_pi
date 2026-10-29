@@ -50,7 +50,7 @@ expected_model_id: null
 
 # Point-cloud collision gate for the visual two-finger boxes. These thresholds
 # are evidence limits in metres/counts; they do not change measured gripper
-# dimensions in config/grasp/gripper_specs.yaml. Unknown evidence blocks plans.
+# dimensions in config/grasp/gripper_specs.yaml. Blocking follows the list below.
 collision:
   enabled: true
   warning_clearance_m: 0.003
@@ -59,4 +59,7 @@ collision:
   cluster_voxel_m: 0.003
   minimum_local_points: 20
   minimum_collision_points: 3
-  blocking_statuses: [collision, warning, unknown]
+  # Warning and unknown evidence are advisory; keep their metrics/masks visible
+  # for review. Only a confirmed collision blocks planning. Unknown does not
+  # mean safe: it means this policy explicitly accepts incomplete evidence.
+  blocking_statuses: [collision]

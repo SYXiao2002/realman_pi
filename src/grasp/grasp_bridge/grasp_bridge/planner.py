@@ -17,7 +17,7 @@ def _candidate_geometry(candidate, profile, T_base_camera, collision_config=None
     if collision_config is not None:
         collision = candidate.get("collision") or {}
         status = collision.get("status", "unknown")
-        if status in collision_config.get("blocking_statuses", ("collision", "warning", "unknown")):
+        if status in collision_config.get("blocking_statuses", ("collision",)):
             reason = collision.get("reason")
             detail = f": {reason}" if isinstance(reason, str) and reason else ""
             raise ValueError(f"collision status is {status}{detail}")

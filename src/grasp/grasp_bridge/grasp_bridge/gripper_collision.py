@@ -19,7 +19,7 @@ DEFAULT_COLLISION_CONFIG = {
     "cluster_voxel_m": 0.003,
     "minimum_local_points": 20,
     "minimum_collision_points": 3,
-    "blocking_statuses": ["collision", "warning", "unknown"],
+    "blocking_statuses": ["collision"],
 }
 _STATUSES = ("safe", "warning", "collision", "unknown")
 _ID_RE = re.compile(r"(?:0|[1-9][0-9]*)$")
