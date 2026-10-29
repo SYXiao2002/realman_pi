@@ -56,7 +56,7 @@ flowchart LR
 
 | 权威文件 | 内容 |
 | --- | --- |
-| `config/ros/grasp_profiles.yaml` | 臂、相机、夹爪、工具引用、姿态和受限工作区 |
+| `config/ros/grasp_profiles.yaml` | 臂、相机、夹爪、工具引用、姿态、受限工作区（TCP 走廊）与碰撞检测区 |
 | `config/ros/camera_extrinsics.yaml` | 经过审批的单臂手眼身份、矩阵及独立验证误差 |
 | `config/ros/grasp_task.yaml` | 目标、租约和各阶段超时；profile/backend 默认来自 `grasp_bridge.yaml` |
 | `config/ros/grasp_bridge.yaml` | WS 地址、模型身份、时序、停稳、规划限制、接触中心偏移和点云夹爪防碰阈值 |
@@ -92,7 +92,7 @@ T_base_tcp = T_base_flange(t_capture) × T_flange_color
 
 几何候选生成后，算法服务直接调用原项目 `grasp_selection.py` 的 `align_grasp_to_base_vertical`：使用采集时冻结的 `T_base_camera`，把接近轴强制对齐所选基座的 −Z，并保留接触中心。该函数连同原 worker 一起原样复制、校验源码哈希，不维护另一份对齐算法。与原在线服务一致，Contact-GraspNet 不执行这一步。
 
-后端返回候选后，`grasp_bridge` 才应用 `config/ros/grasp_bridge.yaml` 中的 `geometry_center_offset_m`。正值以米为单位沿采集时所选基座的 −Z 下移；当前配置值 `0.2` 表示下移 200 mm，设为 `0` 可恢复未偏移结果。bridge 同时调整 `T_camera_grasp`、`T_camera_grasp_before_alignment` 和 `T_camera_grasp_after_alignment`，所以可视化、Pose 卡片、规划和 evaluation 快照使用同一份结果；`T_camera_native_grasp` 与 `T_camera_native_grasp_aligned` 保留后端原始矩阵。该偏移只应用于 geometry，不应用于 Contact-GraspNet。Web 三维/投影视图以调整后的接触中心为坐标原点，不显示原始腕部 pose 原点。
+后端返回候选后，`grasp_bridge` 才应用 `config/ros/grasp_bridge.yaml` 中的 `geometry_center_offset_m`。正值以米为单位沿采集时所选基座的 −Z 下移；例如 `0.01` 表示下移 10 mm，实际值以该配置为准；设为 `0` 可恢复未偏移结果。bridge 同时调整 `T_camera_grasp`、`T_camera_grasp_before_alignment` 和 `T_camera_grasp_after_alignment`，所以可视化、Pose 卡片、规划和 evaluation 快照使用同一份结果；`T_camera_native_grasp` 与 `T_camera_native_grasp_aligned` 保留后端原始矩阵。该偏移只应用于 geometry，不应用于 Contact-GraspNet。Web 三维/投影视图以调整后的接触中心为坐标原点，不显示原始腕部 pose 原点。
 
 每个候选保留生成时的 `T_camera_native_grasp` 和对齐后的 `T_camera_native_grasp_aligned`；`T_camera_grasp_before_alignment` / `T_camera_grasp_after_alignment` 是各阶段转换到接触中心的矩阵。原点转换仅沿该阶段本地 Z 移动：几何使用原 worker 的 wrist offset，CGN 使用 manifest 固定的 native hand depth。`T_camera_grasp` 在对齐成功时采用对齐后结果，规划直接消费该矩阵；分数、宽度、目标归属和候选顺序不变。`vertical_alignment.status` 为 `applied`、`missing_base_camera` 或 `backend_not_applicable`。行为树规划请求要求有效的采集时 `T_base_camera`，以便按 profile 工作区裁切深度；采集后的 bridge offset 使用同一冻结的 `T_base_camera`，没有它时只在纯离线几何单元路径中沿候选接近轴回退。CGN 的对齐后字段为 null，页面明确标注沿用原始结果。
 
@@ -102,9 +102,15 @@ T_base_tcp = T_base_flange(t_capture) × T_flange_color
 
 `src/grasp/grasp_bridge/grasp_bridge/gripper_collision.py` 在后端对齐和接触中心偏移完成后评估每个候选。它只生成两个 `visual_finger_boxes/v1` 手指盒体：开口为候选宽度加两侧 clearance 后按 `min_opening_m` / `max_opening_m` 夹紧，盒体尺寸为厚度、宽度、深度；`finger_width_m` 缺失或无效时回退为厚度。碰撞模块、evaluation 快照和 Web 三维渲染共用同一份 `candidate.collision.geometry`，不覆盖 palm、腕部、机械臂连杆或完整工具。
 
-评估按 `pregrasp`、`approach_sweep`、`grasp`、`lift` 四阶段检查完整 workspace 点云。目标候选的实例分割点被排除，标签 0 仍是环境。`min_clearance_m` 是手指盒体 SDF 的有符号最小值，`max_penetration_m` 是最大穿透深度；穿透点以 `cluster_voxel_m` 的 26 邻域聚类，达到 `minimum_collision_points` 才确认 `collision`。点数不足、分割身份缺失、采集外参缺失或碰撞配置关闭会返回 `unknown`，不会解释为安全。`safe`、`warning`、`collision`、`unknown` 的阻断列表由 `collision.blocking_statuses` 控制，默认全部阻断，即使 `ik_precheck: false` 也不会绕过防碰门。
+评估按 `pregrasp`、`approach_sweep`、`grasp`、`lift` 四阶段检查环境点云。碰撞检测使用独立的 `collision_workspace_m` 区域裁剪深度：它是 `workspace_m`（TCP 走廊，只约束 pregrasp/grasp/lift 三个 TCP 点的可达范围）的**超集**，额外纳入手指在走廊外仍可能触及的障碍（如料箱壁）。推理与 TCP 走廊校验始终用较窄的 `workspace_m` 裁剪，只有喂给碰撞检测的点云用较宽的 `collision_workspace_m`。未配置 `collision_workspace_m` 时回退到 `workspace_m`；一旦配置，必须是有效盒体且完整包含 `workspace_m`，否则 profile 不就绪。目标候选的实例分割点被排除，标签 0 仍是环境。`min_clearance_m` 是手指盒体 SDF 的有符号最小值，`max_penetration_m` 是最大穿透深度；穿透点以 `cluster_voxel_m` 的 26 邻域聚类，达到 `minimum_collision_points` 才确认 `collision`。点数不足、分割身份缺失、采集外参缺失或碰撞配置关闭会返回 `unknown`，不会解释为安全。
 
-两个页面显示完整候选；当前选中候选的临近点为黄色、碰撞点为红色，表格同步显示状态、间隙、穿透、点数和最差阶段。Web 只对最多 35,000 个显示点使用分类 mask，规划指标始终来自未抽样 workspace 点云。结果只描述当前可见传感器点云，不能证明遮挡区域或其他实体无碰撞。
+`collision.blocking_statuses` 决定哪些状态阻断规划。当前 `config/ros/grasp_bridge.yaml` 配置为 `[collision]`：`warning` 和 `unknown` 仅提示，保留状态、原因、间隙、穿透和显示 mask，允许通过防碰门后继续检查工作区、夹爪开口和可选 IK。warning 也可能包含浅穿透或未形成确认碰撞簇的穿透点；unknown 表示点云、分割、外参或局部证据不足，二者都不代表安全。候选仍按后端顺序选择，不因 warning 或 unknown 自动重排。即使 `ik_precheck: false`，确认的 `collision` 仍阻断。需要恢复严格策略时，把 `warning`、`unknown` 加回列表；省略该配置时，代码默认也只阻断 `collision`。修改列表后重启 `grasp_bridge` 才生效，已有 evaluation 快照不会自动重算。
+
+为避免候选数和点云规模使 `PlanGrasp` 超过 `config/ros/grasp_task.yaml` 的规划期限，碰撞模块先用四阶段手指盒体扫掠的基座系包围盒做保守 broad-phase，再对保留的点执行原有 SDF 和聚类。包围盒在手指局部坐标系扩展后再旋转，完整保留 warning envelope 与局部证据点；同时用一个样本的实际 SDF 上界扩展范围，保留各阶段的精确最小间隙。相同分割实例共用环境点云，显示 mask 也采用相同的筛选。候选顺序、阻断阈值和碰撞结论保持不变。
+
+规划 Action 的 `diagnostics_json.timings_ms` 和 `grasp_bridge` ROS 日志记录 `capture`、`workspace_crop`、`inference`、`collision`、`visualization`、`waypoint_plan`、`settle`、`finalize`、`review` 与 `total` 的毫秒耗时；只读评估只包含实际执行的阶段。失败结果也保留已执行阶段与出错阶段的耗时，拒绝快照耗时记为 `rejection_review`。其中 `capture` 包含 profile/租约准备，`collision` 包含推理后的租约检查与接触偏移，`review` 包含显示分类和快照发布，可据此区分算法服务、本地防碰与 Web 快照耗时。
+
+两个页面显示完整候选；当前选中候选的临近点为黄色、碰撞点为红色，表格同步显示状态、间隙、穿透、点数和最差阶段。Web 只对 `workspace_m` 内最多 35,000 个显示点使用分类 mask，规划指标始终来自未抽样的碰撞检测区点云；检测区更宽时，其外沿障碍参与判定但不进入显示点云。三维布局视图中，绿色盒是 TCP 走廊 `workspace_m`、琥珀色盒是更宽的碰撞检测区 `collision_workspace_m`（两者不同时才画后者）。结果只描述当前可见传感器点云，不能证明遮挡区域或其他实体无碰撞。
 
 `/grasp.html` 在页面上方提供全宽的采集机械臂布局，自动取景覆盖所选臂、采集点云和候选，并突出显示所选对齐后接触中心。Pose 默认只显示当前选中的一个；范围控件可显示所选实例的全部 Pose 或所有实例 Pose，也可通过候选 checkbox 自由组合。候选行、Pose 下拉框和复核对象共用当前选择。布局点云由采集时 RGB 与注册深度按内参逐像素反投影，颜色取同一像素 RGB；点先变换到所选 `base_frame`，只保留 `workspace_m` 盒内的点，输出绘图时仍使用相机光学系坐标，再用该 observation 冻结的 `T_base_camera` 放入基座系。推理请求在原分辨率保留 RGB，只将注册深度中工作区外的像素置零；几何与 CGN 都从这份深度生成点云。缺少采集外参、workspace 无效或裁切后不足 100 个有效深度像素时，推理在发请求前失败。快照显示同一裁切深度，`depth_stats.valid_pixels` 是裁切后数量，另保留裁切前后的计数；显示点云仍最多均匀抽样到 35,000 点，点径默认固定为 3.5 px。ROS 到 Web 的评估事件限制为 8 MiB。这个 `workspace_m` 是 profile 的 TCP 规划范围，不是夹爪/机械臂碰撞模型；裁切不能替代碰撞检测。`/grasp_plan.html` 是行为树规划专用的只读页面：它订阅同一 evaluation 快照，Pose 默认显示被选中的计划候选，可切换为候选所属实例的全部 Pose 或所有实例 Pose，点击候选行可聚焦到单个 Pose。页面显示所有候选的通过/拒绝原因、选中的 pregrasp/grasp/lift 计划、采集机械臂和 profile 工作区线框，不提供运动或夹爪控制。几何候选 ID `object_id:index` 中，`object_id` 是实例分割 ID，`index` 是该实例内从 0 开始的候选序号，例如 `16:0` 是实例 16 的第一个候选；其他后端的 ID 由后端定义。叶节点只发起 `PlanGrasp`，不负责打开浏览器。数值、候选 pose 和线框均使用接触中心矩阵，隐藏原始腕部 pose 坐标轴；三臂世界布局仅参与展示。交互、不可用状态和只读边界见 [Web 评估页](./realman-web-control#grasp-离线评估页)。
 
@@ -184,7 +190,7 @@ ros2 launch grasp_bridge grasp_bridge.launch.py config_root:="$PWD/config"
 
 宿主机构建须先安装上面的共享传输依赖；Ubuntu 22.04 自带的 websockets 版本不足以提供同步客户端。ROS Docker 已安装这些依赖。
 
-`grasp_bridge.yaml` 是页面与 XML 共用的 profile/backend 默认配置；机器人姿态、标定、TCP 和夹爪几何仍来自共享 profile 配置。`grasp.html` 始终使用 `evaluation_only=true`，只读评估不调用 IK。bridge 内部先执行点云夹爪防碰，再进行抓取几何和 seeded IK 预检；防碰阻断状态会以结构化候选拒绝原因进入行为树快照。当前 `ik_precheck: false` 允许时间紧的现场路径直接产出三个 MOVEL pose，由控制器在执行时检查笛卡尔运动，但不能绕过 collision/warning/unknown 门。bridge 仍不发送机器人或夹爪动作，`grasp.xml` 的后续叶节点负责下发 MOVEL 和夹爪命令。人工 `verified` 字段不再阻断运行，必要配置仍需结构完整。操作者对配置与现场设备相符负责，并承担实机风险。行为树保留显式 `REALMAN_BT_DRY_RUN=false` 开关。启动顺序：`./rm65 up`，随后 `REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
+`grasp_bridge.yaml` 是页面与 XML 共用的 profile/backend 默认配置；机器人姿态、标定、TCP 和夹爪几何仍来自共享 profile 配置。`grasp.html` 始终使用 `evaluation_only=true`，只读评估不调用 IK。bridge 内部先执行点云夹爪防碰，再进行抓取几何和 seeded IK 预检；防碰阻断状态会以结构化候选拒绝原因进入行为树快照。当前 `ik_precheck: false` 允许时间紧的现场路径直接产出三个 MOVEL pose，由控制器在执行时检查笛卡尔运动；当前防碰策略只阻断 `collision`，`warning` 和 `unknown` 仅提示，但 unknown 不代表安全。bridge 仍不发送机器人或夹爪动作，`grasp.xml` 的后续叶节点负责下发 MOVEL 和夹爪命令。人工 `verified` 字段不再阻断运行，必要配置仍需结构完整。操作者对配置与现场设备相符负责，并承担实机风险。行为树保留显式 `REALMAN_BT_DRY_RUN=false` 开关。启动顺序：`./rm65 up`，随后 `REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
 | 接口 | 类型/意义 |
 | --- | --- |

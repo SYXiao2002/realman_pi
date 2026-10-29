@@ -322,6 +322,16 @@ export class GraspView {
           (workspace.material as THREE.Material).opacity = 0.85;
           base.add(workspace);
         }
+        // Amber box = wider collision-detection region (superset of the green TCP
+        // corridor). Only drawn when it actually differs from the workspace.
+        if (snapshot.collision_workspace_m
+            && JSON.stringify(snapshot.collision_workspace_m) !== JSON.stringify(snapshot.workspace_m)) {
+          const collisionBounds = new THREE.Box3(new THREE.Vector3(...snapshot.collision_workspace_m[0]), new THREE.Vector3(...snapshot.collision_workspace_m[1]));
+          const collision = new THREE.Box3Helper(collisionBounds, 0xfbbf24);
+          (collision.material as THREE.Material).transparent = true;
+          (collision.material as THREE.Material).opacity = 0.6;
+          base.add(collision);
+        }
         const camera = new THREE.Group(); camera.matrixAutoUpdate = false; camera.matrix.copy(matrix(snapshot.T_base_camera));
         if (snapshot.cloud.workspace_crop_status === "applied") camera.add(pointCloud(snapshot, this.pointSize, selected));
         base.add(camera);

@@ -50,6 +50,15 @@ def test_unmeasured_flags_do_not_block_structural_profile_loading(config):
     assert load_profile(config, "left_wrist")["arm"] == "l"
 
 
+def test_collision_workspace_must_contain_workspace(config):
+    # The shipped right_wrist collision region is a superset of its workspace.
+    assert "collision_workspace_m" not in load_profile(config, "right_wrist")["readiness_problems"]
+    # Shrinking it below the workspace makes the profile not ready.
+    (config / "ros/grasp_profiles.local.yaml").write_text(
+        "profiles:\n  right_wrist:\n    collision_workspace_m: [[0, 0, 0], [0.01, 0.01, 0.01]]\n")
+    assert "collision_workspace_m" in load_profile(config, "right_wrist")["readiness_problems"]
+
+
 def test_cross_arm_gripper_mapping_is_rejected(config):
     (config / "ros/grasp_profiles.local.yaml").write_text(
         "profiles:\n  right_wrist:\n    gripper: gripper_left\n")

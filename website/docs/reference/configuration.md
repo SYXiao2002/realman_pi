@@ -28,10 +28,10 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、固定板精度检验阈值（`verification`）、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
 | `recording.yaml` | 录制根目录、订阅/预检清单、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770`；当前只要求左右双臂和两只夹爪，使用独立双臂数据集标识 | `realman_recording` | [数据录制平台](../development/recording-platform) |
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
-| `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用和工作区 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
+| `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用、工作区（TCP 走廊 `workspace_m`）与可选碰撞检测区（`collision_workspace_m`，必须是工作区超集） | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `camera_extrinsics.yaml` | 独立腕相机手眼结果、设备身份和物理精度验收；本地覆盖为 `camera_extrinsics.local.yaml`，导入默认未验收 | `grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `grasp_task.yaml` | 目标、租约与各阶段超时、MoveL 结果等待余量、保持时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
-| `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛、可选 `ik_precheck`、`geometry_center_offset_m` 及点云夹爪防碰阈值 | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
+| `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛、可选 `ik_precheck`、`geometry_center_offset_m` 及点云夹爪防碰阈值；当前 `collision.blocking_statuses` 仅阻断 collision，warning/unknown 仅提示，修改后重启 bridge | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |
 

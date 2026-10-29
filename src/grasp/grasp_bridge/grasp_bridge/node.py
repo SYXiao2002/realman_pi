@@ -383,6 +383,16 @@ class GraspBridge(Node):
         result = PlanGrasp.Result()
         observation = request = response = plan = None
         generation = self.generation
+        timings_ms = {}
+        planning_started = phase_started = time.perf_counter()
+        phase_name = "capture"
+
+        def mark_phase(name):
+            nonlocal phase_started
+            now = time.perf_counter()
+            timings_ms[name] = round((now - phase_started) * 1000.0, 1)
+            phase_started = now
+
         canceled = lambda: handle.is_cancel_requested or self.generation != generation
         try:
             if self.dry_run and not handle.request.evaluation_only:
@@ -404,6 +414,8 @@ class GraspBridge(Node):
             self.feedback(handle, "capture", "waiting for new paired observation")
             observation = self.capture(canceled, self.get_clock().now().nanoseconds,
                                        evaluation_only=handle.request.evaluation_only)
+            mark_phase("capture")
+            phase_name = "workspace_crop"
             depth = np.asarray(observation["depth_m"])
             valid_before_crop = int(observation.get(
                 "depth_valid_pixels_before_crop",
@@ -417,9 +429,24 @@ class GraspBridge(Node):
             if valid_after_crop < 100:
                 raise ValueError("insufficient workspace depth after crop: "
                                  f"{valid_after_crop} valid pixels, require at least 100")
-            observation = {**observation, "depth_m": cropped_depth, "workspace_crop_status": "applied",
+            # Inference and the TCP corridor use the tight workspace crop, but
+            # collision detection needs a wider region so obstacles just outside
+            # the corridor (e.g. bin walls the fingers could still hit) are kept.
+            collision_region = self.profile.get("collision_workspace_m")
+            if collision_region is None:
+                collision_depth = cropped_depth
+            else:
+                try:
+                    collision_depth = crop_depth_to_workspace(
+                        depth, observation["K"], observation["T_base_camera"], collision_region)
+                except ValueError as exc:
+                    raise ValueError(f"collision workspace depth crop failed: {exc}") from exc
+            observation = {**observation, "depth_m": cropped_depth, "collision_depth_m": collision_depth,
+                           "workspace_crop_status": "applied",
                            "depth_valid_pixels_before_crop": valid_before_crop,
                            "depth_valid_pixels_after_crop": valid_after_crop}
+            mark_phase("workspace_crop")
+            phase_name = "inference"
             request = {"type": "infer", "protocol_version": PROTOCOL_VERSION,
                        "task_id": handle.request.task_id, "request_id": uuid.uuid4().hex,
                        "observation_id": uuid.uuid4().hex, "generation": generation,
@@ -442,6 +469,8 @@ class GraspBridge(Node):
             response = infer(self.settings["ws_uri"], request, expected_model_id=self.settings["expected_model_id"],
                              connect_timeout_sec=self.settings["connect_timeout_sec"],
                              inference_timeout_sec=self.settings["inference_timeout_sec"], canceled=canceled)
+            mark_phase("inference")
+            phase_name = "collision"
             if canceled():
                 raise PlanningCanceled("planning canceled after inference")
             if not handle.request.evaluation_only:
@@ -450,14 +479,20 @@ class GraspBridge(Node):
             # Collision geometry is generated only after backend alignment and the
             # bridge-owned contact offset have been applied.
             response = annotate_candidates(response, observation, self.profile, self.collision_config)
+            mark_phase("collision")
+            phase_name = "visualization"
             if canceled():
                 raise PlanningCanceled("planning canceled after collision evaluation")
             self.visualize(response, observation)
+            mark_phase("visualization")
             if handle.request.evaluation_only:
+                phase_name = "review"
                 if canceled():
                     raise PlanningCanceled("evaluation canceled")
                 self.publish_evaluation(observation, request, response=response, phase="inferred",
                                         source="web_evaluation", detail="evaluation only; no IK or waypoints")
+                mark_phase("review")
+                timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
                 result.success = True
                 result.observation_id = request["observation_id"]
                 result.profile_id = self.profile["profile_id"]
@@ -467,10 +502,12 @@ class GraspBridge(Node):
                 result.message = "evaluation complete; no IK, waypoints, robot or gripper commands"
                 result.diagnostics_json = json.dumps({"observation_id": request["observation_id"],
                                                       "candidate_count": len(response["candidates"]),
-                                                      "read_only": True})
+                                                      "read_only": True, "timings_ms": timings_ms})
                 handle.succeed()
+                self.get_logger().info(f"Grasp evaluation timings_ms={timings_ms}")
                 self.report("evaluation", f"{request['observation_id']}: {len(response['candidates'])} candidates")
                 return result
+            phase_name = "waypoint_plan"
             ik_precheck = self.settings.get("ik_precheck", True)
             self.feedback(handle, "filter",
                           "checking restricted corridor and IK" if ik_precheck
@@ -488,8 +525,12 @@ class GraspBridge(Node):
                                    collision_config=self.collision_config),
                     observation["seed"],
                 )
+            mark_phase("waypoint_plan")
+            phase_name = "settle"
             self.feedback(handle, "settle", "waiting for fresh, settled joint feedback")
             self.wait_until_stopped(canceled)
+            mark_phase("settle")
+            phase_name = "finalize"
             current = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], 0) @ transform(
                 self.profile["calibration_data"]["T_flange_color"])
             translation, rotation = pose_drift(observation["T_base_camera"], current)
@@ -516,28 +557,37 @@ class GraspBridge(Node):
             # not the ROS plan JSON. Preserve its hash and archive identity.
             server_diagnostics = {key: value for key, value in response.get("diagnostics", {}).items()
                                   if key != "segmap_png"}
+            mark_phase("finalize")
+            phase_name = "review"
+            self.publish_evaluation(observation, request, response=response, plan=plan, phase="planned",
+                                    source="behavior_tree", detail=f"selected {plan['candidate_id']}")
+            mark_phase("review")
+            timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
             result.diagnostics_json = json.dumps(json_value({
                 "plan_id": result.plan_id, "observation_id": result.observation_id,
                 "profile_id": result.profile_id, "ik_precheck": ik_precheck,
-                **plan, "server": server_diagnostics}))
+                "timings_ms": timings_ms, **plan, "server": server_diagnostics}))
             self.plans.publish(String(data=result.diagnostics_json))
-            self.publish_evaluation(observation, request, response=response, plan=plan, phase="planned",
-                                    source="behavior_tree", detail=f"selected {plan['candidate_id']}")
             handle.succeed()
+            self.get_logger().info(f"Grasp planning timings_ms={timings_ms}")
             self.report("planned", result.plan_id)
         except Exception as exc:
+            mark_phase(phase_name)
+            rejections = exc.rejections if isinstance(exc, NoReachableCandidate) else []
             if observation is not None and request is not None and response is not None:
-                rejections = exc.rejections if isinstance(exc, NoReachableCandidate) else []
                 self.publish_evaluation(observation, request, response=response, plan=plan,
                                         rejections=rejections,
                                         source="web_evaluation" if handle.request.evaluation_only else "behavior_tree",
                                         phase="rejected", detail=str(exc))
+                mark_phase("rejection_review")
+            timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
             result.success, result.message = False, str(exc)
+            result.diagnostics_json = json.dumps({"timings_ms": timings_ms, "rejections": rejections})
             if handle.is_cancel_requested:
                 handle.canceled()
             else:
                 handle.abort()
-            self.get_logger().warning(f"Grasp planning rejected: {exc}")
+            self.get_logger().warning(f"Grasp planning rejected: {exc}; timings_ms={timings_ms}")
             self.report("rejected", str(exc), warning=True)
         finally:
             with self.lock:

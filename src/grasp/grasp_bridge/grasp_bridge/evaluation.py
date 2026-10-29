@@ -156,6 +156,7 @@ def snapshot(observation, profile, request, *, response=None, plan=None, rejecti
                   "workspace_point_count": workspace_point_count,
                   "displayed_point_count": len(points)},
         "candidates": candidates, "plan": plan, "planning_rejections": rejections or [],
-        "workspace_m": profile["workspace_m"], "source": source,
+        "workspace_m": profile["workspace_m"],
+        "collision_workspace_m": profile.get("collision_workspace_m"), "source": source,
         "server_diagnostics": diagnostics,
     })

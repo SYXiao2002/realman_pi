@@ -111,8 +111,11 @@ def signed_distance(points, geometry):
 
 def _expanded_box_mask(points, pose, geometry, margin):
     """Return points in one pose's axis-aligned boxes expanded by ``margin``."""
-    local = _transform_points(points, pose)
-    mask = np.zeros(len(points), dtype=bool)
+    return _local_box_mask(_transform_points(points, pose), geometry, margin)
+
+
+def _local_box_mask(local, geometry, margin):
+    mask = np.zeros(len(local), dtype=bool)
     for box in geometry["boxes"]:
         center = np.asarray(box["center_m"], dtype=float)
         half = np.asarray(box["size_m"], dtype=float) / 2.0 + margin
@@ -140,6 +143,41 @@ def _stage_poses(grasp, profile, config):
 
 def _transform_points(points, pose):
     return (points - pose[:3, 3]) @ pose[:3, :3]
+
+
+def _box_corners(box, margin=0.0):
+    center = np.asarray(box["center_m"], dtype=float)
+    half = np.asarray(box["size_m"], dtype=float) / 2.0 + margin
+    signs = np.array([
+        [-1, -1, -1], [-1, -1, 1], [-1, 1, -1], [-1, 1, 1],
+        [1, -1, -1], [1, -1, 1], [1, 1, -1], [1, 1, 1],
+    ], dtype=float)
+    return center + signs * half
+
+
+def _broadphase_mask(points, poses, geometry, margin):
+    """Keep all local evidence and a point attaining the stage's exact minimum.
+
+    A nearby sample gives an upper bound on the minimum SDF. Inflating by that
+    bound also retains the nearest surface when every point is outside the
+    warning envelope, preserving clearance metrics as well as status/counts.
+    """
+    if len(points) == 0:
+        return np.zeros(0, dtype=bool)
+    corners = np.concatenate([_box_corners(box) for box in geometry["boxes"]], axis=0)
+    world = np.concatenate([corners @ pose[:3, :3].T + pose[:3, 3] for pose in poses], axis=0)
+    lower, upper = np.min(world, axis=0), np.max(world, axis=0)
+    delta = np.maximum(np.maximum(lower - points, points - upper), 0.0)
+    sample = points[np.argmin(np.einsum("ij,ij->i", delta, delta))][None, :]
+    bound = min(float(signed_distance(_transform_points(sample, pose), geometry)[0]) for pose in poses)
+    # Expand in the box's local axes before rotating. Adding only `margin` to
+    # world bounds would lose corners of rotated local-evidence boxes.
+    corners = np.concatenate([_box_corners(box, max(margin, bound)) for box in geometry["boxes"]], axis=0)
+    world = np.concatenate([corners @ pose[:3, :3].T + pose[:3, 3] for pose in poses], axis=0)
+    tolerance = 1e-12 * max(1.0, float(np.max(np.abs(world))))
+    lower = np.min(world, axis=0) - tolerance
+    upper = np.max(world, axis=0) + tolerance
+    return np.all((points >= lower) & (points <= upper), axis=1)
 
 
 def _confirmed_clusters(points, indices, voxel, minimum):
@@ -211,15 +249,24 @@ def evaluate_candidate_collision(candidate, base_points, environment_mask, profi
         result["stages"] = {stage: _unknown_stage() for stage in STAGES}
         result["reason"] = str(exc)
         return result
-    environment = points[env]
+    environment = points if env.all() else points[env]
+    # The finger boxes occupy a tiny fraction of the workspace. Their swept
+    # world-frame AABB is a conservative broad phase: every point that can be
+    # inside the local evidence envelope and each stage's minimum survives;
+    # distant points no longer pay for repeated SDF evaluations.
+    broadphase = np.zeros(len(environment), dtype=bool)
+    for stage_poses in poses.values():
+        broadphase |= _broadphase_mask(environment, stage_poses, geometry, config["warning_clearance_m"])
+    environment = environment[broadphase]
     collision_union = set(); near_union = set(); local_union = set()
     all_signed = []
     for stage in STAGES:
         stage_signed = []
         stage_local = np.zeros(len(environment), dtype=bool)
         for pose in poses[stage]:
-            stage_signed.append(signed_distance(_transform_points(environment, pose), geometry))
-            stage_local |= _expanded_box_mask(environment, pose, geometry, config["warning_clearance_m"])
+            local_points = _transform_points(environment, pose)
+            stage_signed.append(signed_distance(local_points, geometry))
+            stage_local |= _local_box_mask(local_points, geometry, config["warning_clearance_m"])
         distances = np.min(np.column_stack(stage_signed), axis=1)
         all_signed.append(distances)
         local = stage_local
@@ -287,7 +334,16 @@ def _decode_labels(response, shape):
 
 
 def _point_cloud(observation, profile):
-    depth = np.asarray(observation.get("depth_m"), dtype=float)
+    """Environment points for collision, from the wider collision region.
+
+    The TCP corridor (``workspace_m``) is deliberately tight, but the gripper
+    fingers reach beyond the TCP point, so obstacles just outside it (e.g. bin
+    walls) must still feed collision detection. Callers therefore pass a wider
+    ``collision_depth_m``/``collision_workspace_m``; both fall back to the tight
+    workspace crop when no separate collision region is configured.
+    """
+    depth = np.asarray(observation.get("collision_depth_m",
+                                       observation.get("depth_m")), dtype=float)
     K = np.asarray(observation.get("K"), dtype=float)
     base = observation.get("T_base_camera")
     if depth.ndim != 2 or K.shape != (3, 3) or not np.isfinite(K).all() or base is None:
@@ -299,9 +355,10 @@ def _point_cloud(observation, profile):
     rays = pixels @ np.linalg.inv(K).T
     camera = rays * (depth[yy, xx] / rays[:, 2])[:, None]
     base_points = camera @ base[:3, :3].T + base[:3, 3]
-    bounds = np.asarray(profile.get("workspace_m"), dtype=float)
+    region = profile.get("collision_workspace_m")
+    bounds = np.asarray(region if region is not None else profile.get("workspace_m"), dtype=float)
     if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[0] >= bounds[1]):
-        raise ValueError("workspace is invalid")
+        raise ValueError("collision workspace is invalid")
     inside = np.all((base_points >= bounds[0]) & (base_points <= bounds[1]), axis=1)
     return camera[inside], base_points[inside], yy[inside], xx[inside]
 
@@ -318,17 +375,25 @@ def annotate_candidates(response, observation, profile, config):
     except (KeyError, TypeError, ValueError, np.linalg.LinAlgError):
         labels = None; camera = base = np.empty((0, 3), dtype=float)
     base_camera = observation.get("T_base_camera")
+    environment_cache = {}
     for index, candidate in enumerate(candidates):
         try:
             object_id = _object_id(candidate.get("object_id"))
             if labels is None:
                 raise ValueError("instance segmentation or capture transform unavailable")
-            if not np.any(labels == object_id):
-                raise ValueError("target instance has no valid depth points")
-            environment = labels != object_id
+            # Candidates from one segmented object share the same environment
+            # cloud. Cache that extraction once instead of copying the entire
+            # collision cloud for every candidate from the object.
+            if object_id not in environment_cache:
+                target_mask = labels == object_id
+                if not np.any(target_mask):
+                    raise ValueError("target instance has no valid depth points")
+                environment_cache[object_id] = base[~target_mask]
+            environment = environment_cache[object_id]
             item = dict(candidate)
             item["T_base_grasp"] = transform(base_camera) @ transform(candidate["T_camera_grasp"])
-            item["collision"] = evaluate_candidate_collision(item, base, environment, profile, config)
+            item["collision"] = evaluate_candidate_collision(
+                item, environment, np.ones(len(environment), dtype=bool), profile, config)
         except (TypeError, ValueError, KeyError, np.linalg.LinAlgError) as exc:
             geometry = None
             try:
@@ -366,15 +431,21 @@ def display_masks(candidate, collision, points_camera, labels, T_base_camera, co
         grasp = transform(base) @ transform(candidate["T_camera_grasp"])
         poses = _stage_poses(grasp, {"approach_m": collision.get("approach_m"),
                                      "lift_m": collision.get("lift_m")}, config)
+        selected = np.flatnonzero(environment & _broadphase_mask(
+            points, [pose for stage in STAGES for pose in poses[stage]],
+            collision["geometry"], config["warning_clearance_m"]))
+        local_points = points[selected]
         # Prefer the exact stage distances used by the evaluator when available.
-        near = np.zeros(count, bool); hit = np.zeros(count, bool)
+        near = np.zeros(len(selected), bool); hit = np.zeros(len(selected), bool)
         for stage in STAGES:
             distances = np.min(np.column_stack([
-                signed_distance(_transform_points(points, pose), collision["geometry"])
+                signed_distance(_transform_points(local_points, pose), collision["geometry"])
                 for pose in poses[stage]]), axis=1)
-            hit |= environment & (distances <= -config["collision_penetration_m"])
-            near |= environment & (distances < config["warning_clearance_m"]) & ~hit
+            hit |= distances <= -config["collision_penetration_m"]
+            near |= (distances < config["warning_clearance_m"]) & ~hit
         near &= ~hit
-        return {"near_mask": near.astype(int).tolist(), "collision_mask": hit.astype(int).tolist()}
+        near_mask = np.zeros(count, dtype=int); collision_mask = np.zeros(count, dtype=int)
+        near_mask[selected] = near; collision_mask[selected] = hit
+        return {"near_mask": near_mask.tolist(), "collision_mask": collision_mask.tolist()}
     except (TypeError, ValueError, KeyError, np.linalg.LinAlgError):
         return empty

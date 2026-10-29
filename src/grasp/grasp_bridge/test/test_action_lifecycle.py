@@ -229,6 +229,11 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
                 "diagnostics": {"segmap_png": b"binary-label-image", "vertical_axis_camera": np.array([0., 0., -1.]),
                                 "segmap_sha256": "fixture-label-hash", "archive_id": "fixture-archive"}}
     monkeypatch.setattr(bridge_module, "infer", inference)
+    # This test isolates lease and feedback lifecycle from collision geometry.
+    def collision_safe(response, *_args):
+        return {**response, "candidates": [
+            {**candidate, "collision": {"status": "safe"}} for candidate in response["candidates"]]}
+    monkeypatch.setattr(bridge_module, "annotate_candidates", collision_safe)
     monkeypatch.setattr(node, "solve", lambda T, seed, canceled: seed)
     monkeypatch.setattr(node, "lookup", lambda *a: np.eye(4))
     monkeypatch.setattr(node, "stopped", lambda *a: not stale_feedback)
@@ -254,7 +259,8 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     assert diagnostics["archive_id"] == "fixture-archive"
     assert diagnostics["vertical_axis_camera"] == [0., 0., -1.]
     assert "segmap_png" not in diagnostics
-    np.testing.assert_allclose(result.result.grasp_position_m, [0, 0, 0.4])
+    np.testing.assert_allclose(result.result.grasp_position_m,
+                               [0, 0, 0.4 - node.settings["geometry_center_offset_m"]])
     assert node.lease_checks == 4
 
 

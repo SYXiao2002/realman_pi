@@ -127,9 +127,9 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | --- | --- | --- |
 | `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 抓取几何与 waypoint；按 `grasp_bridge.yaml:ik_precheck` 可选受限 IK；可取消，不发送运动/夹爪命令 |
 | `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
-| `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
+| `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 和 `timings_ms` 分阶段耗时的规划结果 |
 | `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
-| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子快照：离线评估含 RGB/深度显示、点云、对齐矩阵、readiness 与候选 `collision`（双指盒体、四阶段间隙/穿透和显示 mask）；行为树规划含候选结论/拒绝原因、waypoints 与 `workspace_m`（省略图片）；按 `observation_id` 和采集时 `T_base_camera` 绑定，供 `/grasp_plan.html` 展示；`base_camera_transform` 记录 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录深度不足实例 |
+| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子快照：离线评估含 RGB/深度显示、点云、对齐矩阵、readiness 与候选 `collision`（双指盒体、四阶段间隙/穿透和显示 mask）；行为树规划含候选结论/拒绝原因、waypoints 与 `workspace_m`（TCP 走廊）及可选 `collision_workspace_m`（更宽的碰撞检测区，省略图片）；按 `observation_id` 和采集时 `T_base_camera` 绑定，供 `/grasp_plan.html` 展示；`base_camera_transform` 记录 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录深度不足实例 |
 | `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
 | `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D；返回原矩阵/分数/分割与溯源；无 ROS |
 

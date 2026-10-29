@@ -102,8 +102,22 @@ def readiness_problems(profile):
     if type(velocity) is not int or not 1 <= velocity <= 100:
         problems.append("velocity_percent")
     bounds = np.asarray(profile.get("workspace_m"), dtype=float)
-    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[0] >= bounds[1]):
+    workspace_ok = bounds.shape == (2, 3) and np.isfinite(bounds).all() and np.all(bounds[0] < bounds[1])
+    if not workspace_ok:
         problems.append("workspace_m")
+    # collision_workspace_m is optional; when set it must be a valid box that
+    # fully contains workspace_m, so every TCP-corridor point is also covered by
+    # the wider collision environment cloud.
+    collision = profile.get("collision_workspace_m")
+    if collision is not None:
+        region = np.asarray(collision, dtype=float)
+        region_ok = (region.shape == (2, 3) and np.isfinite(region).all()
+                     and np.all(region[0] < region[1]))
+        if region_ok and workspace_ok:
+            region_ok = bool(np.all(region[0] <= bounds[0] + 1e-9)
+                             and np.all(region[1] >= bounds[1] - 1e-9))
+        if not region_ok:
+            problems.append("collision_workspace_m")
     try:
         transform(profile.get("T_grasp_tcp"))
     except (ValueError, TypeError):
