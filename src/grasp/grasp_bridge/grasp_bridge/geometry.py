@@ -59,6 +59,54 @@ def pose_drift(a, b):
     return float(np.linalg.norm(a[:3,3]-b[:3,3])), angle
 
 
+def apply_geometry_center_offset(T_camera_grasp, T_base_camera=None, *, offset_m=0.0):
+    """Move a geometry contact pose down after backend inference.
+
+    The correction keeps the grasp axes unchanged. With a capture-time base
+    transform, ``-Z`` is expressed in camera coordinates; without one, the
+    candidate's local approach axis is the only available fallback.
+    """
+    T = transform(T_camera_grasp)
+    offset_m = float(offset_m)
+    if not math.isfinite(offset_m) or not 0 <= offset_m <= 0.2:
+        raise ValueError("geometry center offset must be finite in [0, 0.2]")
+    if offset_m == 0:
+        return T
+    if T_base_camera is None:
+        down_camera = T[:3, 2]
+    else:
+        base = transform(T_base_camera)
+        down_camera = base[:3, :3].T @ np.array([0.0, 0.0, -1.0])
+    T[:3, 3] += down_camera * offset_m
+    return T
+
+
+def adjust_geometry_response(response, request, *, offset_m=0.0):
+    """Apply bridge-owned geometry correction to a backend response."""
+    adjusted = dict(response)
+    backend = request.get("backend")
+    candidates = []
+    for candidate in response.get("candidates", []):
+        item = dict(candidate)
+        if backend == "geometry":
+            for field in ("T_camera_grasp", "T_camera_grasp_before_alignment",
+                          "T_camera_grasp_after_alignment"):
+                if item.get(field) is not None:
+                    item[field] = apply_geometry_center_offset(
+                        item[field], request.get("T_base_camera"), offset_m=offset_m)
+            metrics = dict(item.get("metrics") or {})
+            metrics["geometry_center_offset_m"] = float(offset_m)
+            metrics["geometry_center_offset_source"] = "grasp_bridge"
+            item["metrics"] = metrics
+        candidates.append(item)
+    adjusted["candidates"] = candidates
+    diagnostics = dict(response.get("diagnostics") or {})
+    diagnostics["geometry_center_offset_m"] = float(offset_m) if backend == "geometry" else 0.0
+    diagnostics["geometry_center_offset_source"] = "grasp_bridge"
+    adjusted["diagnostics"] = diagnostics
+    return adjusted
+
+
 def restricted_waypoints(T_base_camera, T_camera_grasp, T_grasp_tcp, *, approach_m, lift_m, workspace):
     """TCP endpoints and straight corridor in a measured axis-aligned convex box.
 

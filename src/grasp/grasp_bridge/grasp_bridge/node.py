@@ -27,7 +27,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from grasp_protocol import PROTOCOL_VERSION, validate_request
 
-from .geometry import from_pose, pose_drift, transform, to_pose
+from .geometry import (adjust_geometry_response, from_pose, pose_drift, transform, to_pose)
 from .evaluation import json_value, snapshot
 from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
@@ -74,6 +74,10 @@ class GraspBridge(Node):
                 raise ValueError(f"{key} must be finite positive")
         if type(self.settings.get("ik_precheck", True)) is not bool:
             raise ValueError("ik_precheck must be a boolean")
+        center_offset = self.settings.get("geometry_center_offset_m", 0.0)
+        if (type(center_offset) not in (int, float) or not math.isfinite(center_offset)
+                or not 0 <= center_offset <= 0.2):
+            raise ValueError("geometry_center_offset_m must be finite in [0, 0.2]")
         self.group = ReentrantCallbackGroup()
         self.lock = threading.Lock()
         self.busy = False
@@ -91,7 +95,8 @@ class GraspBridge(Node):
             "type": "grasp_bridge_status", "dry_run": self.dry_run, "read_only": True,
             "default_profile": self.profile_name, "default_backend": self.settings["backend"],
             "default_target_label": self.settings["target_label"],
-            "default_cgn_context": self.settings["cgn_context"], "profiles": [
+            "default_cgn_context": self.settings["cgn_context"],
+            "geometry_center_offset_m": float(center_offset), "profiles": [
                 {"name": name, "arm": load_profile(self.root, name)["arm"]} for name in self.profile_names]})))
         self.candidates = self.create_publisher(PoseArray, "~/candidates", 10)
         self.overlay = self.create_publisher(Image, "~/overlay", 2)
@@ -367,6 +372,11 @@ class GraspBridge(Node):
         self.overlay.publish(message)
         observation["overlay_bgr"] = overlay
 
+    def apply_backend_adjustments(self, response, request):
+        """Apply bridge-owned corrections before any consumer sees candidates."""
+        return adjust_geometry_response(
+            response, request, offset_m=float(self.settings.get("geometry_center_offset_m", 0.0)))
+
     def execute(self, handle):
         result = PlanGrasp.Result()
         observation = request = response = plan = None
@@ -432,6 +442,7 @@ class GraspBridge(Node):
                              inference_timeout_sec=self.settings["inference_timeout_sec"], canceled=canceled)
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
+            response = self.apply_backend_adjustments(response, request)
             self.visualize(response, observation)
             if handle.request.evaluation_only:
                 if canceled():

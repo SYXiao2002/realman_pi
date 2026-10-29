@@ -35,6 +35,10 @@ plan_validity_sec: 30.0
 # Restrict IK branch changes at each straight-line corridor sample.
 maximum_ik_step_degrees: 15.0
 cartesian_sample_step_m: 0.01
+# Positive value moves geometry contact poses down in the selected base frame
+# (base -Z when calibrated). Units are metres, range [0, 0.2]; 0 disables it.
+# This is applied by grasp_bridge after the backend returns candidates.
+geometry_center_offset_m: 0.01
 # Pose planning and motion execution are separate. Keep this false for the
 # time-critical path: the controller receives the three MOVEL waypoints and
 # performs its own Cartesian feasibility check. Set true to restore the
