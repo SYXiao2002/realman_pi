@@ -30,7 +30,9 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 `/grasp_bridge/plan_grasp` 发送带 `evaluation_only=true` 的 `realman_msgs/PlanGrasp` 请求，并显示
 `/grasp_bridge/evaluation` 的原子 JSON 快照：RGB、注册深度、实例分割、候选投影、相机系和基座系 pose、深度反投影
 点云、关节快照、规划诊断以及标定和夹爪 readiness。浏览器只保存人工候选评价到 localStorage，支持导出
-带 `observation_id` 的 JSON。选中具有基座系接触中心 Pose 的候选后，页面将 XYZ（m）和 WXYZ 四元数填入基座系 MOVEL 面板；操作者显式点击发送才会通过同一 WebSocket `execute_motion` Action 通道运动。发送仅接受在线 observation、已连接机械臂、驱动 `motion_allowed=true` 且当前 TCP 与快照工具一致的情形。离线导入仅供审阅；该入口不会自动闭爪、提起或检查碰撞。
+带 `observation_id` 的 JSON。选中具有基座系接触中心 Pose 的候选后，页面将 XYZ（m）和 WXYZ 四元数填入基座系 MOVEL 面板；操作者显式点击发送才会通过同一 WebSocket `execute_motion` Action 通道运动。发送仅接受在线 observation、已连接机械臂、驱动 `motion_allowed=true` 且当前 TCP 与快照工具一致的情形。离线导入仅供审阅；该入口不会自动闭爪、提起或发送运动。
+
+快照中的 `candidate.collision` 是桥接生成的只读点云防碰结果。页面直接渲染其中的 `visual_finger_boxes/v1` 双指盒体；新快照不按候选宽度或浏览器夹爪配置重算。状态、最小间隙、最大穿透、四个阶段和点数会与候选表同步，选中候选的 near 点为黄色、collision 点为红色。没有有效实例分割、采集时 `T_base_camera`、足够局部环境点或有效盒体时显示 `unknown`；旧快照没有 `collision` 字段时显示“未执行碰撞评估”。这些结果只覆盖当前可见点云和两个手指盒体，不覆盖 palm、腕部、机械臂连杆或遮挡区。
 
 MOVEL 表单可手动编辑，默认速度为 5%、超时为 30 s，固定使用 `reference_type=0`、`reference_name="base"`、`command=1`。`web/src/motion_goal.ts` 供控制台和抓取页共用位姿校验及请求构造，`web/src/grasp_motion.ts` 负责抓取页的发送、反馈、取消和软件停止。在收到 Action 终态前禁止重复发送；软件停止服务的响应不会代替 Action 终态。切换 profile 清空目标，但在途取消和停止仍作用于原机械臂。
 

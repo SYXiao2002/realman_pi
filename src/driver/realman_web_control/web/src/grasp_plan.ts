@@ -68,11 +68,15 @@ function render(snapshot: any) {
   for (const candidate of snapshot.candidates) {
     const row = document.createElement("tr");
     row.className = "plan-candidate-row";
+    row.dataset.collisionStatus = candidate.collision?.status || "unknown";
     row.dataset.selected = String(visibilityMode === "pose" && visibilityTarget === candidate.candidate_id);
     const xyz = candidate.T_base_grasp?.slice(0, 3).map((axis: number[]) => axis[3].toFixed(3)).join(", ") || "不可用";
-    const result = candidate.planning_status === "selected" ? "通过 · 选中"
-      : candidate.planning_status === "rejected" ? "拒绝" : "候选";
-    for (const value of [candidate.candidate_id, Number(candidate.score).toFixed(3), xyz, result, candidate.planning_reason || "—"]) {
+    const collision = candidate.collision;
+    const collisionText = collision ? `${collision.status} · 间隙 ${collision.min_clearance_m == null ? "—" : (collision.min_clearance_m * 1000).toFixed(1)} mm · 穿透 ${collision.max_penetration_m == null ? "—" : (collision.max_penetration_m * 1000).toFixed(1)} mm · ${collision.collision_points ?? 0}/${collision.near_points ?? 0} 点 · ${collision.worst_stage || "—"}` : "未执行碰撞评估";
+    const result = collision?.blocking === true ? `阻断 · ${collisionText}`
+      : `${candidate.planning_status === "selected" ? "通过 · 选中"
+        : candidate.planning_status === "rejected" ? "拒绝" : "候选"} · ${collisionText}`;
+    for (const value of [candidate.candidate_id, Number(candidate.score).toFixed(3), xyz, result, candidate.planning_reason || collisionText || "—"]) {
       const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
     }
     row.addEventListener("click", () => {

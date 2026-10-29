@@ -32,30 +32,53 @@ export function wirePoints(candidate: any, gripper: any): THREE.Vector3[] {
   return [[-half, 0, 0], [-half, 0, -depth], [half, 0, -depth], [half, 0, 0]]
     .map((point) => new THREE.Vector3(...point));
 }
-/** Two real-scale finger boxes from profile gripper_geometry; palm intentionally omitted.
- *  Frame convention matches wirePoints: origin = closing centre, X = closing, Z = approach,
- *  fingers extend toward -Z. Left finger sits at +X, right finger at -X. */
-export function boxGripper(candidate: any, gripper: any, color: string): THREE.Group | null {
+/** Render the backend-owned canonical two-box geometry; dimensions are never recomputed here. */
+export function boxGripper(geometry: any, color: string): THREE.Group | null {
+  if (!geometry || geometry.model !== "visual_finger_boxes/v1" || geometry.frame !== "grasp_contact"
+    || !Array.isArray(geometry.boxes) || geometry.boxes.length !== 2) return null;
+  const material = new THREE.MeshStandardMaterial({ color, metalness: .1, roughness: .6 });
+  const group = new THREE.Group();
+  for (const box of geometry.boxes) {
+    const size = box.size_m.map((value: number) => Number(value));
+    const center = box.center_m.map((value: number) => Number(value));
+    if (size.length !== 3 || center.length !== 3 || size.some((value: number) => !Number.isFinite(value) || value <= 0)
+      || center.some((value: number) => !Number.isFinite(value))) { group.clear(); return null; }
+    const finger = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+    finger.position.set(...center);
+    group.add(finger);
+  }
+  return group;
+}
+/** Box outlines for the 2D projection, derived from the same serialized boxes. */
+export function boxWirePoints(geometry: any): THREE.Vector3[] {
+  if (!geometry?.boxes) return [];
+  const points: THREE.Vector3[] = [];
+  for (const box of geometry.boxes) {
+    const [sx, sy, sz] = box.size_m.map((value: number) => Number(value) / 2);
+    const [cx, cy, cz] = box.center_m.map((value: number) => Number(value));
+    if (![sx, sy, sz, cx, cy, cz].every(Number.isFinite)) continue;
+    points.push(...[[-sx, -sy, -sz], [sx, -sy, -sz], [sx, sy, -sz], [-sx, sy, -sz], [-sx, -sy, -sz],
+      [-sx, -sy, sz], [sx, -sy, sz], [sx, sy, sz], [-sx, sy, sz], [-sx, -sy, sz]]
+      .map(([x, y, z]) => new THREE.Vector3(cx + x, cy + y, cz + z)));
+  }
+  return points;
+}
+/** Legacy renderer retained only for snapshots created before collision.geometry existed. */
+function legacyBoxGripper(candidate: any, gripper: any, color: string): THREE.Group | null {
   const depth = Number(gripper?.finger_depth_m), thick = Number(gripper?.finger_thickness_m);
   if (!Number.isFinite(depth) || depth <= 0 || !Number.isFinite(thick) || thick <= 0) return null;
-  // finger_width_m is optional; fall back to a square cross-section rather than inventing a dimension.
   const width = Number.isFinite(Number(gripper?.finger_width_m)) && Number(gripper.finger_width_m) > 0
     ? Number(gripper.finger_width_m) : thick;
   const clear = Number(gripper?.clearance_m) || 0;
   const low = Number(gripper?.min_opening_m) || 0;
   const high = Number(gripper?.max_opening_m);
-  // Fingers hold the object width plus two-sided clearance, clamped to the measured opening range.
-  let opening = Number(candidate.width_m) + 2 * clear;
-  opening = Math.max(opening, low);
+  let opening = Math.max(Number(candidate.width_m) + 2 * clear, low);
   if (Number.isFinite(high)) opening = Math.min(opening, high);
-  // The caller supplies a contact-centre frame, so fingers extend toward local -Z.
   const material = new THREE.MeshStandardMaterial({ color, metalness: .1, roughness: .6 });
   const group = new THREE.Group();
   for (const side of [-1, 1]) {
     const finger = new THREE.Mesh(new THREE.BoxGeometry(thick, width, depth), material);
-    // Fingertips sit at the closing centre; fingers extend toward the palm (-Z from contact).
-    finger.position.set(side * (opening / 2 + thick / 2), 0, -depth / 2);
-    group.add(finger);
+    finger.position.set(side * (opening / 2 + thick / 2), 0, -depth / 2); group.add(finger);
   }
   return group;
 }
@@ -67,18 +90,34 @@ function dispose(group: THREE.Object3D) {
     else item.material?.dispose(); });
   group.clear();
 }
-function pointCloud(snapshot: any, sizePx: number) {
+function pointCloud(snapshot: any, sizePx: number, selected: string) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(snapshot.cloud.xyz_m.flat(), 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(snapshot.cloud.rgb.flat().map((v: number) => v / 255), 3));
+  const colors = snapshot.cloud.rgb.map((rgb: number[]) => rgb.map((value) => value / 255));
+  const candidate = snapshot.candidates.find((item: any) => item.candidate_id === selected);
+  const display = candidate?.collision?.display;
+  if (display && display.near_mask?.length === colors.length && display.collision_mask?.length === colors.length) {
+    colors.forEach((rgb: number[], index: number) => {
+      if (display.near_mask[index]) colors[index] = [1, .84, 0];
+      if (display.collision_mask[index]) colors[index] = [1, .12, .08];
+    });
+  }
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors.flat(), 3));
   return new THREE.Points(geometry, new THREE.PointsMaterial({ size: sizePx, vertexColors: true, sizeAttenuation: false }));
+}
+export function candidateColor(candidate: any, rank: number) {
+  return candidate.collision?.status === "collision" ? "#ef3b2c"
+    : candidate.collision?.status === "warning" ? "#f0a51a"
+      : candidate.collision?.status === "unknown" ? "#8c9aa0"
+        : candidate.collision?.status === "safe" ? "#159957" : rankColor(rank);
 }
 function candidatePose(candidate: any, gripper: any, selected: boolean, frame: number[][], color: string, rank: number) {
   const group = new THREE.Group(); group.matrixAutoUpdate = false; group.matrix.copy(matrix(frame));
   group.add(new THREE.AxesHelper(selected ? .065 : .03));
-  const boxes = boxGripper(candidate, gripper, color);
+  const boxes = candidate.collision !== undefined
+    ? boxGripper(candidate.collision.geometry, color) : legacyBoxGripper(candidate, gripper, color);
   if (boxes) group.add(boxes);
-  else {
+  else if (candidate.collision === undefined) {
     const points = wirePoints(candidate, gripper);
     if (points.length) group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
       new THREE.LineBasicMaterial({ color })));
@@ -259,13 +298,14 @@ export class GraspView {
       for (const [index, stage] of (["before", "after"] as Stage[]).entries()) {
         const optical = this.views[index]; if (!optical) continue;
         if (snapshot.cloud.workspace_crop_status === "applied") {
-          optical.data.add(pointCloud(snapshot, this.pointSize));
+          optical.data.add(pointCloud(snapshot, this.pointSize, selected));
         }
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
           const frame = contactFrame(candidate, stage);
           if (frame && this.visible.has(candidate.candidate_id)) {
-            optical.data.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, frame, rankColor(rank), rank));
+            optical.data.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, frame,
+              candidateColor(candidate, rank), rank));
             rendered.push(candidate.candidate_id);
           }
         });
@@ -283,7 +323,7 @@ export class GraspView {
           base.add(workspace);
         }
         const camera = new THREE.Group(); camera.matrixAutoUpdate = false; camera.matrix.copy(matrix(snapshot.T_base_camera));
-        if (snapshot.cloud.workspace_crop_status === "applied") camera.add(pointCloud(snapshot, this.pointSize));
+        if (snapshot.cloud.workspace_crop_status === "applied") camera.add(pointCloud(snapshot, this.pointSize, selected));
         base.add(camera);
         const rendered: string[] = [];
         snapshot.candidates.forEach((candidate: any, rank: number) => {
@@ -291,7 +331,8 @@ export class GraspView {
           if (contact && this.visible.has(candidate.candidate_id)) {
             const frame = matrix(snapshot.T_base_camera).multiply(matrix(contact));
             const rows = Array.from({ length: 4 }, (_, r) => Array.from({ length: 4 }, (_, c) => frame.elements[c * 4 + r]));
-            base.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, rows, rankColor(rank), rank));
+            base.add(candidatePose(candidate, snapshot.gripper, candidate.candidate_id === selected, rows,
+              candidateColor(candidate, rank), rank));
             rendered.push(candidate.candidate_id);
             if (candidate.candidate_id === selected && candidate.vertical_alignment?.applied) {
               const marker = new THREE.Group(); marker.matrixAutoUpdate = false;

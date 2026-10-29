@@ -56,6 +56,23 @@ test("grasp page keeps evaluation read-only and binds one observation", async ({
   await expect(page.locator("#candidate-rows")).toBeEmpty();
 });
 
+test("grasp page accepts canonical collision geometry and displays its metrics", async ({ page }) => {
+  await page.goto("grasp.html");
+  const metric = { status: "warning", min_clearance_m: 0.002, max_penetration_m: 0,
+    collision_points: 0, near_points: 3, local_environment_points: 24, collision_clusters: 0 };
+  const collision = { status: "warning", min_clearance_m: 0.002, max_penetration_m: 0,
+    collision_points: 0, near_points: 3, local_environment_points: 24, collision_clusters: 0,
+    worst_stage: "grasp", geometry: { model: "visual_finger_boxes/v1", frame: "grasp_contact", opening_m: 0.05,
+      boxes: [{ name: "left_finger", center_m: [-0.03, 0, -0.02], size_m: [0.01, 0.02, 0.04] },
+        { name: "right_finger", center_m: [0.03, 0, -0.02], size_m: [0.01, 0.02, 0.04] }] },
+    stages: { pregrasp: metric, approach_sweep: metric, grasp: metric, lift: metric },
+    display: { near_mask: [1], collision_mask: [0] } };
+  await page.evaluate((value) => (window as any).__graspSocket.emit("message", { data: JSON.stringify(value) }),
+    { ...snapshot, candidates: [{ ...snapshot.candidates[0], collision }] });
+  await expect(page.locator("#candidate-rows")).toContainText("warning");
+  await expect(page.locator("#candidate-rows")).toContainText("2.0 mm");
+});
+
 test("grasp page has no horizontal overflow on mobile", async ({ page }) => {
   await page.goto("grasp.html");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);

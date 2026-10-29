@@ -1,7 +1,7 @@
 import "./theme.css";
 import "./grasp.css";
 import { Quaternion } from "three";
-import { GraspView, matrix, wirePoints, contactFrame, rankColor, type Stage } from "./grasp_view";
+import { GraspView, matrix, wirePoints, boxWirePoints, contactFrame, candidateColor, type Stage } from "./grasp_view";
 import { validSnapshot, newerSnapshot } from "./grasp_state";
 import { GraspMotion } from "./grasp_motion";
 
@@ -123,11 +123,12 @@ function drawProjection() {
     for (const [rank, item] of candidates.entries()) {
       const frame = contactFrame(item, stage);
       if (!frame || !visibleCandidates.has(item.candidate_id)) continue;
-      const T = matrix(frame), points = wirePoints(item, observation.gripper).map((p) => p.applyMatrix4(T));
+      const T = matrix(frame), points = (item.collision?.geometry ? boxWirePoints(item.collision.geometry) : wirePoints(item, observation.gripper))
+        .map((p) => p.applyMatrix4(T));
       const origin = { x: frame[0][3], y: frame[1][3], z: frame[2][3] };
       const project = (p: typeof origin) => [dx + (K[0][0] * p.x / p.z + K[0][2]) * scale,
         dy + (K[1][1] * p.y / p.z + K[1][2]) * scale];
-      ctx.strokeStyle = rankColor(rank); ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = item.candidate_id === selectedCandidate ? 3 : 2;
+      ctx.strokeStyle = candidateColor(item, rank); ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = item.candidate_id === selectedCandidate ? 3 : 2;
       if (points.length && points.every((p) => p.z > 0)) { ctx.beginPath(); points.forEach((p, i) => { const [x, y] = project(p); if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke(); }
       if (origin.z > 0) { const [x, y] = project(origin); ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.stroke(); ctx.font = "bold 12px sans-serif"; ctx.fillText(`#${rank + 1}`, x + 6, y - 6); }
       rendered.push(item.candidate_id);
@@ -215,7 +216,8 @@ function renderDiagnostics() {
     depth_stats: observation.depth_stats, server: observation.server_diagnostics,
     gripper: observation.gripper, readiness_problems: observation.readiness_problems,
     evaluation_only: observation.source !== "behavior_tree", ik_checked: observation.phase === "planned" || observation.phase === "rejected",
-    collision_checked: false, workspace_m: observation.workspace_m, candidate_planning_status: candidate?.planning_status,
+    collision_checked: Boolean(candidate?.collision), collision: candidate?.collision,
+    workspace_m: observation.workspace_m, candidate_planning_status: candidate?.planning_status,
     candidate_planning_reason: candidate?.planning_reason, planning_rejections: observation.planning_rejections,
     plan: observation.plan }, null, 2);
 }
@@ -241,7 +243,7 @@ function renderSnapshot(message: EventMessage) {
     const label = document.createElement("label"), input = document.createElement("input"), swatch = document.createElement("span");
     input.type = "checkbox"; input.value = item.candidate_id; input.checked = visibleCandidates.has(item.candidate_id);
     input.setAttribute("aria-label", `显示 #${rank + 1} ${item.candidate_id}`);
-    swatch.className = "rank-swatch"; swatch.style.backgroundColor = rankColor(rank);
+    swatch.className = "rank-swatch"; swatch.style.backgroundColor = candidateColor(item, rank);
     input.addEventListener("change", () => { visibilityMode = "custom"; if (input.checked) visibleCandidates.add(item.candidate_id); else visibleCandidates.delete(item.candidate_id); syncVisibilityControls(); renderVisibility(); });
     label.append(input, swatch, document.createTextNode(`#${rank + 1} · ${item.candidate_id} · object ${item.object_id || '—'} · ${Number(item.score).toFixed(3)} · ${(item.width_m * 1000).toFixed(1)} mm`));
     return label;
@@ -249,7 +251,7 @@ function renderSnapshot(message: EventMessage) {
   const values = [["Profile", `${message.profile_name} / ${message.arm}`], ["Target / backend", `${message.target_label} / ${message.backend}`],
     ["Observation", message.observation_id], ["采样时间", new Date(Number(message.capture_timestamp_ns) / 1e6).toLocaleString()],
     ["Camera → base", `${message.camera_frame} → ${message.base_frame}`], ["标定 / model", `${message.calibration_id || "未批准"} / ${message.model_id || "未推理"}`],
-    ["Tool / gripper", `${message.tool_name} / ${message.gripper?.id}`], ["状态", "只读 · 未验证 IK / 碰撞"]];
+    ["Tool / gripper", `${message.tool_name} / ${message.gripper?.id}`], ["状态", "只读 · 已执行点云碰撞评估"]];
   const skipped = message.server_diagnostics?.skipped_instances;
   if (Array.isArray(skipped) && skipped.length) values.push(["跳过的深度不足实例", skipped.map((item: any) =>
     `#${item.object_id}：${item.valid_points}/${item.minimum_points} 点`).join("；")]);
@@ -263,7 +265,7 @@ function renderSnapshot(message: EventMessage) {
     for (const problem of message.readiness_problems) { const item = document.createElement("li"); item.textContent = problem; list.append(item); }
     readiness.append(list);
   } else {
-    const note = document.createElement("p"); note.textContent = "配置项已就绪；候选未验证 IK / 碰撞，手动 MOVEL 需另外点击发送。"; readiness.append(note);
+    const note = document.createElement("p"); note.textContent = "配置项已就绪；候选碰撞结果基于当前可见点云，手动 MOVEL 仍需另外点击发送。"; readiness.append(note);
   }
   for (const kind of ["rgb", "depth", "overlay", "instances"]) {
     const image = $<HTMLImageElement>(`#${kind}`), id = message.observation_id;
@@ -275,9 +277,12 @@ function renderSnapshot(message: EventMessage) {
   rows.replaceChildren(); reviewCandidate.replaceChildren(new Option("选择候选", "")); poseCandidate.replaceChildren(new Option("选择候选", ""));
   for (const item of candidates) {
     const tr = document.createElement("tr"); tr.dataset.id = item.candidate_id;
+    const collision = item.collision;
+    const collisionText = collision ? `${collision.status} · 间隙 ${collision.min_clearance_m == null ? "—" : (collision.min_clearance_m * 1000).toFixed(1)} mm · 穿透 ${collision.max_penetration_m == null ? "—" : (collision.max_penetration_m * 1000).toFixed(1)} mm · ${collision.collision_points ?? 0}/${collision.near_points ?? 0} 点 · ${collision.worst_stage || "—"}` : "未执行碰撞评估";
+    tr.dataset.collisionStatus = collision?.status || "unknown";
     const xyz = (T?: number[][] | null) => T?.slice(0, 3).map((row) => row[3].toFixed(3)).join(", ") || "未标定";
     [item.candidate_id, item.class_name, Number(item.score).toFixed(3), `${(item.width_m * 1000).toFixed(1)} mm`, xyz(item.T_camera_grasp), xyz(item.T_base_grasp),
-      item.planning_status === "selected" ? "通过 / 选中" : item.planning_status === "rejected" ? "拒绝" : item.planning_status === "not_checked" ? "未检查" : "只读候选",
+      `${collisionText} · ${item.planning_status === "selected" ? "通过 / 选中" : item.planning_status === "rejected" ? "拒绝" : item.planning_status === "not_checked" ? "未检查" : "只读候选"}`,
       item.planning_reason || "—"].forEach((value, i) => {
       const td = document.createElement("td"); if (!i) { const button = document.createElement("button"); button.textContent = String(value); button.addEventListener("click", () => selectCandidate(item.candidate_id)); td.append(button); }
       else td.textContent = String(value); tr.append(td);
@@ -318,7 +323,7 @@ function handle(message: EventMessage) {
     renderSnapshot(message);
   } else if (["grasp_plan_result", "grasp_plan_feedback", "error"].includes(message.type) && message.request_id === pendingRequest) {
     if (message.type === "grasp_plan_feedback") status(`${message.feedback?.phase}：${message.feedback?.detail}`);
-    else if (message.state !== "submitted") { setPending(""); status(message.success ? "评估完成 · 只读 · 未做 IK / 碰撞检查" : `评估拒绝：${message.message}`, message.success ? "good" : "bad"); }
+    else if (message.state !== "submitted") { setPending(""); status(message.success ? "评估完成 · 只读 · 未做 IK；已执行碰撞评估" : `评估拒绝：${message.message}`, message.success ? "good" : "bad"); }
   }
 }
 function connect() {

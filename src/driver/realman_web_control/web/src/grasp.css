@@ -62,6 +62,12 @@
 .grasp-candidates th,.grasp-candidates td { border-bottom:1px solid var(--line); padding:7px 5px; text-align:left; vertical-align:top; }
 .grasp-candidates th { color:var(--text-3); font-weight:700; }
 .grasp-candidates tr[data-selected="true"] { background:var(--btn-bg); }
+.grasp-candidates tr[data-collision-status="collision"] td:nth-child(7) { color:var(--danger); font-weight:700; }
+.grasp-candidates tr[data-collision-status="warning"] td:nth-child(7) { color:var(--warn); font-weight:700; }
+.grasp-candidates tr[data-collision-status="unknown"] td:nth-child(7) { color:var(--text-3); }
+.grasp-candidates tr.plan-candidate-row[data-collision-status="collision"] td:nth-child(4) { color:var(--danger); font-weight:700; }
+.grasp-candidates tr.plan-candidate-row[data-collision-status="warning"] td:nth-child(4) { color:var(--warn); font-weight:700; }
+.grasp-candidates tr.plan-candidate-row[data-collision-status="unknown"] td:nth-child(4) { color:var(--text-3); }
 .grasp-candidates tr.plan-candidate-row { cursor:pointer; }
 .grasp-candidates button { border:0; background:none; color:var(--primary-strong); font-weight:700; }
 .layout-canvas { display:block; width:100%; height:clamp(440px,60vh,720px); border:1px solid var(--line); border-radius:5px; background:var(--card-sub); touch-action:none; }
