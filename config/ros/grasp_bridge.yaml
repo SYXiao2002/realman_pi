@@ -47,3 +47,16 @@ ik_precheck: false
 max_candidates: 15
 # Optional expected server model identity. When set, mismatch still rejects.
 expected_model_id: null
+
+# Point-cloud collision gate for the visual two-finger boxes. These thresholds
+# are evidence limits in metres/counts; they do not change measured gripper
+# dimensions in config/grasp/gripper_specs.yaml. Unknown evidence blocks plans.
+collision:
+  enabled: true
+  warning_clearance_m: 0.003
+  collision_penetration_m: 0.002
+  sweep_step_m: 0.005
+  cluster_voxel_m: 0.003
+  minimum_local_points: 20
+  minimum_collision_points: 3
+  blocking_statuses: [collision, warning, unknown]

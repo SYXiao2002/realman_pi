@@ -143,3 +143,31 @@ def test_display_cloud_is_dense_but_bounded_for_web_review():
     assert len(result["cloud"]["xyz_m"]) == DISPLAY_CLOUD_MAX_POINTS
     assert len(result["cloud"]["rgb"]) == DISPLAY_CLOUD_MAX_POINTS
     assert DISPLAY_CLOUD_MAX_POINTS > 4096
+
+
+def test_snapshot_keeps_collision_geometry_and_bounded_display_masks():
+    labels = np.ones((8, 8), np.uint16)
+    ok, encoded = cv2.imencode(".png", labels)
+    assert ok
+    p = profile()
+    p["gripper_geometry"] = {"id": "test", "min_opening_m": 0., "max_opening_m": .08,
+                              "finger_thickness_m": .01, "finger_width_m": .02,
+                              "finger_depth_m": .04, "clearance_m": .003}
+    candidate = {"candidate_id": "1:0", "object_id": "1", "class_name": "eu", "score": .8,
+                 "width_m": .03, "T_camera_grasp": np.eye(4).tolist(),
+                 "collision": {"status": "unknown", "geometry": {
+                     "model": "visual_finger_boxes/v1", "frame": "grasp_contact", "opening_m": .036,
+                     "boxes": [{"name": "left_finger", "center_m": [-.023, 0, -.02], "size_m": [.01, .02, .04]},
+                               {"name": "right_finger", "center_m": [.023, 0, -.02], "size_m": [.01, .02, .04]}]},
+                     "worst_stage": None, "min_clearance_m": None, "max_penetration_m": None,
+                     "collision_points": 0, "near_points": 0, "local_environment_points": 0,
+                     "collision_clusters": 0,
+                     "stages": {stage: {"status": "unknown", "min_clearance_m": None,
+                                        "max_penetration_m": None, "collision_points": 0, "near_points": 0,
+                                        "local_environment_points": 0, "collision_clusters": 0}
+                                for stage in ("pregrasp", "approach_sweep", "grasp", "lift")}}}
+    result = snapshot(observation(np.eye(4)), p, request(), response={"candidates": [candidate],
+        "diagnostics": {"segmap_png": encoded.tobytes()}})
+    collision = result["candidates"][0]["collision"]
+    assert len(collision["display"]["near_mask"]) == result["cloud"]["displayed_point_count"]
+    assert len(collision["display"]["collision_mask"]) == result["cloud"]["displayed_point_count"]

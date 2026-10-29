@@ -29,6 +29,7 @@ from grasp_protocol import PROTOCOL_VERSION, validate_request
 
 from .geometry import (adjust_geometry_response, from_pose, pose_drift, transform, to_pose)
 from .evaluation import json_value, snapshot
+from .gripper_collision import annotate_candidates, validate_collision_config
 from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
 from .rgbd import (CameraModel, crop_depth_to_workspace, image_array, rectify_color,
@@ -56,6 +57,7 @@ class GraspBridge(Node):
         self.declare_parameter("config_root", str(default_config_root()))
         self.root = Path(self.get_parameter("config_root").value)
         self.settings = read_yaml(self.root / "ros/grasp_bridge.yaml")
+        self.collision_config = validate_collision_config(self.settings.get("collision"))
         self.declare_parameter("profile", "")
         self.declare_parameter("dry_run", self.settings["dry_run"])
         self.profile_name = self.get_parameter("profile").value or self.settings["profile"]
@@ -440,9 +442,16 @@ class GraspBridge(Node):
             response = infer(self.settings["ws_uri"], request, expected_model_id=self.settings["expected_model_id"],
                              connect_timeout_sec=self.settings["connect_timeout_sec"],
                              inference_timeout_sec=self.settings["inference_timeout_sec"], canceled=canceled)
+            if canceled():
+                raise PlanningCanceled("planning canceled after inference")
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
             response = self.apply_backend_adjustments(response, request)
+            # Collision geometry is generated only after backend alignment and the
+            # bridge-owned contact offset have been applied.
+            response = annotate_candidates(response, observation, self.profile, self.collision_config)
+            if canceled():
+                raise PlanningCanceled("planning canceled after collision evaluation")
             self.visualize(response, observation)
             if handle.request.evaluation_only:
                 if canceled():
@@ -471,10 +480,12 @@ class GraspBridge(Node):
                 plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
                                    lambda T, seed: self.solve(T, seed, canceled),
                                    sample_step_m=self.settings["cartesian_sample_step_m"],
-                                   max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled)
+                                   max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled,
+                                   collision_config=self.collision_config)
             else:
                 plan = attach_seed_joints(
-                    calculate_plan(response["candidates"], self.profile, observation["T_base_camera"], canceled=canceled),
+                    calculate_plan(response["candidates"], self.profile, observation["T_base_camera"], canceled=canceled,
+                                   collision_config=self.collision_config),
                     observation["seed"],
                 )
             self.feedback(handle, "settle", "waiting for fresh, settled joint feedback")
@@ -535,7 +546,8 @@ class GraspBridge(Node):
 
     def publish_evaluation(self, observation, request, *, source="web_evaluation", **values):
         try:
-            evaluation = snapshot(observation, self.profile, request, source=source, **values)
+            evaluation = snapshot(observation, self.profile, request, source=source,
+                                  collision_config=self.collision_config, **values)
             self.evaluations.publish(String(data=json.dumps(evaluation, separators=(",", ":"))))
         except (TypeError, ValueError, KeyError) as exc:
             self.get_logger().warning(f"Unable to publish grasp evaluation snapshot: {exc}")

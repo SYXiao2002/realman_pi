@@ -207,3 +207,15 @@ def test_all_rejected_candidates_remain_structured_on_exception():
         choose_plan([candidate], profile, np.eye(4), [0]*6, lambda *_: (_ for _ in ()).throw(ValueError("IK failed")),
                     sample_step_m=.01, max_joint_step=15)
     assert failure.value.rejections == [{"candidate_id": "c1", "reason": "IK failed"}]
+
+
+def test_collision_gate_blocks_even_without_ik_precheck():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .05, "lift_m": .05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0]),
+                 "collision": {"status": "unknown"}}
+    with pytest.raises(NoReachableCandidate) as failure:
+        calculate_plan([candidate], profile, np.eye(4), collision_config={"blocking_statuses": ["unknown"]})
+    assert "collision status is unknown" in failure.value.rejections[0]["reason"]

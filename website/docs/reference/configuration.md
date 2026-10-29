@@ -31,7 +31,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用和工作区 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `camera_extrinsics.yaml` | 独立腕相机手眼结果、设备身份和物理精度验收；本地覆盖为 `camera_extrinsics.local.yaml`，导入默认未验收 | `grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `grasp_task.yaml` | 目标、租约与各阶段超时、MoveL 结果等待余量、保持时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
-| `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛、可选 `ik_precheck` 及后端候选返回后的 `geometry_center_offset_m` | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
+| `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛、可选 `ik_precheck`、`geometry_center_offset_m` 及点云夹爪防碰阈值 | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |
 

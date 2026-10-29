@@ -118,7 +118,10 @@ def readiness_problems(profile):
         transform(cal.get("T_flange_color"))
     except (ValueError, TypeError):
         problems.append("T_flange_color")
-    g = profile["gripper_geometry"]
+    g = profile.get("gripper_geometry")
+    if not isinstance(g, dict):
+        problems.append("gripper geometry")
+        return problems
     limits = {"min_opening_m": (0, 1), "max_opening_m": (0, 1),
               "finger_depth_m": (0.001, 1), "finger_thickness_m": (0.001, 1), "clearance_m": (0, 0.1)}
     for key, (lower, upper) in limits.items():

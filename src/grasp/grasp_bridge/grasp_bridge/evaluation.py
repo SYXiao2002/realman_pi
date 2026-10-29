@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from .geometry import transform
+from .gripper_collision import display_masks
 
 
 # Keep the review payload close to the offline Plotly preview while staying
@@ -46,7 +47,8 @@ def _workspace_bounds(profile):
     return bounds
 
 
-def snapshot(observation, profile, request, *, response=None, plan=None, rejections=None, source="web_evaluation", phase="captured", detail=""):
+def snapshot(observation, profile, request, *, response=None, plan=None, rejections=None,
+             source="web_evaluation", phase="captured", detail="", collision_config=None):
     """Keep RGB, registered depth, cloud and candidates in one atomic event.
 
     Points are in rectified color optical coordinates (+X right,+Y down,+Z
@@ -95,6 +97,13 @@ def snapshot(observation, profile, request, *, response=None, plan=None, rejecti
         sample = np.linspace(0, len(points) - 1, DISPLAY_CLOUD_MAX_POINTS, dtype=np.int64)
         points, yy, xx = points[sample], yy[sample], xx[sample]
     zz = depth[yy, xx]
+    diagnostics = dict((response or {}).get("diagnostics", {}))
+    segmentation = diagnostics.pop("segmap_png", None)
+    segmentation_labels = None
+    if segmentation is not None:
+        labels = cv2.imdecode(np.frombuffer(segmentation, np.uint8), cv2.IMREAD_UNCHANGED)
+        if labels is not None and labels.shape == depth.shape and np.issubdtype(labels.dtype, np.integer):
+            segmentation_labels = labels
     rejected = {item["candidate_id"]: item["reason"] for item in (rejections or [])}
     selected_id = (plan or {}).get("candidate_id")
     candidates = []
@@ -108,14 +117,16 @@ def snapshot(observation, profile, request, *, response=None, plan=None, rejecti
                                    else "rejected" if item.get("candidate_id") in rejected
                                    else "not_checked")
         item["planning_reason"] = rejected.get(item.get("candidate_id"))
+        collision = item.get("collision")
+        if collision is not None:
+            display_labels = segmentation_labels[yy, xx] if segmentation_labels is not None else None
+            item["collision"] = {**collision,
+                                  "display": display_masks(item, collision, points, display_labels, base_camera,
+                                                           collision_config)}
         candidates.append(item)
-    diagnostics = dict((response or {}).get("diagnostics", {}))
-    segmentation = diagnostics.pop("segmap_png", None)
     instances = None
-    if segmentation is not None:
-        labels = cv2.imdecode(np.frombuffer(segmentation, np.uint8), cv2.IMREAD_UNCHANGED)
-        if labels is None or labels.shape != depth.shape:
-            raise ValueError("invalid instance segmentation dimensions")
+    if segmentation is not None and segmentation_labels is not None:
+        labels = segmentation_labels
         colored = cv2.applyColorMap(((labels.astype(np.uint32) * 47) % 256).astype(np.uint8), cv2.COLORMAP_TURBO)
         instances = color.copy()
         instances[labels > 0] = cv2.addWeighted(color, .5, colored, .5, 0)[labels > 0]

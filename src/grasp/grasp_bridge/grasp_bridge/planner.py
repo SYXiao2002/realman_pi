@@ -13,7 +13,14 @@ class NoReachableCandidate(ValueError):
         super().__init__("no reachable candidate: " + str(rejections))
 
 
-def _candidate_geometry(candidate, profile, T_base_camera):
+def _candidate_geometry(candidate, profile, T_base_camera, collision_config=None):
+    if collision_config is not None:
+        collision = candidate.get("collision") or {}
+        status = collision.get("status", "unknown")
+        if status in collision_config.get("blocking_statuses", ("collision", "warning", "unknown")):
+            reason = collision.get("reason")
+            detail = f": {reason}" if isinstance(reason, str) and reason else ""
+            raise ValueError(f"collision status is {status}{detail}")
     g = profile["gripper_geometry"]
     if not (g["min_opening_m"] <= candidate["width_m"]
             and candidate["width_m"] + 2 * g["clearance_m"] <= g["max_opening_m"]):
@@ -36,7 +43,7 @@ def _plan_from_waypoints(candidate_id, waypoints, joints=None, rejections=None):
     }, "rejections": rejections or []}
 
 
-def calculate_plan(candidates, profile, T_base_camera, *, canceled=lambda: False):
+def calculate_plan(candidates, profile, T_base_camera, *, canceled=lambda: False, collision_config=None):
     """Choose a geometrically valid grasp without contacting an IK service.
 
     This is deliberately separate from IK validation so callers that already
@@ -48,7 +55,7 @@ def calculate_plan(candidates, profile, T_base_camera, *, canceled=lambda: False
         if canceled():
             raise RuntimeError("planning canceled")
         try:
-            waypoints = _candidate_geometry(candidate, profile, T_base_camera)
+            waypoints = _candidate_geometry(candidate, profile, T_base_camera, collision_config)
             return _plan_from_waypoints(candidate["candidate_id"], waypoints, rejections=reasons)
         except ValueError as exc:
             reasons.append({"candidate_id": candidate["candidate_id"], "reason": str(exc)})
@@ -112,7 +119,7 @@ def validate_plan_ik(plan, seed_degrees, solve_ik, *, sample_step_m, max_joint_s
 
 
 def choose_plan(candidates, profile, T_base_camera, seed_degrees, solve_ik, *, sample_step_m, max_joint_step,
-                canceled=lambda: False):
+                canceled=lambda: False, collision_config=None):
     if not 0 < sample_step_m <= 0.05 or not 0 < max_joint_step <= 45:
         raise ValueError("invalid corridor sampling limits")
     reasons = []
@@ -121,7 +128,7 @@ def choose_plan(candidates, profile, T_base_camera, seed_degrees, solve_ik, *, s
             raise RuntimeError("planning canceled")
         try:
             geometric = _plan_from_waypoints(candidate["candidate_id"],
-                                              _candidate_geometry(candidate, profile, T_base_camera),
+                                              _candidate_geometry(candidate, profile, T_base_camera, collision_config),
                                               rejections=reasons)
             return validate_plan_ik(geometric, seed_degrees, solve_ik,
                                     sample_step_m=sample_step_m,
