@@ -26,12 +26,17 @@ def config_root(tmp_path):
 
 
 def test_default_profile_uses_shared_config_without_manual_approval_gate(config_root):
+    # Isolate launcher wiring from the changing on-site observation/return poses.
+    (config_root / "ros/grasp_profiles.local.yaml").write_text(
+        "profiles:\n  right_wrist:\n"
+        "    observation_joint_degrees: [1, 2, 3, 4, 5, 6]\n"
+        "    return_joint_degrees: [-1, -2, -3, -4, -5, -6]\n")
     params = load_grasp_task_parameters(config_root)
     assert params["grasp_cycles"] == -1
     assert params["arm_id"] == "r"
     assert params["grasp_gripper"] == "gripper_right"
-    assert params["grasp_observation_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
-    assert params["grasp_return_joint_degrees"] == "-0.225,34.016,86.185,-0.774,41.991,-2.407"
+    assert params["grasp_observation_joint_degrees"] == "1,2,3,4,5,6"
+    assert params["grasp_return_joint_degrees"] == "-1,-2,-3,-4,-5,-6"
     assert params["grasp_confirmation_timeout_sec"] == 120.0
     assert params["grasp_target_label"] == "eu"
     assert "grasp_execution_ready" not in params

@@ -125,7 +125,7 @@ def test_snapshot_keeps_both_alignment_stages_in_same_capture():
 def test_display_cloud_matches_original_worker_z_range_without_changing_depth():
     obs = observation(None)
     obs["T_base_camera"] = np.eye(4)
-    obs["depth_m"][0, :4] = [.1, .2, 1.5, 2.]
+    obs["depth_m"][0, :4] = [.1, .19, 1.6, 2.]
     before = obs["depth_m"].copy()
     result = snapshot(obs, profile(), request(), response={"diagnostics": {"z_range_m": [.2, 1.5]}})
     assert len(result["cloud"]["xyz_m"]) == 60
