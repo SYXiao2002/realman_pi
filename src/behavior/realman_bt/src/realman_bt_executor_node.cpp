@@ -23,6 +23,7 @@
 #include "realman_bt/policy_task_params.hpp"
 #include "realman_bt/prepare_keyboard_work_node.hpp"
 #include "realman_bt/retry_unless_fault_node.hpp"
+#include "realman_bt/save_camera_frames_node.hpp"
 #include "realman_bt/three_arm_move_j_node.hpp"
 
 namespace realman_bt {
@@ -95,6 +96,10 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
     blackboard_->set<std::string>("pika_r_joint_degrees", pika_r_joint_degrees);
   }
   blackboard_->set<rclcpp::Node*>(kRosNodeBlackboardKey, this);
+  // Session tag for grasp snapshots. PlanGrasp overwrites it once per cycle; the
+  // empty seed keeps {grasp_session} resolvable before the first plan so a
+  // SaveCameraFrames leaf never reads an undefined blackboard key.
+  blackboard_->set<std::string>(kGraspSessionKey, std::string());
   // Thresholds and counts of the policy task (config/ros/policy_task.yaml). The counts are also
   // blackboard values so the XML can refer to them as {policy_cycles} / {policy_attempts} /
   // {policy_timeout_attempts} / {policy_timeout_backoff_sec}.
@@ -178,6 +183,7 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
   factory_.registerNodeType<ThreeArmMoveJNode>("ThreeArmMoveJ");
   factory_.registerNodeType<CartesianVelocityForDurationNode>(
       "CartesianVelocityForDuration");
+  factory_.registerNodeType<SaveCameraFramesNode>("SaveCameraFrames");
   bt_core::XmlParser parser(factory_);
   auto tree = parser.loadFromFile(tree_file, blackboard_);
   tree_ = std::make_unique<bt_core::Tree>(std::move(tree));

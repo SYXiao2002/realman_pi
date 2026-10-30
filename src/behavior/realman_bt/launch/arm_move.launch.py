@@ -8,7 +8,15 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, SetEnvironmentVariable
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    OpaqueFunction,
+    RegisterEventHandler,
+    SetEnvironmentVariable,
+)
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -104,7 +112,7 @@ def generate_launch_description():
                 profile_name=LaunchConfiguration("grasp_profile").perform(context) or None,
                 target_label=LaunchConfiguration("grasp_target_label").perform(context) or None,
             )
-        return [Node(
+        executor = Node(
             package="realman_bt",
             executable="realman_bt_executor",
             name="realman_bt_executor",
@@ -124,7 +132,30 @@ def generate_launch_description():
                     **extra,
                 }
             ],
-        )]
+        )
+        # Long-lived on-demand image capture service backing the SaveCameraFrames leaf.
+        # It stays idle (no subscriptions) until a tree requests a snapshot, so it is
+        # harmless for trees that never save a frame.
+        snapshot_server = Node(
+            package="realman_bt",
+            executable="camera_snapshot_server",
+            name="camera_snapshot_server",
+            output="screen",
+            parameters=[str(config_root / "ros" / "camera_snapshot.yaml")],
+        )
+        return [
+            executor,
+            snapshot_server,
+            # The snapshot server is long-lived: when the one-shot executor exits, take
+            # the whole launch down so bt-start's `wait` returns and it archives the run
+            # (mirrors control_router.launch.py).
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=executor,
+                    on_exit=[EmitEvent(event=Shutdown(reason="behavior-tree executor exited"))],
+                )
+            ),
+        ]
 
     return LaunchDescription(
         [

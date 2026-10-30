@@ -213,6 +213,119 @@ ROS clock 的新时间戳以及映射后的 `frame_id`。时长到达后节点�
 response 或 accepted goal 移交给 executor 的 cancellation drain。`pending_cancellations` 同时统计 MoveJ
 和笛卡尔速度 session；one-shot executor 要等两类 drain 都完成取消提交后才退出。
 
+## 相机画面快照
+
+`SaveCameraFrames` 把一个或多个相机的当前画面保存到指定文件夹。行为树执行器是精简的 C++ 进程，
+没有 OpenCV/cv_bridge，因此叶节点本身不碰图像数据：它作为服务客户端调用
+`camera_snapshot_server`（`realman_msgs/SaveCameraImages`），由这个 Python 节点订阅请求的话题、
+每个话题取一帧最新画面、经 `realman_recording` 已测试的 `image_to_jpeg` 编码为 `.jpg`，再写入目标
+文件夹。服务按需订阅、拿到帧或超时后立即销毁订阅，因此服务端不再维护一份相机配置，也不会与树里
+写的话题发生漂移。
+
+`snapshot.xml` 演示同时保存两个腕部相机：
+
+```xml
+<SaveCameraFrames
+    image_topics="/camera_left/color/image_raw,/camera_right/color/image_raw"
+    directory="/opt/rm65_ws/logs/snapshots"
+    service_name="/camera_snapshot/save"
+    timeout_sec="8.0"
+    dry_run="{dry_run}"/>
+```
+
+用文件名直接启动：
+
+```bash
+./rm65 bt snapshot
+```
+
+默认仍是 dry-run：只校验端口并记录意图，不创建服务客户端、不订阅、不写盘。真正保存画面：
+
+```bash
+REALMAN_BT_DRY_RUN=false ./rm65 bt snapshot
+```
+
+### 端口
+
+| 端口 | 默认 | 含义 |
+| --- | --- | --- |
+| `image_topics` | 无（必填） | 逗号分隔的完整相机话题；每项必须以 `/` 开头且不重复。命名空间见 `config/ros/cameras_ros2.yaml`。 |
+| `directory` | 无（必填） | 目标文件夹，必须是绝对路径；不存在时服务端会创建。 |
+| `service_name` | `/camera_snapshot/save` | 要调用的 `SaveCameraImages` 服务名，须与服务端 `save_service` 一致。 |
+| `timeout_sec` | `10.0` | 服务端为每个话题等待一帧新画面的预算；客户端截止时间再宽限 5 s。 |
+| `dry_run` | `true` | 只校验端口、记录意图，不拍照。 |
+| `allow_failure` | `false` | 为 `true` 时容忍运行时失败（服务缺失/拒绝/超时）：记一条 `ERROR` 诊断后仍返回 `SUCCESS`，让尽力而为的快照不中断周围任务。端口非法始终失败，不受此开关影响。 |
+| `session_id` | 空 | 可选会话标签，绑定到黑板键（如 `{grasp_session}`）后随请求发给服务端。服务端把每帧命名为 `<label>_<session_id>.jpg`，让同一轮抓取的 `after_plan`/`after_close`/`after_lift` 三张共用同一标签、可跨子目录配对。留空时回退到服务端自己的拍照时间戳命名。 |
+
+端口校验发生在创建任何服务客户端之前：话题为空/重复/不以 `/` 开头、目录为空或不是绝对路径、
+`timeout_sec` 非正都会立即 `FAILURE` 并保留 `failureReason()`。叶节点发出一次请求后进入 `RUNNING`，
+直到服务回应或客户端截止时间（`timeout_sec` 加 5 s 宽限）到达。成功要求服务为每个请求的话题都写入
+了一帧；只要有话题在预算内没取到帧、编码失败或服务不可用，就返回 `FAILURE`（服务端“先全部编码、
+再统一写盘”，因此失败不会留下半个请求的文件）。被 halt 时放弃在途请求并复位，下次进入重新校验、
+重新请求。叶节点以 `source=SERVICE` 记录 `send_request`/`result`/`timeout` 诊断事件。
+
+`allow_failure=true` 把上面这些**运行时**失败（服务缺失、拒绝、超时）改成“尽力而为”：节点记录同样的
+`ERROR` 事件、再补一条 `continuing` 事件，然后返回 `SUCCESS`，因此一次没抓到的快照不会让周围的
+`Sequence` 失败，也不会触发外层重试。端口非法属于配置错误，无论 `allow_failure` 都会 `FAILURE`，以便
+dry-run 阶段就暴露。
+
+### 服务端与启动接线
+
+`camera_snapshot_server` 由 `arm_move.launch.py` 与执行器一起启动；它是长驻节点，因此当 one-shot
+执行器退出时，launch 通过 `OnProcessExit → Shutdown` 把整个 launch 一并收尾，`bt-start` 的 `wait`
+才能返回并归档本次运行。服务端参数在 `config/ros/camera_snapshot.yaml`：
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `save_service` | `/camera_snapshot/save` | 服务名，须与叶节点 `service_name` 一致。 |
+| `capture_timeout_sec` | `5.0` | 请求未带 `timeout_sec`（≤0）时使用的单帧捕获预算。 |
+| `jpeg_quality` | `90` | 传给 `image_to_jpeg` 的 JPEG 质量（1-100），与录制归档一致。 |
+| `default_directory` | 空 | 请求 `directory` 为空时的兜底目录；留空表示不兜底，直接拒绝。 |
+
+树里的 `SaveCameraFrames` 端口优先于这些默认值，只有服务名必须两边一致。
+
+::: warning 启动器约束
+快照树只保存画面、不命令任何运动，但 `arm_move` 是唯一会启动快照服务的启动器，且启动元数据要求
+`realman_required_arms`/`realman_required_actions` 非空，因此 `snapshot.xml` 仍声明 `arm "r"` 并在预检
+等待 `/r/execute_motion` 就绪（由 `./rm65 up` 的驱动提供），即使它并不发运动指令。
+:::
+
+### 抓取过程中的分阶段快照
+
+`grasp.xml` 在右腕抓取序列里插入了三个 `SaveCameraFrames`：分别在 `plan_grasp` 之后、`close_gripper`
+之后、`lift` 之后各存一张右腕相机（`/camera_right/color/image_raw`）画面，写入按阶段分的子目录
+`/opt/rm65_ws/logs/snapshots/{after_plan,after_close,after_lift}`（主机侧 `logs/snapshots/`），用于离线复核“规划时看到的场景、
+夹爪闭合后实际夹到什么、抬起后物体是否离开台面”。
+
+```xml
+<SaveCameraFrames name="save_after_lift"
+                  image_topics="/camera_right/color/image_raw"
+                  directory="/opt/rm65_ws/logs/snapshots/after_lift"
+                  service_name="/camera_snapshot/save"
+                  timeout_sec="8.0"
+                  allow_failure="true"
+                  session_id="{grasp_session}"
+                  dry_run="{dry_run}"/>
+```
+
+三个节点都设 `allow_failure="true"`，这是把它们放进抓取 `Sequence` 的前提：该序列外层包着
+`Retry(num_attempts=3)`，若快照失败会连累整个序列 `FAILURE` 并被重跑——重跑会从头执行
+`prepare_gripper`(open)，而此时机械臂可能正夹着物体，开爪会导致物体掉落。`allow_failure` 让快照退回
+“尽力而为”：没抓到就记诊断、继续任务，绝不影响抓取成败，也不触发重跑。它们同样跟随 `{dry_run}`，
+dry-run 时只校验端口、不落盘。
+
+三个节点还都绑定 `session_id="{grasp_session}"`。`grasp_session` 是黑板上的会话标签：`plan_grasp` 每成功
+规划一轮就把它覆写成本轮的 UTC 时间戳（`%Y%m%d_%H%M%S`），执行器启动时先播种空串兜底。服务端据此把每帧
+命名为 `<label>_<session>.jpg`，于是同一轮抓取的 `after_plan`/`after_close`/`after_lift` 三张文件名完全
+相同（如 `camera_right_20261029_143748.jpg`），跨三个子目录靠这个 session 时间戳即可配对成一组；`session_id`
+为空时（如 `snapshot.xml`）回退到服务端自己的拍照时间戳命名。
+
+::: warning 每轮循环都会各写一张
+`grasp.xml` 的 `Repeat` 默认 `cycles=-1`（无限循环直到停止），因此每完成一轮抓取都会往三个子目录各写
+一张 `.jpg`，文件名带本轮 `grasp_session` 时间戳。长时间运行时注意 `/opt/rm65_ws/logs`（主机 `logs/`）
+的磁盘占用。
+:::
+
 ## 键盘连续速度 session
 
 `control.xml` 的 `keyboard` 分支先运行 `PrepareKeyboardWork`。该异步叶节点从统一坐标注册表解析 l/r 的

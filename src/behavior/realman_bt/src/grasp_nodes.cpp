@@ -1,6 +1,7 @@
 #include "realman_bt/grasp_nodes.hpp"
 
 #include <cmath>
+#include <ctime>
 #include <future>
 #include <mutex>
 #include <optional>
@@ -52,6 +53,19 @@ void positive(double value, const char* name) {
 std::string arm(const std::string& value) {
   if (value != "l" && value != "r") throw std::invalid_argument("grasp arm_id must be l or r");
   return value;
+}
+// Wall-clock UTC tag (YYYYmmdd_HHMMSS) identifying one grasp cycle. gmtime_r
+// matches the snapshot server's datetime.now() inside the UTC container, so a
+// cycle's frames group and sort together. A cycle spans seconds of motion, so
+// second resolution is effectively unique per cycle.
+std::string graspSessionStamp() {
+  const std::time_t now =
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm tm{};
+  gmtime_r(&now, &tm);
+  char buffer[32];
+  std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
+  return std::string(buffer);
 }
 void event(const bt_core::Blackboard::Ptr& bb, const std::string& interface_name,
            const std::string& phase, const std::string& detail, const std::string& level = "INFO") {
@@ -335,6 +349,7 @@ Status PlanGraspNode::tick() {
         if (getInput<std::string>(key).value_or("").empty()) throw std::invalid_argument(std::string(key) + " is required");
       }
       if (getInput<bool>("dry_run").value_or(true)) {
+        blackboard()->set<std::string>(kGraspSessionKey, graspSessionStamp());
         event(blackboard(), "/grasp_bridge/plan_grasp", "dry_run", "configuration validated; no observation or inference");
         completed_ = true; return Status::SUCCESS;
       }
@@ -352,6 +367,7 @@ Status PlanGraspNode::tick() {
     if (result->observation_id.empty() || result->plan_id.empty() || result->capture_timestamp_ns <= 0 ||
         result->expires_timestamp_ns <= node(blackboard())->now().nanoseconds()) throw std::runtime_error("grasp plan is missing identity or already expired");
     blackboard()->set<std::shared_ptr<Plan::Result>>(kGraspPlanKey, result);
+    blackboard()->set<std::string>(kGraspSessionKey, graspSessionStamp());
     event(blackboard(), "/grasp_bridge/plan_grasp", "result", "plan accepted: " + result->plan_id);
     completed_ = true; operation_.reset(); return Status::SUCCESS;
   } catch (const std::exception& error) {

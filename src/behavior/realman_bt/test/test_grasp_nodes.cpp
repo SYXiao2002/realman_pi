@@ -14,10 +14,12 @@
 #include "bt_nodes/control/sequence_node.hpp"
 #include "realman_bt/grasp_nodes.hpp"
 #include "realman_bt/move_j_node.hpp"
+#include "realman_bt/save_camera_frames_node.hpp"
 #include "realman_msgs/action/execute_motion.hpp"
 #include "realman_msgs/srv/task_control.hpp"
 #include "realman_msgs/srv/task_gripper_command.hpp"
 #include "realman_msgs/srv/confirm_grasp.hpp"
+#include "realman_msgs/srv/save_camera_images.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
 using Status = bt_core::NodeStatus;
@@ -101,6 +103,18 @@ int main(int argc, char** argv) {
     result->message = result->success ? "complete" : "simulated stage failure";
     if (result->success) handle->succeed(result); else handle->abort(result);
   });
+  // grasp.xml saves a right-wrist frame after plan/close/lift. Serve that snapshot
+  // so the best-effort leaves resolve on the next tick instead of waiting out their
+  // 13s client deadline (run() below only allows 8s). They record no stage, so the
+  // stage-ordering assertions stay valid.
+  auto snapshot_server = ros_node->create_service<realman_msgs::srv::SaveCameraImages>(
+      "/camera_snapshot/save",
+      [&](const std::shared_ptr<realman_msgs::srv::SaveCameraImages::Request>,
+          std::shared_ptr<realman_msgs::srv::SaveCameraImages::Response> res) {
+        res->success = true;
+        res->message = "saved 1 frame(s)";
+        res->saved_paths = {"/tmp/snap/camera_right_test.jpg"};
+      });
 
   bt_core::NodeFactory factory;
   factory.registerNodeType<bt_nodes::SequenceNode>("Sequence");
@@ -113,6 +127,7 @@ int main(int argc, char** argv) {
   factory.registerNodeType<realman_bt::GraspHoldNode>("GraspHold");
   factory.registerNodeType<realman_bt::GraspConfirmNode>("GraspConfirm");
   factory.registerNodeType<realman_bt::MoveJNode>("MoveJ");
+  factory.registerNodeType<realman_bt::SaveCameraFramesNode>("SaveCameraFrames");
   bt_core::XmlParser parser(factory);
   auto bb = bt_core::Blackboard::create();
   realman_bt::RuntimeDiagnostics diagnostics;
@@ -138,6 +153,9 @@ int main(int argc, char** argv) {
   // The production tree is configured for continuous operation; this test
   // exercises one complete cycle and then expects a terminal SUCCESS.
   bb->set<int>("grasp_cycles", 1);
+  // The executor seeds this empty and PlanGrasp overwrites it each cycle; seed it
+  // here too so save_after_plan/close/lift resolve session_id="{grasp_session}".
+  bb->set<std::string>("grasp_session", "");
   auto tree = parser.loadFromFile(GRASP_TREE_FILE, bb);
   auto drain = [&]() {
     for (auto it = drains.begin(); it != drains.end();) {
@@ -255,7 +273,9 @@ int main(int argc, char** argv) {
   assert(stages[stages.size() - 3] == "return" && stages[stages.size() - 2] == "release_open");
   bool reported_failed = false;
   for (const auto& entry : diagnostics.snapshot().events) {
-    assert(entry.source == "EXECUTOR" || entry.source == "ACTION");
+    // grasp.xml embeds SaveCameraFrames (a service leaf) after plan/close/lift, so
+    // SERVICE joins EXECUTOR and ACTION as a legitimate diagnostic source here.
+    assert(entry.source == "EXECUTOR" || entry.source == "ACTION" || entry.source == "SERVICE");
     assert(entry.detail.find("test-secret") == std::string::npos);
     if (entry.phase == "observed_outcome" && entry.detail.find("failed_grasp;") == 0) reported_failed = true;
   }

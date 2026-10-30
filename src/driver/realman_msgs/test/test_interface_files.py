@@ -471,3 +471,15 @@ def test_grasp_confirmation_contract_requires_explicit_observation_and_return():
          ["bool success", "string message"]],
     )
     assert '"srv/ConfirmGrasp.srv"' in (ROOT / "CMakeLists.txt").read_text()
+
+
+def test_save_camera_images_contract_is_exact_and_registered():
+    _assert_interface_contract(
+        ROOT / "srv/SaveCameraImages.srv",
+        [
+            ["string[] image_topics", "string directory", "float64 timeout_sec",
+             "string session_id"],
+            ["bool success", "string message", "string[] saved_paths"],
+        ],
+    )
+    assert '"srv/SaveCameraImages.srv"' in (ROOT / "CMakeLists.txt").read_text()

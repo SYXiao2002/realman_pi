@@ -1,0 +1,20 @@
+# camera_snapshot_server: on-demand image capture service backing the behavior-tree
+# SaveCameraFrames leaf. The lean C++ executor has no OpenCV/cv_bridge, so the leaf
+# calls this Python service (realman_msgs/SaveCameraImages), which subscribes to the
+# requested topics, JPEG-encodes one fresh frame each via realman_recording's tested
+# image_to_jpeg, and writes <camera>_<timestamp>.jpg files into the requested folder.
+# Started by arm_move.launch.py alongside the executor; the executor's exit shuts the
+# whole launch down. The tree's SaveCameraFrames ports (image_topics/directory/
+# timeout_sec) win over these defaults; only the service name must match on both sides.
+camera_snapshot_server:
+  ros__parameters:
+    # Service the SaveCameraFrames leaf calls; must equal the leaf's service_name port.
+    save_service: /camera_snapshot/save
+    # Per-frame capture budget used when a request omits timeout_sec (<= 0). Bounds how
+    # long the server waits for one fresh frame per topic before reporting the miss.
+    capture_timeout_sec: 5.0
+    # JPEG quality passed to image_to_jpeg (1-100); 90 matches the recorder's archive.
+    jpeg_quality: 90
+    # Fallback folder when a request leaves directory empty. Empty means "no fallback":
+    # a request without a directory is refused rather than written to an implicit place.
+    default_directory: ""

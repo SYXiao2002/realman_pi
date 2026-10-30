@@ -28,6 +28,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ListInputModes.srv"
   "srv/SelectInputMode.srv"
   "srv/CaptureCalibrationSample.srv"
+  "srv/SaveCameraImages.srv"
   "srv/SolveCalibration.srv"
   "srv/VerifyCalibration.srv"
   "srv/UpdateCalibrationLayout.srv"
