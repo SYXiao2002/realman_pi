@@ -198,8 +198,14 @@ class ReferenceBackend:
                             'applied' if request.get('T_base_camera') is not None else 'missing_base_camera')
         if alignment_status == 'missing_base_camera' and not request.get('evaluation_only', False):
             raise ValueError('geometry vertical alignment requires captured T_base_camera')
-        for index, value in enumerate(raw):
+        per_object_seq = {}
+        for value in raw:
             obj_id = int(value['obj_id'])
+            # Second ID field is the 0-based index WITHIN this instance, per the
+            # documented "instance_id:inner_index" format, not the cross-object
+            # position in the ranked candidate list.
+            seq = per_object_seq.get(obj_id, 0)
+            per_object_seq[obj_id] = seq + 1
             native = np.asarray(value['grasp'], dtype=np.float64).copy()
             aligned = (np.asarray(self.runtime.selection.align_grasp_to_base_vertical(
                 native, request['T_base_camera'], wrist_offset_m=offset), dtype=np.float64)
@@ -207,7 +213,7 @@ class ReferenceBackend:
             before = adapt_native_candidate(native, offset_m=offset)
             after = adapt_native_candidate(aligned, offset_m=offset) if aligned is not None else None
             candidates.append(dict(
-                candidate_id=f'{obj_id}:{index}', object_id=str(obj_id),
+                candidate_id=f'{obj_id}:{seq}', object_id=str(obj_id),
                 class_name=request['target']['class_name'], backend=self.name,
                 T_camera_native_grasp=native, T_camera_native_grasp_aligned=aligned,
                 T_camera_grasp_before_alignment=before, T_camera_grasp_after_alignment=after,
