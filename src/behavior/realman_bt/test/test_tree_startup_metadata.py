@@ -18,7 +18,7 @@ def test_canonical_tree_metadata_declares_its_runtime_contract():
         "r", "l,m,r", "execute_motion", "arm_move.launch.py", "true", "true"
     )
     assert read_metadata(ROOT / "config/behavior-trees/control.xml") == (
-        "r", "l,m,r", "execute_motion", "control_router.launch.py", "false", "false"
+        "r", "l,r", "execute_motion", "control_router.launch.py", "false", "false"
     )
     assert read_metadata(ROOT / "config/behavior-trees/tool_x.xml") == (
         "l", "l", "cartesian_velocity", "arm_move.launch.py", "true", "true"

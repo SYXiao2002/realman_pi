@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <root main_tree_to_execute="InputControl"
       realman_arm_id="r"
-      realman_required_arms="l,m,r"
+      realman_required_arms="l,r"
       realman_launch="control_router"
       realman_stop_on_terminal="false"
       realman_exit_on_terminal="false">
@@ -32,7 +32,7 @@
                branches, slower (10%). The pose also gives the velocity session the passthrough re-anchor that
                only runs ahead of a MoveJ. Activation, and therefore the policy, only starts after it succeeds. -->
           <Sequence name="policy_entry">
-            <ThreeArmMoveJ name="policy_start_pose" dry_run="{dry_run}"
+            <ThreeArmMoveJ name="policy_start_pose" dry_run="{dry_run}" arms="l,r"
                            l_joint_degrees="{pika_l_joint_degrees}"
                            m_joint_degrees="{pika_m_joint_degrees}"
                            r_joint_degrees="{pika_r_joint_degrees}"
@@ -56,7 +56,7 @@
                                   timeout_backoff_sec="{policy_timeout_backoff_sec}">
                     <Sequence name="policy_attempt">
                       <GripperReady arm_id="r" dry_run="{dry_run}"/>
-                      <ThreeArmMoveJ name="policy_rehome" dry_run="{dry_run}"
+                      <ThreeArmMoveJ name="policy_rehome" dry_run="{dry_run}" arms="l,r"
                                      l_joint_degrees="{pika_l_joint_degrees}"
                                      m_joint_degrees="{pika_m_joint_degrees}"
                                      r_joint_degrees="{pika_r_joint_degrees}"
@@ -75,7 +75,7 @@
           <InputModeGuard mode="pikaposition" label="Pika / 位置控制" selectable="true"
                           selected_mode="{selected_mode}"/>
           <Sequence name="pika_position_entry">
-            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}"
+            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}" arms="l,r"
                            l_joint_degrees="{pika_l_joint_degrees}"
                            m_joint_degrees="{pika_m_joint_degrees}"
                            r_joint_degrees="{pika_r_joint_degrees}"
@@ -88,7 +88,7 @@
           <InputModeGuard mode="pikavelocity" label="Pika / 速度控制" selectable="true"
                           selected_mode="{selected_mode}"/>
           <Sequence name="pika_velocity_entry">
-            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}"
+            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}" arms="l,r"
                            l_joint_degrees="{pika_l_joint_degrees}"
                            m_joint_degrees="{pika_m_joint_degrees}"
                            r_joint_degrees="{pika_r_joint_degrees}"
@@ -101,7 +101,7 @@
           <InputModeGuard mode="pikamixed" label="Pika / Mixed 控制" selectable="true"
                           selected_mode="{selected_mode}"/>
           <Sequence name="pika_mixed_entry">
-            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}"
+            <ThreeArmMoveJ name="pika_default_pose" dry_run="{dry_run}" arms="l,r"
                            l_joint_degrees="{pika_l_joint_degrees}"
                            m_joint_degrees="{pika_m_joint_degrees}"
                            r_joint_degrees="{pika_r_joint_degrees}"

@@ -48,7 +48,7 @@ flowchart LR
 | `pikavelocity` | Pika / 速度控制 | `cartesian_velocity`（`work/pikabase`） | `CartesianVelocity`：`follow=false`，l/r 周期 `10 ms` | 手速直接映射为末端速度，可离合 |
 | `pikamixed` | Pika / Mixed 控制 | 速度（XYZ）+ 位姿（姿态） | 单个 `CartesianPose` session | 位置用速度积分（可离合），姿态跟随手的旋转量（不漂移） |
 
-三种模式共用同一套门控：进入前由行为树先用 `ThreeArmMoveJ` 把 l/m/r 移到 `pika_default_pose`，成功后才发布
+三种模式共用同一套门控：进入前由行为树先用 `ThreeArmMoveJ`（`arms="l,r"`）把 l/r 移到 `pika_default_pose`，成功后才发布
 `ACTIVE`；其它模式下 router 丢弃 Pika 输入，不自动开合夹爪。
 
 ### 交互：逐个模式看数据怎么走
@@ -183,7 +183,7 @@ Pika 速度 Action 使用 `WORK` 和 `pikabase`。driver 收到该 Goal 时，�
 ## 进入 Pika 前的准备动作
 
 
-切入任一 Pika 模式时，行为树先用 `ThreeArmMoveJ` 将 l/m/r 移动到
+切入任一 Pika 模式时，行为树先用 `ThreeArmMoveJ`（`arms="l,r"`）将 l/r 移动到
 [`config/ros/pika_config.yaml`](https://github.com/QingTianRobot/realman_pi/blob/main/config/ros/pika_config.yaml) 中
 `pika_default_pose.left|middle|right.joint_degrees` 指定的关节角（单位：度），再激活 Pika。
 `control_router.launch.py` 启动时读取这三组关节角并注入行为树黑板；同一配置中的 `tcp_pose` 不参与

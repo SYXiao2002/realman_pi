@@ -64,7 +64,9 @@ R=`2.583,30.02,93.644,2.532,56.142,-0.285`，不会解析或连接 M 臂。
 开始计算，包含等待服务器就绪的时间。
 
 没有 M 臂的部署可运行 `./rm65 bt duo`；根元数据只要求 `l,r` 的 `execute_motion` Action。`control.xml`
-仍是独立的三臂输入路由树，其 Pika/Policy 准备动作依赖三臂，因此该硬件配置应选择 `duo.xml` 运行分阶段移动。
+输入路由树同样已按双臂部署收敛：根元数据 `realman_required_arms="l,r"`，其 Pika/Policy 准备动作
+`ThreeArmMoveJ` 显式设置 `arms="l,r"`，只解析并连接 l/r，不等待 `/m/execute_motion`。`m_joint_degrees`
+端口仍保留但不被选中解析，因此没有 M 臂时也能正常进入各输入模式的 `ACTIVE`。
 
 ## 腕相机单臂抓取
 
