@@ -44,7 +44,7 @@ geometry_center_offset_m: 0.01
 # performs its own Cartesian feasibility check. Set true to restore the
 # bridge-side seeded-IK precheck before any motion command is sent.
 ik_precheck: false
-max_candidates: 15
+max_candidates: 32
 # Optional expected server model identity. When set, mismatch still rejects.
 expected_model_id: null
 
@@ -58,7 +58,7 @@ collision:
   sweep_step_m: 0.005
   cluster_voxel_m: 0.003
   minimum_local_points: 20
-  minimum_collision_points: 3
+  minimum_collision_points: 200
   # Warning and unknown evidence are advisory; keep their metrics/masks visible
   # for review. Only a confirmed collision blocks planning. Unknown does not
   # mean safe: it means this policy explicitly accepts incomplete evidence.
