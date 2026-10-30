@@ -10,8 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from grasp_bridge.geometry import (adjust_geometry_response, from_pose, pose_drift,
-                                   restricted_waypoints, to_pose)
+from grasp_bridge.geometry import (adjust_geometry_response, discard_out_of_workspace,
+                                   from_pose, pose_drift, restricted_waypoints, to_pose)
 from grasp_bridge.planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from grasp_bridge.rgbd import (CameraModel, crop_depth_to_workspace, image_array,
                                register_depth, validate_timing)
@@ -157,6 +157,33 @@ def test_invalid_rotation_and_workspace_escape_rejected():
     with pytest.raises(ValueError, match="corridor"):
         restricted_waypoints(np.eye(4), from_pose([0, 0, 0.9], [1, 0, 0, 0]), np.eye(4),
                              approach_m=0.1, lift_m=0.2, workspace=[[-1, -1, 0], [1, 1, 1]])
+
+
+def test_workspace_filter_discards_out_of_bounds_grasp_centers_before_planning():
+    T_base_camera = np.eye(4)
+    T_base_camera[:3, 3] = [.05, 0., .1]
+    candidates = [
+        {"candidate_id": "inside", "T_camera_grasp": from_pose([0, 0, .3], [1, 0, 0, 0])},
+        {"candidate_id": "outside", "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])},
+        {"candidate_id": "broken", "T_camera_grasp": None},
+    ]
+    filtered = discard_out_of_workspace({"candidates": candidates, "diagnostics": {"z_range_m": [.1, .9]}},
+                                        T_base_camera, [[-.1, -.1, .35], [.1, .1, .45]])
+    assert [item["candidate_id"] for item in filtered["candidates"]] == ["inside"]
+    report = filtered["diagnostics"]["workspace_filter"]
+    assert (report["input_candidates"], report["kept_candidates"], report["discarded_candidates"]) == (3, 1, 2)
+    reasons = {item["candidate_id"]: item["reason"] for item in report["discarded"]}
+    assert "outside workspace_m" in reasons["outside"] and "z=0.600" in reasons["outside"]
+    assert "unusable" in reasons["broken"]
+    # Existing diagnostics survive alongside the filter report.
+    assert filtered["diagnostics"]["z_range_m"] == [.1, .9]
+
+
+def test_workspace_filter_rejects_invalid_box_and_transform():
+    with pytest.raises(ValueError, match="workspace"):
+        discard_out_of_workspace({"candidates": []}, np.eye(4), [[0, 0, 0], [0, 1, 1]])
+    with pytest.raises(ValueError, match="4x4"):
+        discard_out_of_workspace({"candidates": []}, None, [[-1, -1, -1], [1, 1, 1]])
 
 
 def test_ik_rejects_first_candidate_then_samples_second_corridor():

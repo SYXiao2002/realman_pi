@@ -27,7 +27,8 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from grasp_protocol import PROTOCOL_VERSION, validate_request
 
-from .geometry import (adjust_geometry_response, from_pose, pose_drift, transform, to_pose)
+from .geometry import (adjust_geometry_response, discard_out_of_workspace, from_pose,
+                       pose_drift, transform, to_pose)
 from .evaluation import json_value, snapshot
 from .gripper_collision import annotate_candidates, validate_collision_config
 from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
@@ -476,6 +477,21 @@ class GraspBridge(Node):
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
             response = self.apply_backend_adjustments(response, request)
+            # Discard candidates whose grasp center is already outside workspace_m
+            # before collision and planning spend effort on unreachable poses.
+            response = discard_out_of_workspace(
+                response, observation["T_base_camera"], self.profile["workspace_m"])
+            workspace_filter = response["diagnostics"]["workspace_filter"]
+            if workspace_filter["discarded_candidates"]:
+                self.get_logger().warning(
+                    "workspace filter discarded {}/{} candidates: {}".format(
+                        workspace_filter["discarded_candidates"], workspace_filter["input_candidates"],
+                        "; ".join(f"{item['candidate_id']}: {item['reason']}"
+                                   for item in workspace_filter["discarded"])))
+            if not response["candidates"]:
+                raise ValueError(
+                    "all {} candidates discarded: every grasp center is outside workspace_m".format(
+                        workspace_filter["input_candidates"]))
             # Collision geometry is generated only after backend alignment and the
             # bridge-owned contact offset have been applied.
             response = annotate_candidates(response, observation, self.profile, self.collision_config)
