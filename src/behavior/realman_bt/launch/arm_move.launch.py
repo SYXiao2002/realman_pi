@@ -97,15 +97,18 @@ def generate_launch_description():
 
     grasp_profile = DeclareLaunchArgument(
         "grasp_profile", default_value=os.environ.get("REALMAN_GRASP_PROFILE", ""),
-        description="Profile override for grasp.xml only.")
+        description="Profile override for grasp-family trees (grasp.xml, grasp2box.xml).")
     grasp_target_label = DeclareLaunchArgument(
         "grasp_target_label", default_value=os.environ.get("REALMAN_GRASP_TARGET_LABEL", ""),
-        description="Explicit target override for grasp.xml only.")
+        description="Explicit target override for grasp-family trees (grasp.xml, grasp2box.xml).")
 
     def create_executor(context):
         extra = {}
         selected_tree = Path(LaunchConfiguration("tree_file").perform(context))
-        if selected_tree.stem == "grasp":
+        # Grasp-family trees share the same profile-driven inputs. Add new
+        # variants to this set so their {grasp_*} blackboard ports get injected;
+        # an unmatched stem leaves grasp_gripper empty and TaskGripper fails.
+        if selected_tree.stem in ("grasp", "grasp2box"):
             from grasp_task_config import load_grasp_task_parameters
             extra = load_grasp_task_parameters(
                 config_root,
