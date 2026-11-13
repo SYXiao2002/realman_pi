@@ -143,6 +143,7 @@ app.innerHTML = `
     <span id="auth-button" class="status-pill ready">CONTROL OPEN</span>
     <a href="/calibration.html" class="button ghost">相机标定</a>
     <a href="/grasp.html" class="button ghost">Grasp 评估</a>
+    <a href="/6d_pose.html" class="button ghost">6D 位姿</a>
     <button id="cancel-motion" class="button ghost" type="button" disabled>取消 Action</button>
     <button id="recover-motion" class="button secondary" type="button" disabled>恢复机械臂</button>
     <button id="stop-button" class="button danger" type="button" disabled>■ 软件停止</button>
@@ -2392,6 +2393,7 @@ let btLibrary: BtLibrary = { available: false };
 let btSelectedTree = "";
 try { btSelectedTree = window.localStorage.getItem(btSelectedStorageKey) ?? ""; } catch { /* per-viewer convenience only */ }
 let btStartArmedUntil = 0;
+let btPickerHtml = "";
 let btStartPending: { tree: string; dryRun: boolean; since: number; startedAt?: number } | undefined;
 function treeMeta(tree: BtLibraryTree) {
   if (!tree.valid) return "XML 无法解析";
@@ -2411,8 +2413,9 @@ function renderBtPickerList() {
       <span class="bt-option-name">${escapeHtml(tree.name.replace(/\.xml$/, ""))}</span><span class="bt-option-meta">${escapeHtml(treeMeta(tree))}</span></div>`;
   const favorites = trees.filter((tree) => tree.favorite);
   const others = trees.filter((tree) => !tree.favorite);
-  btPickerList.innerHTML = (favorites.length ? `<div class="bt-option-group">收藏</div>${favorites.map(row).join("")}` : "")
+  const html = (favorites.length ? `<div class="bt-option-group">收藏</div>${favorites.map(row).join("")}` : "")
     + `<div class="bt-option-group">${favorites.length ? "其它" : "全部"}</div>${others.map(row).join("") || `<div class="bt-option-empty">没有行为树文件</div>`}`;
+  if (btPickerHtml !== html) { btPickerHtml = html; btPickerList.innerHTML = html; }
 }
 function renderBtLauncher() {
   btLauncherSection.hidden = btRuntime.available || !btLibrary.available;

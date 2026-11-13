@@ -173,6 +173,7 @@ export default defineConfig({
         calibration: resolve(webDirectory, "calibration.html"),
         grasp: resolve(webDirectory, "grasp.html"),
         grasp_plan: resolve(webDirectory, "grasp_plan.html"),
+        pose6d: resolve(webDirectory, "6d_pose.html"),
       },
     },
   },
