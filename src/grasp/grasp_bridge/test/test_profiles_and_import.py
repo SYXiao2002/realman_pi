@@ -21,6 +21,8 @@ def config(tmp_path):
     (tmp_path / "ros").mkdir()
     for name in ("grasp_profiles", "grasp_bridge", "camera_extrinsics", "cameras_ros2", "realman_coordinates", "gripper"):
         shutil.copy2(PROJECT / f"config/ros/{name}.yaml", tmp_path / f"ros/{name}.yaml")
+    (tmp_path / "ros/realman_coordinates.local.yaml").write_text(
+        "robots:\n  r:\n    default_tool: tcpgrip\n")
     shutil.copytree(PROJECT / "config/grasp", tmp_path / "grasp")
     return tmp_path
 
@@ -48,6 +50,14 @@ def test_unmeasured_flags_do_not_block_structural_profile_loading(config):
         "profiles:\n  right_wrist:\n    velocity_percent: 3\n")
     assert first["profile_id"] != load_profile(config, "right_wrist")["profile_id"]
     assert load_profile(config, "left_wrist")["arm"] == "l"
+
+
+def test_camera_consumer_can_load_profile_with_an_independent_active_tool(config):
+    (config / "ros/realman_coordinates.local.yaml").write_text(
+        "robots:\n  r:\n    default_tool: tcpsuck\n")
+    with pytest.raises(ValueError, match="active configured default tool"):
+        load_profile(config, "right_wrist")
+    assert load_profile(config, "right_wrist", require_default_tool=False)["arm"] == "r"
 
 
 def test_collision_workspace_must_contain_workspace(config):

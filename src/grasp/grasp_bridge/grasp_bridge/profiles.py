@@ -54,7 +54,7 @@ def camera_identity(model):
                    "distortion_model": model.distortion_model})
 
 
-def load_profile(config_root, name=None, *, require_ready=False):
+def load_profile(config_root, name=None, *, require_ready=False, require_default_tool=True):
     root = Path(config_root)
     table = read_yaml(root / "ros/grasp_profiles.yaml")
     name = name or table["default_profile"]
@@ -70,7 +70,9 @@ def load_profile(config_root, name=None, *, require_ready=False):
     if camera["serial"] != profile["camera_serial"] or not camera.get("enabled", True):
         raise ValueError("camera profile serial/enabled state disagrees with camera bringup")
     coordinates = read_yaml(root / "ros/realman_coordinates.yaml")["robots"][profile["arm"]]
-    if profile["tool_name"] != coordinates["default_tool"] or profile["tool_name"] not in coordinates["tools"]:
+    if profile["tool_name"] not in coordinates["tools"]:
+        raise ValueError("grasp profile tool is not configured for the selected arm")
+    if require_default_tool and profile["tool_name"] != coordinates["default_tool"]:
         raise ValueError("grasp tool must match the driver's active configured default tool")
     gripper_config = read_yaml(root / "ros/gripper.yaml")
     if gripper_config.get("task_control", {}).get("arms", {}).get(profile["gripper"]) != profile["arm"]:
