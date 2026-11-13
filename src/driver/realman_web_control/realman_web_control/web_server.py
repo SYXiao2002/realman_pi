@@ -158,12 +158,18 @@ class WebControlServer:
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._clients: dict[str, Any] = {}
+        self._clients_lock = threading.Lock()
         self._runner: Any = None
         self._bt_session: Any = None
 
     @property
     def read_only(self) -> bool:
         return False
+
+    def connected_client_ids(self) -> list[str]:
+        """Snapshot actual sockets, including when a queued disconnect was lost."""
+        with self._clients_lock:
+            return sorted(self._clients)
 
     def start(self, timeout_sec: float = 5.0) -> None:
         if self._thread is not None:
@@ -555,7 +561,8 @@ class WebControlServer:
         )
         await socket.prepare(request)
         client_id = uuid.uuid4().hex
-        self._clients[client_id] = socket
+        with self._clients_lock:
+            self._clients[client_id] = socket
         await socket.send_json(
             {
                 "type": "hello",
@@ -587,7 +594,8 @@ class WebControlServer:
                 except ProtocolError as error:
                     await socket.send_json(error.event())
         finally:
-            self._clients.pop(client_id, None)
+            with self._clients_lock:
+                self._clients.pop(client_id, None)
             self.on_command(client_id, {"type": "client_disconnected"})
         return socket
 

@@ -512,6 +512,44 @@ def _parse_plan_grasp(message: dict[str, Any]) -> dict[str, Any]:
             "backend": backend, "cgn_context": context}
 
 
+def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
+    kind = message.get("type")
+    allowed = {"type", "request_id"}
+    result = {"type": kind, "request_id": _request_id(message)}
+    if kind == "pose6d_infer":
+        allowed |= {"observation_id", "mask_png"}
+        result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
+        result["mask_png"] = _string(message.get("mask_png"), "mask_png", maximum=7 * 1024 * 1024)
+    elif kind == "pose6d_select_tool":
+        allowed |= {"tool_name"}
+        result["tool_name"] = _string(message.get("tool_name"), "tool_name", maximum=32)
+    elif kind == "pose6d_prepare":
+        allowed |= {"observation_id", "result_id", "grasp_id", "review_confirmed", "warning_confirmed"}
+        for field in ("observation_id", "result_id", "grasp_id"):
+            result[field] = _string(message.get(field), field, maximum=128)
+        for field in ("review_confirmed", "warning_confirmed"):
+            if not isinstance(message.get(field), bool):
+                raise ProtocolError("invalid_field", f"{field} must be a boolean", result["request_id"])
+            result[field] = message[field]
+    elif kind == "pose6d_jog":
+        allowed |= {"session_id", "step_mm"}
+        result["session_id"] = _string(message.get("session_id"), "session_id", maximum=128)
+        result["step_mm"] = _number(message.get("step_mm"), "step_mm")
+        if result["step_mm"] == 0 or abs(result["step_mm"]) > 500:
+            raise ProtocolError("invalid_field", "step_mm must be non-zero and within ±500 mm", result["request_id"])
+    elif kind in ("pose6d_stop", "pose6d_close", "pose6d_heartbeat"):
+        if kind == "pose6d_heartbeat" or "session_id" in message:
+            allowed |= {"session_id"}
+            session = message.get("session_id", "")
+            result["session_id"] = _string(session, "session_id", maximum=128,
+                                           allow_empty=kind != "pose6d_heartbeat")
+        elif kind in ("pose6d_stop", "pose6d_close"):
+            result["session_id"] = ""
+    if set(message) != allowed:
+        raise ProtocolError("invalid_field", "unexpected pose6d command fields", result["request_id"])
+    return result
+
+
 _ARMLESS_PARSERS = {
     "ping": _parse_ping,
     "select_input_mode": _parse_select_input_mode,
@@ -523,6 +561,14 @@ _ARMLESS_PARSERS = {
     "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
     "plan_grasp": _parse_plan_grasp,
+    "pose6d_capture": _parse_pose6d,
+    "pose6d_infer": _parse_pose6d,
+    "pose6d_select_tool": _parse_pose6d,
+    "pose6d_prepare": _parse_pose6d,
+    "pose6d_jog": _parse_pose6d,
+    "pose6d_stop": _parse_pose6d,
+    "pose6d_close": _parse_pose6d,
+    "pose6d_heartbeat": _parse_pose6d,
 }
 
 _ARM_PARSERS = {

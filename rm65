@@ -133,7 +133,7 @@ up() {
       camera_start
       # Recording joins the production graph so `./rm65 up` exposes the
       # read-only replay dashboard directly on port 8770.
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording; then
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -141,7 +141,7 @@ up() {
     desktop)
       check_driver_rviz_conflict
       camera_start
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording realman_remote_rviz; then
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge realman_remote_rviz; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -152,7 +152,7 @@ up() {
       # and /policy/activate is called.
       check_driver_rviz_conflict
       camera_start
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording policy_bridge; then
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge policy_bridge; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -168,6 +168,8 @@ up() {
 }
 
 down() {
+  # Do not leave browser ownership alive across a production runtime restart.
+  compose stop pose6d_bridge || true
   compose stop realman_bringup_remote realman_web_control realman_recording realman_remote_rviz policy_bridge || true
   camera_stop
 }
@@ -185,7 +187,7 @@ build() {
 
 status() {
   if [[ "$DRY_RUN" == "1" ]]; then
-    printf '+ status camera + realman_bringup_remote + realman_web_control\n'
+    printf '+ status camera + realman_bringup_remote + realman_web_control + pose6d_bridge\n'
     return 0
   fi
   if [[ -s "$STATE_FILE" ]] && camera_supervisor_alive "$(<"$STATE_FILE")"; then
@@ -197,16 +199,16 @@ status() {
   else
     printf 'camera: stopped\n'
   fi
-  compose ps realman_bringup_remote realman_web_control realman_recording realman_remote_rviz policy_bridge
+  compose ps realman_bringup_remote realman_web_control realman_recording pose6d_bridge realman_remote_rviz policy_bridge
 }
 
 logs() {
   if [[ "$DRY_RUN" == "1" ]]; then
-    printf '+ logs camera + realman_bringup_remote + realman_web_control\n'
+    printf '+ logs camera + realman_bringup_remote + realman_web_control + pose6d_bridge\n'
     return 0
   fi
   [[ -f "$LOG_ROOT/rm65-camera.log" ]] && tail -n 100 "$LOG_ROOT/rm65-camera.log" || true
-  compose logs --tail=100 realman_bringup_remote realman_web_control realman_recording policy_bridge
+  compose logs --tail=100 realman_bringup_remote realman_web_control realman_recording pose6d_bridge policy_bridge
 }
 
 sync_repo() {

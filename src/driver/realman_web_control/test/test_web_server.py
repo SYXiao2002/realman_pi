@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
 from realman_web_control.web_server import MAX_MESSAGE_BYTES, WebControlServer, WebServerConfig, load_server_config
 
@@ -89,6 +90,29 @@ def test_web_control_is_open_without_browser_authentication(tmp_path):
     (static_root / "index.html").write_text("ok", encoding="utf-8")
 
     assert _server(static_root).read_only is False
+
+
+def test_connected_socket_snapshot_tracks_reload_independently_of_command_queue(tmp_path):
+    async def exercise():
+        server = _server(tmp_path)
+        disconnected = asyncio.Queue()
+        server.on_command = lambda client, message: disconnected.put_nowait(client)
+        app = web.Application()
+        app.router.add_get("/ws", server._websocket)
+        async with TestClient(TestServer(app)) as client:
+            first = await client.ws_connect("/ws")
+            first_id = (await first.receive_json())["client_id"]
+            second = await client.ws_connect("/ws")
+            second_id = (await second.receive_json())["client_id"]
+            assert server.connected_client_ids() == sorted([first_id, second_id])
+            await first.close()
+            assert await asyncio.wait_for(disconnected.get(), 2) == first_id
+            assert server.connected_client_ids() == [second_id]
+            await second.close()
+            assert await asyncio.wait_for(disconnected.get(), 2) == second_id
+            assert server.connected_client_ids() == []
+
+    asyncio.run(exercise())
 
 
 def test_static_root_rejects_parent_traversal(tmp_path):

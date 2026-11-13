@@ -72,6 +72,35 @@ def test_plan_grasp_is_read_only_and_armless():
                                   "target_label": "eu"}))
 
 
+def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
+    select_tool = {"type": "pose6d_select_tool", "request_id": "t1", "tool_name": "tcpsuck"}
+    assert parse_message(json.dumps(select_tool)) == select_tool
+    prepare = {"type": "pose6d_prepare", "request_id": "p1", "observation_id": "o1", "result_id": "r1",
+               "grasp_id": "left", "review_confirmed": True, "warning_confirmed": False}
+    assert parse_message(json.dumps(prepare)) == prepare
+    jog = {"type": "pose6d_jog", "request_id": "j1", "session_id": "s1", "step_mm": -2.5}
+    assert parse_message(json.dumps(jog)) == jog
+    heartbeat = {"type": "pose6d_heartbeat", "request_id": "h1", "session_id": "s1"}
+    assert parse_message(json.dumps(heartbeat)) == heartbeat
+    assert parse_message('{"type":"pose6d_close","request_id":"c1"}') == {
+        "type": "pose6d_close", "request_id": "c1", "session_id": "",
+    }
+    for invalid in (
+        {**jog, "pose_position_m": [0, 0, 0]},
+        {**jog, "step_mm": 0},
+        {**jog, "step_mm": float("nan")},
+        {**prepare, "review_confirmed": 1},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+
+
+@pytest.mark.parametrize("kind", ["clients", "pose6d_clients", "client_connected", "client_disconnected"])
+def test_browser_cannot_spoof_internal_socket_membership(kind):
+    with pytest.raises(ProtocolError):
+        parse_message(json.dumps({"type": kind, "request_id": "spoof", "client_ids": []}))
+
+
 @pytest.mark.parametrize("mode", ["", "Policy", "pika!", "a-b", "a_b", "2policy", "策略", "a" * 97])
 def test_select_input_mode_rejects_invalid_identifiers(mode):
     with pytest.raises(ProtocolError, match="mode_id"):

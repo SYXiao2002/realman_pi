@@ -8,6 +8,7 @@ output="$(RM65_DRY_RUN=1 "$ENTRY" up 2>&1)"
 grep -Fq "camera_ros2 color" <<<"$output"
 grep -Fq "realman_bringup_remote" <<<"$output"
 grep -Fq "realman_web_control" <<<"$output"
+grep -Fq "pose6d_bridge" <<<"$output"
 if grep -Fq "realman_remote_rviz" <<<"$output"; then
   echo "default up unexpectedly starts RViz" >&2
   exit 1
@@ -16,13 +17,24 @@ fi
 output="$(RM65_DRY_RUN=1 "$ENTRY" up desktop 2>&1)"
 grep -Fq "realman_remote_rviz" <<<"$output"
 grep -Fq "realman_web_control" <<<"$output"
+grep -Fq "pose6d_bridge" <<<"$output"
+
+output="$(RM65_DRY_RUN=1 "$ENTRY" up policy 2>&1)"
+grep -Fq "policy_bridge" <<<"$output"
+grep -Fq "pose6d_bridge" <<<"$output"
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" up model 2>&1)"
 grep -Fq "rm65_three_rviz" <<<"$output"
+if grep -Fq "pose6d_bridge" <<<"$output"; then
+  echo "offline model viewer unexpectedly starts pose6d_bridge" >&2
+  exit 1
+fi
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" down 2>&1)"
 grep -Fq "realman_bringup_remote" <<<"$output"
 grep -Fq "realman_web_control" <<<"$output"
+grep -Fq "stop pose6d_bridge" <<<"$output"
+[[ "${output%%realman_bringup_remote*}" == *"stop pose6d_bridge"* ]]
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" build 2>&1)"
 grep -Fq "docker buildx bake" <<<"$output"
@@ -44,6 +56,10 @@ grep -Fq -- "--allow network.host --load rm65_rviz" <<<"$output"
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" status 2>&1)"
 grep -Fq "status" <<<"$output"
+grep -Fq "pose6d_bridge" <<<"$output"
+
+output="$(RM65_DRY_RUN=1 "$ENTRY" logs 2>&1)"
+grep -Fq "pose6d_bridge" <<<"$output"
 
 output="$("$ENTRY" help 2>&1)"
 grep -Fq "build" <<<"$output"

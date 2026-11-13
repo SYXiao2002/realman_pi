@@ -1,6 +1,8 @@
 """Cached grasp snapshots accept only bounded, monotonic read-only events."""
 
 import json
+import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -69,3 +71,43 @@ def test_snapshot_cache_rejects_invalid_and_oversized_events(web_node):
     web_node._grasp_evaluation_message(String(data=" " * (8 * 1024 * 1024 + 1)))
     assert web_node._grasp_evaluation is None
     assert web_node._server.events == []
+
+
+def test_pose6d_live_frames_are_broadcast_but_results_stay_private(web_node):
+    web_node._pose6d_event(String(data=json.dumps({"type": "pose6d_frames", "available": False})))
+    web_node._pose6d_event(String(data=json.dumps({"type": "pose6d_result", "client_id": "owner", "result_id": "r"})))
+    assert web_node._server.events == [({"type": "pose6d_frames", "available": False}, None),
+                                       ({"type": "pose6d_result", "result_id": "r"}, "owner")]
+
+
+def test_pose6d_socket_snapshot_recovers_web_restart_and_late_bridge_discovery(web_node):
+    sent = []
+    clients = ["new-browser"]
+    subscribers = [0]
+    web_node._control_lock = threading.RLock()
+    web_node._pose6d_commands = SimpleNamespace(publish=lambda msg: sent.append(json.loads(msg.data)),
+        get_subscription_count=lambda: subscribers[0])
+    web_node._server.connected_client_ids = lambda: list(clients)
+    web_node._publish_pose6d_clients()
+    assert sent == []
+    subscribers[0] = 1
+    web_node._publish_pose6d_clients()
+    assert sent[-1] == {"type": "clients", "client_ids": ["new-browser"]}
+    # This does not depend on a successfully enqueued disconnect notification.
+    clients.clear()
+    web_node._publish_pose6d_clients()
+    assert sent[-1] == {"type": "clients", "client_ids": []}
+    subscribers[0] = 2
+    web_node._publish_pose6d_clients()
+    assert len(sent) == 2
+
+
+def test_pose6d_capture_sends_current_membership_before_authenticated_request(web_node):
+    sent = []
+    web_node._control_lock = threading.RLock()
+    web_node._pose6d_commands = SimpleNamespace(publish=lambda msg: sent.append(json.loads(msg.data)),
+        get_subscription_count=lambda: 1)
+    web_node._server.connected_client_ids = lambda: ["new-browser"]
+    web_node._dispatch("new-browser", {"type": "pose6d_capture", "request_id": "capture", "client_id": "old"})
+    assert sent == [{"type": "clients", "client_ids": ["new-browser"]},
+                    {"type": "capture", "request_id": "capture", "client_id": "new-browser"}]

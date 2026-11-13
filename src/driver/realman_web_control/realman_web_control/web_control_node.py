@@ -178,6 +178,7 @@ class WebControlNode(Node):
         self._cartesian_velocity_states: dict[str, dict[str, Any]] = {}
         self._grasp_evaluation: dict[str, Any] | None = None
         self._grasp_bridge_status: dict[str, Any] | None = None
+        self._pose6d_commands = self.create_publisher(String, "/pose6d_bridge/command", 10)
         self._joint_records = JointRecordStore(joint_record_dir)
         self._callback_group = ReentrantCallbackGroup()
         self._grasp_client = ActionClient(
@@ -350,6 +351,8 @@ class WebControlNode(Node):
             String, "/grasp_bridge/review_status", self._grasp_bridge_status_message,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL), callback_group=self._callback_group))
+        self._web_subscriptions.append(self.create_subscription(
+            String, "/pose6d_bridge/events", self._pose6d_event, 10, callback_group=self._callback_group))
         for arm in ARMS:
             self._web_subscriptions.append(
                 self.create_subscription(
@@ -406,6 +409,11 @@ class WebControlNode(Node):
             logger=self.get_logger(),
         )
         self._server.start()
+        # Repeat the authoritative socket membership for late bridge discovery
+        # and Web-only restarts; an individual disconnect may never reach ROS.
+        self._pose6d_clients_timer = self.create_timer(
+            1.0, self._publish_pose6d_clients, callback_group=self._callback_group,
+        )
         self._mode_discovery_timer = self.create_timer(
             web_config.discovery_period_sec, self._probe_input_modes, callback_group=self._callback_group,
         )
@@ -463,9 +471,18 @@ class WebControlNode(Node):
                 )
 
     @_serialized_control
+    def _publish_pose6d_clients(self) -> None:
+        if self._pose6d_commands.get_subscription_count() == 1:
+            self._pose6d_commands.publish(String(data=json.dumps(
+                {"type": "clients", "client_ids": self._server.connected_client_ids()},
+                separators=(",", ":"),
+            )))
+
+    @_serialized_control
     def _dispatch(self, client_id: str, message: dict[str, Any]) -> None:
         message_type = message["type"]
         if message_type == "client_connected":
+            self._publish_pose6d_clients()
             self._send_cached_state(client_id)
         elif message_type == "client_disconnected":
             self._client_disconnected(client_id)
@@ -513,6 +530,12 @@ class WebControlNode(Node):
             self._verify_calibration(client_id, message)
         elif message_type == "plan_grasp":
             self._plan_grasp(client_id, message)
+        elif message_type.startswith("pose6d_"):
+            if self._pose6d_commands.get_subscription_count() != 1:
+                raise ProtocolError("pose6d_unavailable", "pose6d bridge unavailable or ambiguous", message["request_id"])
+            command = {**message, "type": message_type.removeprefix("pose6d_"), "client_id": client_id}
+            self._publish_pose6d_clients()
+            self._pose6d_commands.publish(String(data=json.dumps(command, separators=(",", ":"))))
         else:
             raise ProtocolError("unsupported_type", f"unsupported message type: {message_type}")
 
@@ -1551,6 +1574,26 @@ class WebControlNode(Node):
         self._camera_health = payload
         self._server.send_event(payload)
 
+    def _pose6d_event(self, message: String) -> None:
+        if len(message.data.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            self.get_logger().warning("ignoring oversized pose6d event")
+            return
+        try:
+            payload = json.loads(message.data)
+        except (ValueError, TypeError):
+            self.get_logger().warning("ignoring invalid pose6d event")
+            return
+        if not isinstance(payload, dict) or payload.get("type") not in (
+                "pose6d_capture", "pose6d_result", "pose6d_error", "pose6d_motion", "pose6d_tool_selected", "pose6d_frames"):
+            return
+        if payload["type"] == "pose6d_frames":
+            payload.pop("client_id", None)
+            self._server.send_event(payload)
+            return
+        client = payload.pop("client_id", None)
+        if isinstance(client, str) and client:
+            self._server.send_event(payload, client)
+
     def _grasp_evaluation_message(self, message: String) -> None:
         # Dense RGB-D review clouds mirror the offline Plotly preview and can
         # be several MiB; keep a bounded ROS-to-WebSocket handoff.
@@ -2239,6 +2282,11 @@ class WebControlNode(Node):
 
     def _client_disconnected(self, client_id: str) -> None:
         self._apply_input_mode_effects(self._input_modes.client_disconnected(client_id))
+        if self._pose6d_commands.get_subscription_count() == 1:
+            self._publish_pose6d_clients()
+            self._pose6d_commands.publish(String(data=json.dumps(
+                {"type": "disconnect", "client_id": client_id, "request_id": ""}, separators=(",", ":")
+            )))
         for record in list(self._actions.values()):
             if record.owner != client_id:
                 continue
