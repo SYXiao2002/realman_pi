@@ -1,0 +1,27 @@
+# FoundationPose inference dependencies. GPU packages are installed separately.
+numpy==2.4.6; python_version >= '3.11'
+numpy==2.2.6; python_version < '3.11'
+scipy
+scikit-learn
+h5py
+joblib
+PyYAML>=6
+ruamel.yaml==0.19.1
+opencv-python==5.0.0.93
+imageio
+open3d==0.20.0
+trimesh==5.2.0
+transformations
+matplotlib
+pandas
+Pillow
+kornia==0.9.0; python_version >= '3.11'
+kornia==0.8.2; python_version < '3.11'
+omegaconf==2.4.0
+psutil
+tqdm
+warp-lang==1.18.0
+websockets>=14,<17
+msgpack>=1,<2
+pybind11==3.1.0
+ninja
