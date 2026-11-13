@@ -133,6 +133,22 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
 | `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D；返回原矩阵/分数/分割与溯源；无 ROS |
 
+## 单帧 6D Pose 与吸盘 `pose6d_bridge`
+
+页面为 `/6d_pose.html`；`./rm65 up` 默认启动 bridge，也可通过主 Compose 的 `pose6d` profile 独立管理。ROS 命令/事件通过 Web control 转发，基础配置和运动状态见[单帧 6D Pose 与吸盘](../development/grasping#单帧-6d-位姿开发状态)。
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `/pose6d_bridge/command` | `std_msgs/String`（JSON） | 页面请求采集、推理、准备位、有符号步进、停止、会话关闭与心跳；运动命令只接受观测/会话 ID、吸取方式和 step mm，不接受任意目标 pose。Web control 每秒及转发请求前发送内部 `clients` 在线连接快照（`client_ids`），供 bridge 清理断线归属；该命令不能通过浏览器协议提交 |
+| `/pose6d_bridge/events` | `std_msgs/String`（JSON） | 请求关联的采集、位姿/告警/点云/OBJ/吸盘结果、运动状态和错误；结果包含切向参考及 +40 mm 接触/TCP 准备位。另以 5 Hz 广播 `pose6d_frames`（BASE 下实时 TCP/相机位姿及可用状态），供网页转换到冻结采集相机系。采集、推理和遥测均含 `base_frame`、运动配置的 `workspace_m`（BASE 系 `[[min x,y,z], [max x,y,z]]`，米），供可开关工作区线框使用；事件上限为 8 MiB |
+| `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 按当前配置工具读 BASE TCP，用于运动前/后的新鲜停稳读回 |
+| `/<arm>/solve_ik` | `realman_msgs/SolveIk` | BASE 系逐点 seeded IK 检查笛卡尔扫掠路径连续性，不执行运动 |
+| `/<arm>/task_control` | `realman_msgs/TaskControl` | 在准备位及点动会话期间持有同一 per-arm 任务租约 |
+| `/<arm>/execute_motion` | Action `realman_msgs/ExecuteMotion` | 仅在配置启用后使用 BASE `MOVEL`；成功终态及实际 TCP 到位读回后才提交当前距离 |
+| `/<arm>/stop` | `std_srvs/Trigger` | 用户停止、浏览器断线/隐藏或 watchdog 触发的受控停止；未知 Action 结果保留任务租约 |
+| `/<arm>/coordinates/state`、`joint_states` | `std_msgs/String`、`sensor_msgs/JointState` | 校验活动 controller tool 与坐标状态，并验证新鲜、停稳的关节反馈 |
+| `127.0.0.1:8092` WebSocket | MessagePack | 独立 FoundationPose 单帧 `register()` 与几何筛查服务；容器无 ROS/机器人控制接口 |
+
 ## TF 与描述
 
 `world → <arm>/world → <arm>/base_link → <arm>/link_1 … <arm>/link_6`，另有每臂 `<arm>/robot_description`（transient-local）。工作/工具坐标见 `config/ros/realman_coordinates.yaml`（`l/work/cell`、`l/work/pikabase` 等）。详见[完整 TF 树](../architecture/tf-tree)。

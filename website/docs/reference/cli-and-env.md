@@ -12,12 +12,12 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | 命令 | 作用 |
 | --- | --- |
 | `./rm65 build [service ...]` | 默认重建 `realman_bringup_remote` 与 `realman_web_control`，可指定如 `rm65_rviz`；使用 Bake 显式授权 `network.host` 并载入本机镜像，不改变容器状态 |
-| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 左右真实驱动和两只 42D + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
+| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 左右真实驱动和两只 42D + Web control + `pose6d_bridge` + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
 | `./rm65 rviz2` | 设置 `DISPLAY=:1`、`XAUTHORITY=/run/user/1000/gdm/Xauthority`，加载仓库 `functions.zsh` 并调用 `rm65_docker_camera_rviz`，前台显示四路相机 RGB |
-| `./rm65 down` / `status` / `logs` | 停止服务并等待受管相机 launch 退出、释放 USB；或查看状态、最近日志（含相机日志） |
+| `./rm65 down` / `status` / `logs` | `down` 先停止 `pose6d_bridge`，再停止其他服务并等待受管相机 launch 退出、释放 USB；状态和最近日志均包含 bridge 与相机 |
 | `./rm65 bt <l\|m\|r\|three\|control\|name>` | 在**已运行**的 `realman_bringup_remote` 容器内执行行为树；默认 dry-run |
 | `./rm65 bt-test build\|mock\|web\|all` | 构建、运行或校验隔离的行为树 mock 场景 |
 | `./rm65 sync` | 校验 `main` 与 clean worktree 后 push，并 rsync 已跟踪文件到生产端 |

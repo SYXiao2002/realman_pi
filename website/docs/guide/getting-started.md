@@ -55,6 +55,7 @@ RViz，生产机不需要桌面：
 2. **`realman_bringup_remote`**——左右真实驱动、TF、标定健康诊断、左右 42D 的夹爪 manager。
 3. **`realman_web_control`**——`:8765` 控制页。
 4. **`realman_recording`**——数据录制与回放网页 `http://127.0.0.1:8770/`，见[独立数据录制平台](../development/recording-platform)。
+5. **`pose6d_bridge`**——`/6d_pose.html` 的右腕 RGB-D 采集、位姿解算桥与吸盘审阅；FoundationPose GPU 算法容器单独启动，见[单帧 6D Pose](../development/grasping#单帧-6d-位姿开发状态)。
 
 </Steps>
 
@@ -63,8 +64,8 @@ RViz，生产机不需要桌面：
 | 命令 | 用途 |
 | --- | --- |
 | `./rm65 status` | 相机进程与 Compose 服务状态 |
-| `./rm65 logs` | 最近的相机、bringup、Web 日志 |
-| `./rm65 down` | 停止 Compose 服务和相机；等待相机 launch 退出并释放 USB（机械臂驱动随之停止） |
+| `./rm65 logs` | 最近的相机、bringup、Web、6D Pose bridge 和录制日志 |
+| `./rm65 down` | 先停止 6D Pose bridge，再停止其他 Compose 服务和相机；等待相机 launch 退出并释放 USB（机械臂驱动随之停止） |
 | `./rm65 up desktop` | 额外启动 RViz-only 的 `realman_remote_rviz` |
 | `./rm65 up policy` | 额外启动 VLA 策略桥（见[策略桥接](../development/policy-bridge)） |
 

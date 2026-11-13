@@ -5,6 +5,49 @@ description: 纯 Python/CUDA WebSocket 抓取服务、左右腕配置、右臂�
 
 # 独立抓取算法与腕部规划桥
 
+## 单帧 6D 位姿开发状态
+
+`src/pose6d/pose6d/` 包含独立的 FoundationPose 单帧注册服务、二值 mask 和 RGB-D 数据校验、原始 OBJ 轮廓与深度筛查、观测绑定、吸盘几何和服务端点动状态机。算法服务的二进制 WebSocket 使用 `grasp_protocol` 的有界 MessagePack 编码；模型由 OBJ 文件的 SHA-256 标识。筛查阈值未校准时返回 `insufficient_evidence`，不会把网络分数当作概率。筛查通过也不能证明位姿正确。
+
+`config/docker/compose.pose6d.yaml` 和 `config/docker/pose6d-server.Dockerfile` 定义独立 GPU 镜像，默认从相邻的 `FoundationPose` 目录读取构建源，并只读挂载权重和 `eu_plug` 网格。可通过 Compose 文件中的 `POSE6D_*` 变量调整来源；服务默认只绑定本机 8092 端口。已用本地 BundleSDF CUDA 基础镜像和固定提交的 nvdiffrast 源码缓存构建，并以真实欧规插头 RGB-D 和 mask 完成容器 WebSocket 推理。默认基础镜像的构建尚未验证。
+
+ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载 RGB、上传单通道 8 位 PNG mask、单帧推理和相机系点云/OBJ/吸盘审阅。Mask 必须与下载 RGB 来自同一观测且分辨率一致；页面提醒操作者确认来源，系统不能从文件内容证明这一点。服务端预注册模型，请求传递模型 ID 与哈希。`pose6d_bridge` 在主 Compose 的 `pose6d` profile 中，参数位于 `config/ros/pose6d_bridge.yaml`。2026-11-10 已从真实 `/6d_pose.html` 页面完成 right wrist RGB-D 采集，RGB 与 Depth 为 848×530，frame 为 `camera_right_color_optical_frame`，标定状态为 `available`。
+
+3D 预览以冻结的采集相机坐标系为原点；坐标轴按 X 红、Y 绿、Z 蓝显示。橙色箭头为朝外表面法向 `n`，青色箭头为标注原始切向参考 `tangent_ref_obj` 经物体旋转后的方向，接触系红色 X 轴为该参考在切平面上的归一化投影，+Z 为进给方向 `-n`。吸取方式下拉框选中哪个，就只显示该方式的吸盘、接触区域、法向、切向参考、坐标轴与标签；其他候选隐藏。紫色吸盘显示所选方式沿朝外法向偏移 40 mm 的准备位，并显示对应接触/TCP 坐标系。其 `T_camera_prepare_contact`、`T_camera_prepare_tcp` 由后端使用运动相同的坐标变换计算；浏览器选择图层和吸取方式不发送动作。
+
+`pose6d_frames` 每 0.2 秒广播当前控制器工具的 BASE 位姿 `T_base_tcp` 和当前相机位姿 `T_base_camera_live`，从新鲜法兰 TF、已匹配的活动工具及手眼标定计算。页面以采集时 `T_base_camera` 的逆矩阵把实时坐标轴放入冻结场景，机械臂移动时点云/物体保持固定，当前 TCP 和相机坐标轴更新。反馈丢失、TF 过旧或工具不匹配时隐藏实时轴并显示原因；页面超过 1.5 秒未收到遥测也隐藏实时轴。“显示全部”重新取景以包含可见工作区、相机原点、物体、所选吸取方式的准备位和当前 TCP。
+
+“配置工作区”与切向参考、相机、当前 TCP、准备位使用同一排 checkbox，可随时显示或隐藏。线框盒直接来自运行中 bridge 的 `motion.workspace_m`（`config/ros/pose6d_bridge.yaml` 及本地覆盖），以 `base_frame` 为坐标系、单位米；页面标明 BASE frame 及 XYZ 毫米范围。采集、推理和遥测事件均携带这两个字段。盒体用采集时 `T_base_camera` 的逆矩阵放入冻结场景，跟随实时相机移动不会改变其位置；缺少采集手眼变换或有效范围时不绘制，实时工具遥测暂时丢失不影响已有工作区显示。该范围约束运动中的 TCP 和吸盘扫掠体；显示开关只控制绘图。
+
+### 吸盘运动接线与当前门禁
+
+网页只发送当前 observation/result/grasp/session ID、人工复核确认和有符号毫米步长，不接受浏览器提供任意目标位姿。`pose6d_bridge` 通过 `MotionRosPort` 读取 `/<arm>/get_current_pose`，检查采样路径的工作区，以 `/<arm>/task_control` 持有驱动租约，并通过 `/<arm>/execute_motion` 的 BASE/MOVEL 执行；运动前不做逐点 IK 或关节连续性预检。只有 ROS Action 成功、驱动结果成功且 TCP 回读与目标位置/方向及停稳状态相符，才提交当前 `x`。准备按钮移动到法向线上 `+40 mm`；之后 `+` 沿法向远离物体，`−` 沿法向靠近，步长可调且距离允许跨过零变为负数。每次最多一个在途命令；页面切后台和浏览器断线不会停止已下发的动作，断线后 bridge 等待当前动作终态再释放会话。人工停止、工具/坐标变化或未知 Action 结果仍会停止或锁定会话，不自动重发。
+
+冻结 observation 不再按经过时间自动失效，已移除 `motion.observation_validity_sec`。离线制作 mask 后仍可使用同一观测，运动中也不因观测年龄中止；重新采集、更换 mask/工具、断线或显式关闭会话仍会清理相应审阅身份。场景改变时操作者需要重新采集。实时关节反馈、工具匹配、页面心跳和任务租约的检查继续有效。
+
+观测归属绑定实际浏览器 WebSocket 连接。Web control 每秒、连接变更及转发 pose6d 请求前发送在线连接全集；bridge 会清理已不在线的 owner，覆盖网页服务单独重启或断线通知丢失的情况。断线时仍在进行的采集/推理会在完成后清理，不能重新锁住旧身份。其他仍在线页面保留其观测归属；断线后的运动由 bridge 等待终态，之后释放任务租约并关闭旧会话，新页面必须重新采集。无法确认终态或释放租约时保留锁定，不允许新页面绕过。该机制按连接状态清理，与 observation 年龄无关。
+
+`fresh, stationary six-joint feedback is unavailable` 表示无法确认最新的六关节反馈和连续停稳区间。新鲜度只约束最新样本和相邻反馈间隔，停稳检查使用覆盖完整 `settle_sec` 的历史，而非只保留 `maximum_joint_state_age_sec` 内的样本；两项参数来自 `config/ros/grasp_bridge.yaml`，允许停稳时间大于单条反馈新鲜度。超时消息包含具体原因：反馈过旧、时间戳重复/倒序、数据间隙、历史长度不足或测得关节速度过高。
+
+用户提供的吸盘直径已登记为 **10 mm**，用于渲染吸盘圆盘和扫掠几何。右臂控制器工具 `tcpsuck` 的法兰偏移与方向由 `config/ros/realman_coordinates.yaml` 定义，现场调整安装尺寸后应以该文件和控制器匹配回读为准；`T_contact_tcp` 为单位变换，因为选中的 `tcpsuck` TCP 原点就是吸盘接触点。运动配置已启用，实时坐标状态回报当前工具为 `tcpsuck` 且与配置匹配。该状态只验证软件和控制器坐标一致；实机吸盘接触点/法线、外接头包络、运动边界和接触行为尚未完成验证。`T_contact_tcp` 仍可用接触系中的 TCP 原点 `xyz_m` 和 `[roll, pitch, yaw]` `rpy_rad` 配置；角度单位为弧度，按 `Rz(yaw) Ry(pitch) Rx(roll)` 转成内部矩阵。不要用 10 mm 直径推导 TCP 或安全压入行程。运动配置用同目录 `pose6d_bridge.local.yaml` 深合并，保存后重启桥；缺少运动参数时采集、解算和可视化仍可使用。
+
+运动路径不进行点云或其他障碍物碰撞检测，因为腕部深度点云可能包含吸盘自身。工作区检查不能证明全臂或路径没有碰撞；配置 `allow_partial_scene: true` 表示接受此限制，操作者须逐次检查整个运动路径和筛查告警。负 `x` 表示相对估计表面继续向内的目标位置，不是测得的吸盘压缩量；系统没有力控或接触力限制。
+
+运行步骤（机器人侧使用主 compose 的 host network，算法端口仅绑定宿主机 loopback）：
+
+```bash
+docker compose --project-directory . -f config/docker/compose.pose6d.yaml up -d pose6d_server
+./rm65 up
+```
+
+`./rm65 up`（含 `desktop`、`policy`）统一管理 `pose6d_bridge`，`down` 会先停止 bridge，`status`/`logs` 包含它。已有生产图时，也可单独使用 `docker compose --profile pose6d up -d pose6d_bridge`；FoundationPose 算法容器独立于 `rm65` 的启停。
+
+打开 `http://<robot-host>:8765/6d_pose.html`。若算法尚未就绪，检查 `config/docker/compose.pose6d.yaml` 服务日志和 `config/ros/pose6d_bridge.yaml` 的 `ws_uri`。首次 Docker 构建可按前面的 FoundationPose 基础镜像/本地缓存说明指定 `POSE6D_BASE_IMAGE`、`POSE6D_USE_PREINSTALLED_PYTORCH3D` 和 `POSE6D_NVDIFFRAST_SOURCE`。
+
+宿主 ROS 环境中 pose6d Python 测试 26 项、Web 协议测试 33 项和目标 ROS 包测试 281 项通过；WebControl 桌面/移动回归 116 项通过。包含 bridge 的 ROS 镜像已重建。模型服务容器已用实帧完成推理，且 WebSocket ready 返回注册模型身份。
+
+右腕相机到网页的真实采集链路现已验证。`tcpsuck` 配置已在实时右臂坐标状态中得到匹配回读，运动状态机已接入服务端 Action 与任务租约适配，当前运动配置已启用；尚未执行实机运动或吸取测试。使用前仍须现场核实吸盘接触点和法线方向、本体外形、路径及工作区，实施范围和未完成项见仓库 `docs/plans/2026-11-10-6d-pose-suction.md`。
+
 算法服务在独立 Docker 内运行，通过 WebSocket 接收 RGB-D 和目标类别，直接调用 `chaung_wei_2_jiao_fu` 的原始算法，返回相机坐标系中的抓取候选。容器不安装 ROS 2。机器人侧 `grasp_bridge` 采集观测、冻结坐标并筛选计划；行为树负责动作编排，机器人与夹爪驱动负责控制权和实际执行。
 
 首版选右臂与右腕相机，场景限定静态桌面和停稳观测。不需要 global 相机或多臂基座标定。左腕使用独立 profile、标定和几何，复用同一算法服务。
@@ -32,6 +75,7 @@ flowchart TB
 | 公共协议 | `src/grasp/grasp_protocol/` | 有界 MessagePack/NumPy、身份与矩阵校验 |
 | 算法封装 | `src/grasp/grasp_server/` | 原始 InferenceWorker 的输入、输出、溯源与归档；不另写候选算法 |
 | ROS 规划 | `src/grasp/grasp_bridge/` | 配对、D2C、拍照 TF、IK、诊断和可视化 |
+| 单帧位姿与吸盘 | `src/pose6d/` | FoundationPose 注册、筛查、RGB-D bridge、吸盘预览与受门禁的逐步 MOVEL |
 | 任务编排 | `src/behavior/realman_bt/` | 任务控制权、抓取阶段、取消和故障处理 |
 | 标定 | `src/sensor/realman_camera_calibration/` | 左右腕依次独立会话，不推导臂间布局 |
 
