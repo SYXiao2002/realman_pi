@@ -2,6 +2,7 @@
 
 import base64
 import json
+import stat
 import threading
 from types import SimpleNamespace
 
@@ -57,6 +58,26 @@ def test_capture_freezes_aligned_rgbd_without_hand_eye():
     assert np.allclose(frozen["depth_m"], 1)
 
 
+def test_capture_reports_missing_rgbd_inputs_separately_from_joint_motion():
+    bridge = SimpleNamespace(
+        capture_settings={"capture_timeout_sec": .05},
+        inputs={"color": [object()], "depth": [], "color_info": [object()], "depth_info": [], "joints": [object()]},
+        lock=threading.Lock(),
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=10_000_000_000)),
+    )
+    with pytest.raises(TimeoutError, match="missing depth, depth_info"):
+        PoseBridge.capture(bridge)
+
+
+def test_vision_timing_log_is_host_readable(tmp_path):
+    bridge = SimpleNamespace(vision_log=tmp_path / "pose6d_vision" / "timings.jsonl",
+                             vision_log_lock=threading.Lock())
+    PoseBridge._record_vision_timing(bridge, {"observation_id": "obs", "status": "ok"})
+    assert stat.S_IMODE(bridge.vision_log.parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(bridge.vision_log.stat().st_mode) == 0o644
+    assert json.loads(bridge.vision_log.read_text())["status"] == "ok"
+
+
 def observation():
     store = ObservationStore()
     oid = store.freeze(rgb=np.zeros((8, 8, 3), dtype=np.uint8),
@@ -103,8 +124,9 @@ def test_other_client_cannot_infer_another_clients_observation():
 def review_bridge(owner="old"):
     motion = MotionController(SimpleNamespace(lease_uncertain=lambda: False), {"enabled": False}, {})
     motion.load(owner, {}, [], "result")
+    store = ObservationStore()
     bridge = SimpleNamespace(observation_owner=owner, owner_lock=threading.Lock(), disconnected_clients=set(),
-        connected_clients=None, active_review_client=None, busy=threading.Lock(), motion=motion, events=[],
+        connected_clients=None, active_review_client=None, busy=threading.Lock(), motion=motion, store=store, events=[],
         stopped=threading.Event(), get_logger=lambda: SimpleNamespace(warning=lambda _: None),
         capture=lambda: {"type": "pose6d_capture", "observation_id": "new"})
     bridge.emit = lambda client, request, event: bridge.events.append((client, request, event))
