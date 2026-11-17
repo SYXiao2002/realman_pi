@@ -98,10 +98,21 @@ compose() {
       # Mock robot drivers must remain isolated from independently managed
       # gripper serial devices, even if a caller inherited the production default.
       run env REALMAN_START_GRIPPER=false \
-        docker compose -f "$ROOT/docker-compose.yml" "$@"
+        docker compose -f "$ROOT/docker-compose.yml" -f "$ROOT/config/docker/compose.pose6d.yaml" "$@"
       ;;
-    *) run docker compose -f "$ROOT/docker-compose.yml" "$@" ;;
+    *) run docker compose -f "$ROOT/docker-compose.yml" -f "$ROOT/config/docker/compose.pose6d.yaml" "$@" ;;
   esac
+}
+
+stop_legacy_pose6d_service() {
+  local legacy_project="realman-pose6d"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    printf '+ docker compose --project-directory %q -p %q -f %q stop pose6d_server\n' \
+      "$ROOT" "$legacy_project" "$ROOT/config/docker/compose.pose6d.yaml"
+    return 0
+  fi
+  docker compose --project-directory "$ROOT" -p "$legacy_project" \
+    -f "$ROOT/config/docker/compose.pose6d.yaml" stop pose6d_server >/dev/null 2>&1 || true
 }
 
 check_driver_rviz_conflict() {
@@ -131,9 +142,11 @@ up() {
     production)
       check_driver_rviz_conflict
       camera_start
+      stop_legacy_pose6d_service
       # Recording joins the production graph so `./rm65 up` exposes the
       # read-only replay dashboard directly on port 8770.
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge; then
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge \
+        pose6d_server pose6d_yolo pose6d_sam2; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -141,7 +154,9 @@ up() {
     desktop)
       check_driver_rviz_conflict
       camera_start
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge realman_remote_rviz; then
+      stop_legacy_pose6d_service
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge \
+        pose6d_server pose6d_yolo pose6d_sam2 realman_remote_rviz; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -152,7 +167,9 @@ up() {
       # and /policy/activate is called.
       check_driver_rviz_conflict
       camera_start
-      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge policy_bridge; then
+      stop_legacy_pose6d_service
+      if ! compose up -d realman_bringup_remote realman_web_control realman_recording pose6d_bridge \
+        pose6d_server pose6d_yolo pose6d_sam2 policy_bridge; then
         printf 'rm65: Docker startup failed; RGB cameras remain running (use ./rm65 down to stop)\n' >&2
         return 1
       fi
@@ -170,24 +187,27 @@ up() {
 down() {
   # Do not leave browser ownership alive across a production runtime restart.
   compose stop pose6d_bridge || true
+  compose stop pose6d_server pose6d_yolo pose6d_sam2 || true
   compose stop realman_bringup_remote realman_web_control realman_recording realman_remote_rviz policy_bridge || true
+  stop_legacy_pose6d_service
   camera_stop
 }
 
 build() {
-  local -a services=(realman_bringup_remote realman_web_control)
+  local -a services=(realman_bringup_remote realman_web_control pose6d_yolo pose6d_sam2)
   if (( $# > 0 )); then
     services=("$@")
   fi
   # Compose's Bake backend may omit the grant for build.network: host.
   # Load the image into Docker even when the selected builder is containerized.
-  (cd "$ROOT" && run docker buildx bake -f "$ROOT/docker-compose.yml" \
-    --allow network.host --load "${services[@]}")
+  (cd "$ROOT" && run docker buildx bake -f "$ROOT/docker-compose.yml" -f "$ROOT/config/docker/compose.pose6d.yaml" \
+    --allow network.host --allow fs.read=../realman_pose_vision --allow fs.read=../sam2 \
+    --load "${services[@]}")
 }
 
 status() {
   if [[ "$DRY_RUN" == "1" ]]; then
-    printf '+ status camera + realman_bringup_remote + realman_web_control + pose6d_bridge\n'
+    printf '+ status camera + realman_bringup_remote + realman_web_control + pose6d_bridge + pose6d_server + pose6d_yolo + pose6d_sam2\n'
     return 0
   fi
   if [[ -s "$STATE_FILE" ]] && camera_supervisor_alive "$(<"$STATE_FILE")"; then
@@ -199,7 +219,8 @@ status() {
   else
     printf 'camera: stopped\n'
   fi
-  compose ps realman_bringup_remote realman_web_control realman_recording pose6d_bridge realman_remote_rviz policy_bridge
+  compose ps realman_bringup_remote realman_web_control realman_recording pose6d_bridge \
+    pose6d_server pose6d_yolo pose6d_sam2 realman_remote_rviz policy_bridge
 }
 
 logs() {
@@ -208,7 +229,8 @@ logs() {
     return 0
   fi
   [[ -f "$LOG_ROOT/rm65-camera.log" ]] && tail -n 100 "$LOG_ROOT/rm65-camera.log" || true
-  compose logs --tail=100 realman_bringup_remote realman_web_control realman_recording pose6d_bridge policy_bridge
+  compose logs --tail=100 realman_bringup_remote realman_web_control realman_recording pose6d_bridge \
+    pose6d_server pose6d_yolo pose6d_sam2 policy_bridge
 }
 
 sync_repo() {
@@ -224,8 +246,8 @@ usage() {
 Usage: ./rm65 <command> [profile]
 
 Commands:
-  build [service ...] Rebuild selected images; default: production driver and Web control.
-  up [desktop|model|policy]  Start production runtime, desktop RViz, offline model viewer, or production + policy bridge.
+  build [service ...] Rebuild selected images; default: production, Web, YOLO and SAM2.
+  up [desktop|model|policy]  Start production runtime and pose6d GPU services; desktop adds RViz.
   down                Stop unified runtime and ROS 2 cameras.
   status              Show camera and Docker service state.
   logs                Show recent camera and bringup logs.
