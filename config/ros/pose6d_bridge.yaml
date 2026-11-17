@@ -44,7 +44,8 @@ motion:
   cartesian_sample_step_m: 0.005
   angular_sample_step_rad: 0.05
   collision_margin_m: 0.003
-  # Motion paths have no obstacle collision detection; review the whole path.
+  # The workspace precheck samples a Cartesian line, not the controller's MOVEJ_P joint path.
+  # MOVEJ_P has no obstacle-path prediction here; review its full physical path before confirmation.
   allow_partial_scene: true
   lease_ttl_sec: 6.0
   service_timeout_sec: 3.0

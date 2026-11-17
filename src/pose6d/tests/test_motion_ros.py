@@ -159,15 +159,21 @@ def test_motion_path_checks_workspace_without_ik_service(monkeypatch):
         adapter.check_path(start, target, {}, lambda: None)
 
 
-def test_motion_ros_port_sends_only_base_movel_with_token_and_requires_terminal_success(monkeypatch):
+@pytest.mark.parametrize(("command", "expected"), [
+    ("movel", ExecuteMotion.Goal.MOVEL),
+    ("movej_p", ExecuteMotion.Goal.MOVEJ_P),
+])
+def test_motion_ros_port_sends_selected_base_command_with_token_and_requires_terminal_success(
+        monkeypatch, command, expected):
     action = Action(Handle(goal_result()))
     adapter, _stop = port(monkeypatch, action)
     adapter.config["timeout_sec"] = 30
     target = [[1, 0, 0, .1], [0, 1, 0, .2], [0, 0, 1, .3], [0, 0, 0, 1]]
     import numpy as np
-    adapter.execute(np.asarray(target), "lease-token", __import__("threading").Event(), lambda _f: None)
+    adapter.execute(np.asarray(target), "lease-token", __import__("threading").Event(), lambda _f: None,
+                    command=command)
     sent = action.goal
-    assert sent.command == ExecuteMotion.Goal.MOVEL
+    assert sent.command == expected
     assert sent.reference_type == ExecuteMotion.Goal.BASE and sent.reference_name == "base"
     assert sent.velocity_percent == 7 and sent.blend_radius_percent == 0 and not sent.connect
     assert sent.timeout_sec == 30.0
@@ -207,5 +213,5 @@ def test_motion_ros_port_rejects_action_without_success_status(monkeypatch):
     import numpy as np
     import threading
     with pytest.raises(ValueError, match="confirmed success"):
-        adapter.execute(np.eye(4), "lease-token", threading.Event(), lambda _f: None)
+        adapter.execute(np.eye(4), "lease-token", threading.Event(), lambda _f: None, command="movej_p")
     assert adapter.action_uncertain() is False

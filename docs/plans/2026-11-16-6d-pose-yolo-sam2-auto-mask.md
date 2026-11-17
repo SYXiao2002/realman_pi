@@ -9,6 +9,7 @@
 - 页面实际验收：`/6d_pose.html` 采集 right-wrist `848×530` 冻结帧，YOLO 检出 16 个目标、SAM 对 16 个目标全部生成 mask；新 bridge 版本页面显示 YOLO `209.8 ms`、SAM 合计 `350.9 ms`。选择实例 `...:0` 后页面按需预览，并仅发送 observation/instance ID；FoundationPose 成功返回 4×4 位姿。
 - 同一 observation 的耗时记录已追加到 `logs/pose6d_vision/timings.jsonl`，状态 `ok`、检测数 16、YOLO `209.8 ms`、SAM `350.9 ms`，宿主文件权限为 `0644`。验收期间浏览器无错误，未发送准备位、Jog 或停止运动指令。
 - FoundationPose 的几何筛查返回 `insufficient_evidence`，提示当前筛查阈值尚未标定；这不影响分割和位姿输出，但位姿/吸取策略仍需人工复核，运动准备门禁保持原样。
+- 后续运动模式调整：从当前 TCP 远距离移动到 +40 mm 准备位改为 BASE `MOVEJ_P`；沿吸取法线靠近/远离的 Jog 保持 `MOVEL`。该改动已构建并部署到 bridge，53 项 pose6d ROS 单测通过。工作区预检仍只采样笛卡尔直线，不预测控制器的 MOVEJ_P 关节路径；操作员仍须复核实际路径，未在验收中触发真机移动。
 - 验证结果：最新 RM65 镜像构建及 colcon `24` 项测试通过；正确加载 ROS 环境后 bridge pytest `22 passed`；Playwright 桌面和移动端共 `124 passed`；`bash tests/test_rm65_entry.sh`、`bash -n rm65`、`git diff --check` 通过。真实页面回归截图：`/tmp/pose6d-live-recheck.png`。
 - 后续测试加固：当前自动化测试覆盖缓存 mask 身份、尺寸/值域、owner 隔离、消息大小、耗时日志和页面正常选择流程；YOLO/SAM 容器对坏包、零检测、单实例 SAM 故障的专门故障注入及对应页面状态用例仍可补充。
 

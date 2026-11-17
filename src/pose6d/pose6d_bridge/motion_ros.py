@@ -307,11 +307,15 @@ class MotionRosPort:
         poses = list(samples(actual, target, self.config))
         screen_workspace(poses, self.config, self.suction, guard)
 
-    def execute(self, target, token, cancel, feedback):
+    def execute(self, target, token, cancel, feedback, *, command="movel"):
+        commands = {"movel": ExecuteMotion.Goal.MOVEL, "movej_p": ExecuteMotion.Goal.MOVEJ_P}
+        if command not in commands:
+            raise ValueError("unsupported motion command")
+        label = command.upper()
         if not self.action.wait_for_server(timeout_sec=self.config["service_timeout_sec"]):
             raise TimeoutError("execute_motion action is unavailable")
         goal = ExecuteMotion.Goal()
-        goal.command = ExecuteMotion.Goal.MOVEL
+        goal.command = commands[command]
         goal.reference_type, goal.reference_name = ExecuteMotion.Goal.BASE, "base"
         goal.pose_position_m, goal.pose_quaternion_wxyz = to_pose(target)
         goal.velocity_percent = self.config["velocity_percent"]
@@ -333,7 +337,7 @@ class MotionRosPort:
         if not handle.accepted:
             with self.goal_lock:
                 self.unknown_action = False
-            raise ValueError("driver rejected the MOVEL action")
+            raise ValueError(f"driver rejected the {label} action")
         with self.goal_lock:
             self.active_goal = handle
         try:
@@ -359,7 +363,7 @@ class MotionRosPort:
                             or result.terminal_state != ExecuteMotion.Result.SUCCEEDED or result.api2_status != 0):
                         with self.goal_lock:
                             self.unknown_action = False
-                        raise ValueError("MOVEL did not reach a confirmed success terminal state: " + result.message)
+                        raise ValueError(f"{label} did not reach a confirmed success terminal state: " + result.message)
                     with self.goal_lock:
                         self.unknown_action = False
                     return
@@ -368,7 +372,7 @@ class MotionRosPort:
                 handle.cancel_goal_async()
             result_future.add_done_callback(self._observe_late_result)
             self.interrupt()
-            raise TimeoutError("MOVEL terminal outcome is unknown; retaining task lease")
+            raise TimeoutError(f"{label} terminal outcome is unknown; retaining task lease")
         finally:
             with self.goal_lock:
                 self.active_goal = None

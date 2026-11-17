@@ -182,7 +182,7 @@ class MotionController:
                 self.session["token"] = token
                 self.renew_at = self.clock()
             actual = self.port.current()
-            self._execute(actual, jog.prepare(), feedback)
+            self._execute(actual, jog.prepare(), feedback, command="movej_p")
         except Exception:
             # A rejected/stale command must never invalidate another session.
             if created_id is not None:
@@ -240,17 +240,17 @@ class MotionController:
         if session and session.get("token"):
             self.port.validate(session["token"])
 
-    def _execute(self, actual, target, feedback):
+    def _execute(self, actual, target, feedback, command="movel"):
         self._guard()
         session = self.session
         self.reason = "checking workspace"
         feedback(self.status())
         self.port.check_path(actual, target, session, self._guard)
         self._guard()
-        self.reason = "MOVEL in progress"
+        self.reason = f"{command.upper()} in progress"
         feedback(self.status())
         # Port must require ROS SUCCEEDED plus driver success and terminal_state.
-        self.port.execute(target, session["token"], self.cancel, feedback)
+        self.port.execute(target, session["token"], self.cancel, feedback, command=command)
         self._guard()
         session["jog"].finish(True, self.port.current())
         self.reason = "TCP readback confirmed; + moves outward, − moves inward"

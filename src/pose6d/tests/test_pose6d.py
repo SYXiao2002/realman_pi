@@ -207,6 +207,7 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
             self.interrupted = 0
             self.released = []
             self.targets = []
+            self.commands = []
             self.unknown = unknown
 
         def context(self): return {"tool": "suction_tcp", "motion_allowed": True}
@@ -219,9 +220,10 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
         def current(self): return self.pose.copy()
         def check_path(self, actual, target, session, guard):
             guard(); self.targets.append((actual.copy(), target.copy()))
-        def execute(self, target, token, cancel, feedback):
+        def execute(self, target, token, cancel, feedback, *, command="movel"):
             if execute_error: raise RuntimeError(execute_error)
             if cancel.is_set(): raise RuntimeError("canceled")
+            self.commands.append(command)
             self.pose = target.copy()
         def interrupt(self): self.interrupted += 1; self.unknown = False; self.busy = False
         def lease_uncertain(self): return self.unknown
@@ -250,6 +252,7 @@ def test_motion_controller_prepare_jog_crosses_zero_with_rotated_tcp():
         assert state["state"] == "ready"
         assert state["confirmed_mm"] == pytest.approx(final)
     assert len(port.targets) == 5
+    assert port.commands == ["movej_p", "movel", "movel", "movel", "movel"]
     assert port.released == []
     assert controller.stop("client", prepared["session_id"])["lease_retained"] is False
     assert port.released == ["token"]
@@ -317,15 +320,15 @@ def test_motion_lease_renews_without_browser_heartbeat():
     assert port.interrupted == 0
 
 
-def test_disconnect_does_not_interrupt_active_movel_and_releases_after_completion():
+def test_disconnect_does_not_interrupt_active_prepare_and_releases_after_completion():
     controller, port, _obs, _config = motion_setup()
     entered, finish = threading.Event(), threading.Event()
     original_execute = port.execute
 
-    def slow_execute(target, token, cancel, feedback):
+    def slow_execute(target, token, cancel, feedback, *, command="movel"):
         entered.set()
         assert finish.wait(3)
-        original_execute(target, token, cancel, feedback)
+        original_execute(target, token, cancel, feedback, command=command)
 
     port.execute = slow_execute
     outcome = []
@@ -389,10 +392,10 @@ def test_motion_rejects_second_jog_while_action_is_in_flight():
     entered, finish = threading.Event(), threading.Event()
     original_execute = port.execute
 
-    def slow_execute(target, token, cancel, feedback):
+    def slow_execute(target, token, cancel, feedback, *, command="movel"):
         entered.set()
         finish.wait(1)
-        original_execute(target, token, cancel, feedback)
+        original_execute(target, token, cancel, feedback, command=command)
 
     port.execute = slow_execute
     outcome = []
