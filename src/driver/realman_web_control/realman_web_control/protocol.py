@@ -516,10 +516,21 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
     kind = message.get("type")
     allowed = {"type", "request_id"}
     result = {"type": kind, "request_id": _request_id(message)}
-    if kind == "pose6d_infer":
-        allowed |= {"observation_id", "mask_png"}
+    if kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer"):
+        allowed |= {"observation_id"}
         result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
-        result["mask_png"] = _string(message.get("mask_png"), "mask_png", maximum=7 * 1024 * 1024)
+        if kind == "pose6d_infer":
+            if ("instance_id" in message) == ("mask_png" in message):
+                raise ProtocolError("invalid_field", "infer requires exactly one of instance_id or mask_png", result["request_id"])
+            if "instance_id" in message:
+                allowed.add("instance_id")
+                result["instance_id"] = _string(message.get("instance_id"), "instance_id", maximum=160)
+            else:
+                allowed.add("mask_png")
+                result["mask_png"] = _string(message.get("mask_png"), "mask_png", maximum=7 * 1024 * 1024)
+        elif kind == "pose6d_preview":
+            allowed.add("instance_id")
+            result["instance_id"] = _string(message.get("instance_id"), "instance_id", maximum=160)
     elif kind == "pose6d_select_tool":
         allowed |= {"tool_name"}
         result["tool_name"] = _string(message.get("tool_name"), "tool_name", maximum=32)
@@ -562,6 +573,8 @@ _ARMLESS_PARSERS = {
     "gripper_command": _parse_gripper_command,
     "plan_grasp": _parse_plan_grasp,
     "pose6d_capture": _parse_pose6d,
+    "pose6d_segment": _parse_pose6d,
+    "pose6d_preview": _parse_pose6d,
     "pose6d_infer": _parse_pose6d,
     "pose6d_select_tool": _parse_pose6d,
     "pose6d_prepare": _parse_pose6d,

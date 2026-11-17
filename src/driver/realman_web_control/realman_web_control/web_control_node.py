@@ -1584,7 +1584,9 @@ class WebControlNode(Node):
             self.get_logger().warning("ignoring invalid pose6d event")
             return
         if not isinstance(payload, dict) or payload.get("type") not in (
-                "pose6d_capture", "pose6d_result", "pose6d_error", "pose6d_motion", "pose6d_tool_selected", "pose6d_frames"):
+                "pose6d_capture", "pose6d_vision_progress", "pose6d_instances",
+                "pose6d_instance_preview", "pose6d_result",
+                "pose6d_error", "pose6d_motion", "pose6d_tool_selected", "pose6d_frames"):
             return
         if payload["type"] == "pose6d_frames":
             payload.pop("client_id", None)

@@ -95,6 +95,37 @@ def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
             parse_message(json.dumps(invalid))
 
 
+def test_pose6d_automatic_segmentation_selects_only_a_bridge_owned_instance():
+    segment = {"type": "pose6d_segment", "request_id": "s1", "observation_id": "o1"}
+    assert parse_message(json.dumps(segment)) == segment
+    preview = {"type": "pose6d_preview", "request_id": "p1", "observation_id": "o1",
+               "instance_id": "o1:0"}
+    assert parse_message(json.dumps(preview)) == preview
+    infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(infer)) == infer
+    for invalid in (
+        {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1"},
+        {**infer, "mask_png": "encoded"},
+        {**preview, "mask_png": "encoded"},
+        {**segment, "instance_id": "o1:0"},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+    preview = {"type": "pose6d_preview", "request_id": "p1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(preview)) == preview
+    infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(infer)) == infer
+    manual = {"type": "pose6d_infer", "request_id": "i2", "observation_id": "o1", "mask_png": "abc"}
+    assert parse_message(json.dumps(manual)) == manual
+    for invalid in (
+        {**infer, "mask_png": "abc"},
+        {"type": "pose6d_preview", "request_id": "p2", "observation_id": "o1"},
+        {**infer, "mask": [1]},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+
+
 @pytest.mark.parametrize("kind", ["clients", "pose6d_clients", "client_connected", "client_disconnected"])
 def test_browser_cannot_spoof_internal_socket_membership(kind):
     with pytest.raises(ProtocolError):
