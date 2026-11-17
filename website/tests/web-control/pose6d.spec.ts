@@ -12,6 +12,17 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+async function completeSegment(page: any, observationId: string) {
+  const request = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(request.type).toBe("pose6d_segment");
+  expect(request.observation_id).toBe(observationId);
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instances", request_id: request.request_id, observation_id: observationId,
+    status: "ok", detections: [], timings: {},
+  });
+  return request;
+}
+
 test("controller TCP selection invalidates old pose review and reports readback", async ({ page }) => {
   await page.goto("6d_pose.html");
   await page.locator("#controller-tool").selectOption("tcpsuck");
@@ -36,9 +47,10 @@ test("capture, upload and pose review keep motion disabled without calibration",
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_capture", request_id: capture.request_id,
     observation_id: "obs-1", rgb: png, depth: png, profile: "right_wrist", width: 1, height: 1, camera_frame: "camera", calibration: "available" });
   await expect(page.locator("#download")).toBeVisible();
+  await completeSegment(page, "obs-1");
   await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
   await page.locator("#infer").click();
-  const infer = await page.evaluate(() => (window as any).poseSocket.sent[1]);
+  const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
   expect(infer.observation_id).toBe("obs-1");
   const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_result", request_id: infer.request_id,
@@ -88,9 +100,10 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
     observation_id: "obs-2", rgb: png, depth: png, profile: "right_wrist", width: 1, height: 1, camera_frame: "camera", calibration: "available",
     base_frame: "r/base_link", workspace_m: [[.03, .08, .4], [.19, .32, .58]],
     T_base_camera: [[1, 0, 0, .1], [0, 1, 0, .2], [0, 0, 1, .3], [0, 0, 0, 1]] });
+  await completeSegment(page, "obs-2");
   await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
   await page.locator("#infer").click();
-  const infer = await page.evaluate(() => (window as any).poseSocket.sent[1]);
+  const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
   const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_result", request_id: infer.request_id,
     observation_id: "obs-2", result_id: "result-2", T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
@@ -136,7 +149,7 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#distance")).toHaveValue("40.0");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   expect(await page.evaluate(() => (window as any).poseSocket.sent.map((item: any) => item.type)))
-    .toEqual(["pose6d_capture", "pose6d_infer", "pose6d_prepare"]);
+    .toEqual(["pose6d_capture", "pose6d_segment", "pose6d_infer", "pose6d_prepare"]);
   await page.locator("#step").fill("50");
   await page.locator("#minus").click();
   const jog = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
@@ -161,6 +174,7 @@ test("workspace uses capture-time BASE transform, toggles without robot commands
       workspace_m: bounds.map(row => row.map((value, i) => value + (offset?.[i] ?? 0))),
       T_base_camera: offset ? [[1, 0, 0, offset[0]], [0, 1, 0, offset[1]], [0, 0, 1, offset[2]], [0, 0, 0, 1]] : null,
     });
+    await completeSegment(page, request.request_id);
   }
   await capture([0, 0, 0]);
   await expect(page.locator("#workspace-state")).toContainText("r/base_link");
@@ -178,7 +192,9 @@ test("workspace uses capture-time BASE transform, toggles without robot commands
   await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_frames", arm: "r", available: false, message: "feedback gap" }));
   expect((await page.locator("#viewer").screenshot()).equals(visible)).toBe(true);
   const sent = await page.evaluate(() => (window as any).poseSocket.sent);
-  expect(sent.every((request: any) => request.type === "pose6d_capture")).toBe(true);
+  expect(sent.map((request: any) => request.type)).toEqual([
+    "pose6d_capture", "pose6d_segment", "pose6d_capture", "pose6d_segment",
+  ]);
   await capture(null);
   await expect(page.locator("#workspace-state")).toContainText("获得手眼变换后显示");
   expect((await page.locator("#viewer").screenshot()).equals(hidden)).toBe(true);
@@ -192,6 +208,7 @@ test("only selected suction method and its reference geometry are rendered", asy
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_capture", request_id: capture.request_id,
     observation_id: "selected-only", rgb: png, depth: png, profile: "right_wrist", width: 1, height: 1 });
+  await completeSegment(page, "selected-only");
   await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
   const pose = (x: number) => [[1, 0, 0, x], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
   const grasp = (id: string, x: number) => ({ grasp_id: id, status: "reliable", radius_m: .007,
@@ -220,4 +237,41 @@ test("only selected suction method and its reference geometry are rendered", asy
   await page.locator("#fit-view").click();
   expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(true);
   expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "pose6d_prepare" || request.type === "pose6d_jog"))).toBe(false);
+});
+
+test("automatic SAM instances show timings and send the selected instance to FoundationPose", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_capture", request_id: capture.request_id, observation_id: "obs-auto", rgb: png, depth: png,
+    profile: "right_wrist", width: 1, height: 1, camera_frame: "camera", calibration: "available",
+  });
+  const segment = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(segment.type).toBe("pose6d_segment");
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instances", request_id: segment.request_id, observation_id: "obs-auto", status: "ok",
+    detections: [{ instance_id: "obs-auto:0", detection_id: "0", class_name: "eu", confidence: .94,
+      bbox: [0, 0, 1, 1], status: "ok", sam_score: .88, sam_predict_ms: 12.5, mask_pixels: 9, valid_depth_pixels: 8 }],
+    detection_overlay: png,
+    timings: { yolo_inference_ms: 12.3, yolo_request_ms: 15.5, yolo_round_trip_ms: 19.9,
+      sam_inference_ms_total: 45, sam_image_ms: 23, sam_predict_ms_total: 22, sam_round_trip_ms: 50 },
+  });
+  await expect(page.locator("#vision-timings")).toContainText("YOLO 12.3 ms");
+  await expect(page.locator("#vision-timings")).toContainText("SAM 总计 45.0 ms");
+  const instance = page.locator('#instance-list button[data-instance-id="obs-auto:0"]');
+  await expect(instance).toContainText("eu · 0.94");
+  await instance.click();
+  const previewRequest = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(previewRequest).toMatchObject({ type: "pose6d_preview", observation_id: "obs-auto", instance_id: "obs-auto:0" });
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instance_preview", request_id: previewRequest.request_id, observation_id: "obs-auto",
+    instance_id: "obs-auto:0", preview: png, mask_pixels: 9, valid_depth_pixels: 8,
+  });
+  await expect(page.locator("#infer")).toBeEnabled();
+  await page.locator("#infer").click();
+  const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(infer).toMatchObject({ type: "pose6d_infer", observation_id: "obs-auto", instance_id: "obs-auto:0" });
+  expect(infer).not.toHaveProperty("mask_png");
 });
