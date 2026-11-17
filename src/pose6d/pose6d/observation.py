@@ -43,8 +43,69 @@ class ObservationStore:
             self._observation = {"observation_id": uuid.uuid4().hex, "rgb": arrays[0], "depth_m": arrays[1],
                                  "K": arrays[2], "timestamp_ns": timestamp_ns, "camera_frame": camera_frame,
                                  "T_base_camera": transform, "captured_at": captured_at,
-                                 "mask": None, "result": None}
+                                 "mask": None, "result": None, "instances": {}, "vision": None,
+                                 "selected_instance_id": None}
             return self._observation["observation_id"]
+
+    def clear(self):
+        with self._lock:
+            self._generation += 1
+            self._observation = None
+
+    def set_instances(self, observation_id, instances, vision, *, max_count=16, max_bytes=16 * 1024 * 1024):
+        if not isinstance(instances, dict) or len(instances) > max_count:
+            raise ValueError("invalid segmentation instance count")
+        with self._lock:
+            obs = self._current(observation_id)
+            stored = {}
+            total_bytes = 0
+            for instance_id, item in instances.items():
+                if not isinstance(instance_id, str) or not instance_id or not isinstance(item, dict):
+                    raise ValueError("invalid segmentation instance")
+                if item.get("status") != "ok":
+                    stored[instance_id] = {**item, "mask": None, "mask_pixels": 0, "valid_depth_pixels": 0}
+                    continue
+                mask = np.asarray(item.get("mask"))
+                if (mask.shape != obs["rgb"].shape[:2] or mask.dtype != np.uint8
+                        or not np.isin(mask, (0, 1)).all()):
+                    raise ValueError("instance mask must be matching binary uint8")
+                total_bytes += mask.nbytes
+                if total_bytes > max_bytes:
+                    raise ValueError("segmentation masks exceed the observation cache limit")
+                pixels = int(np.count_nonzero(mask))
+                valid_depth = int(np.count_nonzero((mask != 0) & (obs["depth_m"] >= .001)))
+                stored_mask = np.array(mask, copy=True)
+                stored_mask.setflags(write=False)
+                stored[instance_id] = {**item, "mask": stored_mask, "mask_pixels": pixels,
+                                       "valid_depth_pixels": valid_depth}
+            self._generation += 1
+            obs["instances"] = stored
+            obs["vision"] = dict(vision)
+            obs["mask"] = None
+            obs["selected_instance_id"] = None
+            obs["result"] = None
+
+    def select_instance(self, observation_id, instance_id):
+        with self._lock:
+            obs = self._current(observation_id)
+            item = obs["instances"].get(instance_id)
+            if item is None or item.get("status") != "ok":
+                raise ValueError("segmentation instance is unavailable")
+            mask = item["mask"]
+            if int(np.count_nonzero((mask != 0) & (obs["depth_m"] >= .001))) < 4:
+                raise ValueError("selected instance contains insufficient valid depth")
+            self._generation += 1
+            obs["mask"] = mask
+            obs["selected_instance_id"] = instance_id
+            obs["result"] = None
+
+    def instance(self, observation_id, instance_id):
+        with self._lock:
+            obs = self._current(observation_id)
+            try:
+                return dict(obs["instances"][instance_id])
+            except KeyError as exc:
+                raise ValueError("segmentation instance is unavailable") from exc
 
     def set_mask(self, observation_id, mask):
         mask = np.asarray(mask)
@@ -58,6 +119,7 @@ class ObservationStore:
             mask.setflags(write=False)
             self._generation += 1
             obs["mask"], obs["result"] = mask, None
+            obs["selected_instance_id"] = None
 
     def request(self, observation_id, *, object_id, model_sha256):
         with self._lock:

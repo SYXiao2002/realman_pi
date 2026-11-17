@@ -147,6 +147,42 @@ def test_observation_freezes_data_and_rejects_stale_result():
         store.get(oid)
 
 
+def test_selected_sam_instance_is_the_exact_foundationpose_mask_and_is_observation_bound():
+    store = ObservationStore()
+    rgb = np.zeros((4, 4, 3), np.uint8)
+    depth = np.ones((4, 4), np.float32)
+    oid = store.freeze(rgb=rgb, depth_m=depth, K=np.eye(3), timestamp_ns=1, camera_frame="optical")
+    mask = np.zeros((4, 4), np.uint8)
+    mask[1:3, 1:3] = 1
+    store.set_instances(oid, {f"{oid}:0": {"status": "ok", "mask": mask}}, {"sam_model_sha256": "sam"})
+    store.select_instance(oid, f"{oid}:0")
+    _, request = store.request(oid, object_id="eu_plug", model_sha256="mesh")
+    np.testing.assert_array_equal(request["mask"], mask)
+    with pytest.raises(ValueError, match="unavailable"):
+        store.select_instance(oid, "another-observation:0")
+
+
+def test_observation_store_clear_invalidates_cached_instances():
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((4, 4, 3), np.uint8), depth_m=np.ones((4, 4), np.float32),
+                       K=np.eye(3), timestamp_ns=1, camera_frame="optical")
+    store.clear()
+    with pytest.raises(ValueError, match="unavailable"):
+        store.get(oid)
+
+
+def test_instance_cache_rejects_non_binary_wrong_size_and_unbounded_masks():
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((4, 4, 3), np.uint8), depth_m=np.ones((4, 4), np.float32),
+                       K=np.eye(3), timestamp_ns=1, camera_frame="optical")
+    with pytest.raises(ValueError, match="matching binary"):
+        store.set_instances(oid, {"i": {"status": "ok", "mask": np.ones((2, 2), np.uint8)}}, {})
+    with pytest.raises(ValueError, match="matching binary"):
+        store.set_instances(oid, {"i": {"status": "ok", "mask": np.full((4, 4), 255, np.uint8)}}, {})
+    with pytest.raises(ValueError, match="cache limit"):
+        store.set_instances(oid, {"i": {"status": "ok", "mask": np.ones((4, 4), np.uint8)}}, {}, max_bytes=4)
+
+
 def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
     T_contact_tcp = np.eye(4)
     T_contact_tcp[:3, :3] = [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]
