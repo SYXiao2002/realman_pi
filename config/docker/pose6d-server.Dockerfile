@@ -1,6 +1,6 @@
 # Independent CUDA service. FoundationPose source is supplied as a build context;
 # weights and the object mesh are mounted read-only at runtime.
-ARG POSE6D_BASE_IMAGE=docker.m.daocloud.io/pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel@sha256:0cf3402e946b7c384ba943ee05c90b4c5a4a05227923921f2b0918c011cfaf56
+ARG POSE6D_BASE_IMAGE=nvcr.io/nvidian/bundlesdf@sha256:534a24c4fb89c89ba3aefbbaef97dce9b693656e27f46bf55ebb85e45c2842dd
 FROM ${POSE6D_BASE_IMAGE}
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt/pose6d/src:/opt/pose6d/reference \

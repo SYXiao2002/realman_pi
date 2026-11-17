@@ -3,6 +3,18 @@ profile: right_wrist
 ws_uri: ws://127.0.0.1:8092
 connect_timeout_sec: 5.0
 inference_timeout_sec: 90.0
+# Local-only detector and promptable segmentation WebSocket services.
+yolo_ws_uri: ws://127.0.0.1:8093
+sam2_ws_uri: ws://127.0.0.1:8094
+vision_connect_timeout_sec: 5.0
+yolo_timeout_sec: 45.0
+sam2_timeout_sec: 90.0
+yolo_model_sha256: fcc66bc2fa3fb605948704f26535ed6b9fe15cb13286496209b39dd075eac9ef
+sam2_model_sha256: 7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69
+vision_confidence_threshold: 0.5
+vision_max_detections: 16
+vision_max_image_pixels: 1000000
+vision_max_mask_bytes: 16777216
 # Mounted read-only in the optional pose6d_bridge container.
 mesh_dir: /models/eu_plug
 object_id: eu_plug

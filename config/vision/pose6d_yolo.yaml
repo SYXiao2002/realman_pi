@@ -1,0 +1,7 @@
+# Identity and bounded inference settings for the separate pose6d YOLO service.
+weights_path: /models/yolov8n.pt
+weights_sha256: fcc66bc2fa3fb605948704f26535ed6b9fe15cb13286496209b39dd075eac9ef
+class_names: [adapter, eu, uk, router, line]
+confidence_threshold: 0.5
+max_detections: 16
+max_image_pixels: 1000000
