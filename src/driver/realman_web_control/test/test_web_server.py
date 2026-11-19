@@ -272,3 +272,47 @@ def test_session_summary_exposes_the_verify_purpose_marker(tmp_path):
     by_id = {item["session_id"]: item for item in summaries}
     assert by_id["session-20260821T100001.000000Z"]["purpose"] == ""
     assert by_id["session-20260821T100002.000000Z"]["purpose"] == "verify"
+
+
+def test_pose_history_proxy_preserves_prefix_query_and_binary_payload(tmp_path):
+    from dataclasses import replace
+
+    async def exercise():
+        upstream = web.Application()
+        expected = bytes(range(256)) * 2000
+        async def asset(request):
+            assert request.query['stride'] == '2'
+            return web.Response(body=expected, content_type='application/octet-stream',
+                                headers={'Cache-Control': 'private, max-age=3600'})
+        upstream.router.add_get('/6d_pose_history/api/records/123/viewer/scene', asset)
+        async with TestServer(upstream) as target:
+            server = _server(tmp_path)
+            server.config = replace(server.config, pose6d_history_url=str(target.make_url('')).rstrip('/'))
+            app = web.Application()
+            app.router.add_get('/6d_pose_history/{path:.*}', server._pose6d_history)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get('/6d_pose_history/api/records/123/viewer/scene?stride=2')
+                assert response.status == 200
+                assert await response.read() == expected
+                assert response.headers['Content-Type'] == 'application/octet-stream'
+            await server._history_session.close()
+    asyncio.run(exercise())
+
+
+def test_pose_history_proxy_reports_unreachable_backend(tmp_path):
+    from dataclasses import replace
+
+    async def exercise():
+        server = _server(tmp_path)
+        # Allocate an ephemeral address and close it before requesting.
+        async with TestServer(web.Application()) as target:
+            url = str(target.make_url('')).rstrip('/')
+        server.config = replace(server.config, pose6d_history_url=url)
+        app = web.Application()
+        app.router.add_get('/6d_pose_history/', server._pose6d_history)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get('/6d_pose_history/')
+            assert response.status == 502
+            assert '历史服务不可达' in await response.text()
+        await server._history_session.close()
+    asyncio.run(exercise())

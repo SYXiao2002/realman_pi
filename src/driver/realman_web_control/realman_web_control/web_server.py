@@ -44,6 +44,7 @@ class WebServerConfig:
     # bt_launcher in the bringup container starts trees; empty URL hides the start menu.
     bt_launcher_url: str = ""
     bt_launcher_timeout_sec: float = 2.0
+    pose6d_history_url: str = ""
     bt_tree_dir: Path | None = None
     bt_favorites_file: Path | None = None
 
@@ -106,12 +107,22 @@ def load_server_config(path: str | Path) -> WebServerConfig:
         isinstance(origin, str) and origin for origin in origins
     ):
         raise ValueError("server.allowed_origins must contain one or more strings")
+    history_settings = document.get("pose6d_history", {})
+    if not isinstance(history_settings, dict):
+        raise ValueError("pose6d_history must be a mapping")
+    history_url = history_settings.get("url", "")
+    if not isinstance(history_url, str) or (history_url and (
+        urlsplit(history_url).scheme not in ("http", "https") or not urlsplit(history_url).netloc
+        or urlsplit(history_url).path not in ("", "/") or urlsplit(history_url).query or urlsplit(history_url).fragment
+    )):
+        raise ValueError("pose6d_history.url must be an http(s) origin or empty")
     config = WebServerConfig(
         bind_host=bind_host,
         port=int(server.get("port", 8765)),
         allowed_origins=tuple(origins),
         max_clients=int(server.get("max_clients", 8)),
         max_message_bytes=int(server.get("max_message_bytes", 65536)),
+        pose6d_history_url=history_url.rstrip("/"),
         bt_monitor_url=bt_monitor_url.rstrip("/"),
         bt_launcher_url=launcher_url.rstrip("/"),
         bt_launcher_timeout_sec=float(launcher_timeout),
@@ -161,6 +172,7 @@ class WebControlServer:
         self._clients_lock = threading.Lock()
         self._runner: Any = None
         self._bt_session: Any = None
+        self._history_session: Any = None
 
     @property
     def read_only(self) -> bool:
@@ -241,6 +253,8 @@ class WebControlServer:
         app.router.add_get("/api/calibration/preview/{path:.*}", self._calibration_preview)
         app.router.add_get("/ws", self._websocket)
         app.router.add_get("/models/{path:.*}", self._model_asset)
+        app.router.add_get("/6d_pose_history", self._pose6d_history)
+        app.router.add_get("/6d_pose_history/{path:.*}", self._pose6d_history)
         app.router.add_get("/{path:.*}", self._static_asset)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -254,6 +268,9 @@ class WebControlServer:
                 *(client.close(code=1001, message=b"server shutdown") for client in clients),
                 return_exceptions=True,
             )
+        if self._history_session is not None:
+            await self._history_session.close()
+            self._history_session = None
         if self._bt_session is not None:
             await self._bt_session.close()
             self._bt_session = None
@@ -265,6 +282,37 @@ class WebControlServer:
         from aiohttp import web
 
         return web.json_response({"status": "ok", "read_only": self.read_only})
+
+    async def _pose6d_history(self, request: Any) -> Any:
+        """Stream history pages/assets from the fixed FoundationPose origin."""
+        import aiohttp
+        from aiohttp import web
+        if not self.config.pose6d_history_url:
+            return web.Response(status=503, text="6D 历史服务未配置", charset="utf-8")
+        if self._history_session is None:
+            self._history_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60, connect=3), auto_decompress=False,
+                connector=aiohttp.TCPConnector(limit=8))
+        # Never forward a browser-supplied origin or a decoded traversal path.
+        if any(part in (".", "..") for part in request.path.split("/")) or "\\" in request.path:
+            raise web.HTTPBadRequest(text="invalid history path")
+        url = self.config.pose6d_history_url + request.rel_url.raw_path_qs
+        response = None
+        try:
+            async with self._history_session.get(url, allow_redirects=False) as upstream:
+                headers = {key: value for key, value in upstream.headers.items()
+                           if key.lower() in {"content-type", "content-length", "cache-control", "etag", "last-modified", "location", "content-encoding"}}
+                response = web.StreamResponse(status=upstream.status, headers=headers)
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_chunked(65536):
+                    await response.write(chunk)
+                await response.write_eof()
+                return response
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if response is not None and response.prepared:
+                response.force_close()
+                return response
+            return web.Response(status=502, text=f"FoundationPose 历史服务不可达：{exc}", charset="utf-8")
 
     async def _layout(self, _request: Any) -> Any:
         from aiohttp import web

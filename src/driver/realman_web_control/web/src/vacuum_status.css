@@ -1,0 +1,7 @@
+.vacuum-status { display: grid; gap: 8px; margin: 10px 0; }
+.vacuum-indicator { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border: 1px solid var(--line, #d6ddda); border-radius: 8px; font-size: 13px; min-width: 0; }
+.vacuum-light { flex: 0 0 13px; width: 13px; height: 13px; border-radius: 50%; background: #89928d; box-shadow: 0 0 0 3px #89928d20; }
+.vacuum-indicator[data-state="holding"] .vacuum-light { background: #169953; box-shadow: 0 0 0 3px #16995320; }
+.vacuum-indicator[data-state="empty"] .vacuum-light { background: #df4242; box-shadow: 0 0 0 3px #df424220; }
+.vacuum-label { white-space: nowrap; font-weight: 600; }
+.vacuum-value { margin-left: auto; text-align: right; overflow-wrap: anywhere; }

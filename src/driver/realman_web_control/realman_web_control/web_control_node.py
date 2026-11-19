@@ -168,6 +168,7 @@ class WebControlNode(Node):
         self._control_lock = threading.RLock()
         self._actions: dict[tuple[str, str], ActionRecord] = {}
         self._coordinate_state: dict[str, dict[str, Any]] = {}
+        self._vacuum_states: dict[str, tuple[dict[str, Any], float]] = {}
         self._camera_health: dict[str, Any] = {"type": "camera_health", "inputs": []}
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
@@ -354,6 +355,15 @@ class WebControlNode(Node):
         self._web_subscriptions.append(self.create_subscription(
             String, "/pose6d_bridge/events", self._pose6d_event, 10, callback_group=self._callback_group))
         for arm in ARMS:
+            self._web_subscriptions.append(
+                self.create_subscription(
+                    String, f"/{arm}/vacuum/state",
+                    lambda message, selected=arm: self._vacuum_state_message(selected, message),
+                    QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL),
+                    callback_group=self._callback_group,
+                )
+            )
             self._web_subscriptions.append(
                 self.create_subscription(
                     JointState,
@@ -1515,6 +1525,37 @@ class WebControlNode(Node):
             client_id,
         )
 
+    @_serialized_control
+    def _vacuum_state_message(self, arm: str, message: String) -> None:
+        try:
+            payload = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict) or payload.get("type") != "vacuum_state" or payload.get("arm") != arm:
+            return
+        ttl = payload.get("stale_after_sec")
+        stamp = payload.get("stamp_ns")
+        if (type(ttl) not in (int, float) or not math.isfinite(ttl) or ttl <= 0
+                or type(stamp) is not int or stamp < 0
+                or type(payload.get("enabled")) is not bool
+                or type(payload.get("available")) is not bool):
+            return
+        if payload["enabled"]:
+            age = max(0.0, (self.get_clock().now().nanoseconds - stamp) / 1e9)
+            if age >= ttl:
+                payload = {**payload, "available": False, "holding": None,
+                           "raw_input": None, "message": "状态超时"}
+            else:
+                payload = {**payload, "stale_after_sec": ttl - age}
+        self._vacuum_states[arm] = (payload, time.monotonic())
+        self._server.send_event(payload)
+
+    def _send_cached_vacuum_state(self, client_id: str) -> None:
+        for state, received_at in self._vacuum_states.values():
+            remaining = float(state["stale_after_sec"]) - (time.monotonic() - received_at)
+            if remaining > 0 or not state["enabled"]:
+                self._server.send_event({**state, "stale_after_sec": max(0.0, remaining)}, client_id)
+
     def _coordinate_state_message(self, arm: str, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -1716,6 +1757,7 @@ class WebControlNode(Node):
         self._server.send_event({"type": "gripper_list", "grippers": list(self._grippers.values())}, client_id)
         for state in self._gripper_states.values():
             self._server.send_event({"type": "gripper_state", **state}, client_id)
+        self._send_cached_vacuum_state(client_id)
         for arm in ARMS:
             state = self._coordinate_state.get(arm)
             if state is not None:

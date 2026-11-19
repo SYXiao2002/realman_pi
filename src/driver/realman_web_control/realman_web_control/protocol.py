@@ -548,6 +548,12 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
         result["step_mm"] = _number(message.get("step_mm"), "step_mm")
         if result["step_mm"] == 0 or abs(result["step_mm"]) > 500:
             raise ProtocolError("invalid_field", "step_mm must be non-zero and within ±500 mm", result["request_id"])
+    elif kind == "pose6d_auto_suction":
+        allowed |= {"session_id", "vacuum_confirmed"}
+        result["session_id"] = _string(message.get("session_id"), "session_id", maximum=128)
+        if not isinstance(message.get("vacuum_confirmed"), bool):
+            raise ProtocolError("invalid_field", "vacuum_confirmed must be a boolean", result["request_id"])
+        result["vacuum_confirmed"] = message["vacuum_confirmed"]
     elif kind in ("pose6d_stop", "pose6d_close", "pose6d_heartbeat"):
         if kind == "pose6d_heartbeat" or "session_id" in message:
             allowed |= {"session_id"}
@@ -579,6 +585,7 @@ _ARMLESS_PARSERS = {
     "pose6d_select_tool": _parse_pose6d,
     "pose6d_prepare": _parse_pose6d,
     "pose6d_jog": _parse_pose6d,
+    "pose6d_auto_suction": _parse_pose6d,
     "pose6d_stop": _parse_pose6d,
     "pose6d_close": _parse_pose6d,
     "pose6d_heartbeat": _parse_pose6d,

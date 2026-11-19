@@ -33,3 +33,7 @@ behavior_tree_launcher:
   timeout_sec: 2.0
   tree_dir: behavior-trees  # Every *.xml here is offered.
   favorites_file: web-control/behavior-trees/favorites.yaml  # Shared pins; needs the rw mount.
+
+# UI and records are served by the FoundationPose Docker; this server only proxies.
+pose6d_history:
+  url: http://127.0.0.1:8095

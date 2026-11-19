@@ -80,6 +80,8 @@ def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
     assert parse_message(json.dumps(prepare)) == prepare
     jog = {"type": "pose6d_jog", "request_id": "j1", "session_id": "s1", "step_mm": -2.5}
     assert parse_message(json.dumps(jog)) == jog
+    auto = {"type": "pose6d_auto_suction", "request_id": "a1", "session_id": "s1", "vacuum_confirmed": True}
+    assert parse_message(json.dumps(auto)) == auto
     heartbeat = {"type": "pose6d_heartbeat", "request_id": "h1", "session_id": "s1"}
     assert parse_message(json.dumps(heartbeat)) == heartbeat
     assert parse_message('{"type":"pose6d_close","request_id":"c1"}') == {
@@ -90,6 +92,8 @@ def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
         {**jog, "step_mm": 0},
         {**jog, "step_mm": float("nan")},
         {**prepare, "review_confirmed": 1},
+        {**auto, "vacuum_confirmed": 1},
+        {**auto, "speed_percent": 10},
     ):
         with pytest.raises(ProtocolError):
             parse_message(json.dumps(invalid))
