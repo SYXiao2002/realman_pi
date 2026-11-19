@@ -38,8 +38,13 @@ test("controller TCP selection invalidates old pose review and reports readback"
   await expect(page.locator("#prepare")).toBeDisabled();
 });
 
-test("capture, upload and pose review keep motion disabled without calibration", async ({ page }, info) => {
+test("capture, upload and pose review keep motion disabled without calibration", async ({ page, context }, info) => {
+  await context.route("**/6d_pose_history/api/records/*/preview/score", route => route.fulfill({
+    contentType: "image/png",
+    body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
   await page.goto("6d_pose.html");
+  await expect(page.locator("#score-preview")).toBeHidden();
   await page.locator("#capture").click();
   const capture = await page.evaluate(() => (window as any).poseSocket.sent[0]);
   expect(capture.type).toBe("pose6d_capture");
@@ -54,11 +59,15 @@ test("capture, upload and pose review keep motion disabled without calibration",
   expect(infer.observation_id).toBe("obs-1");
   const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_result", request_id: infer.request_id,
-    observation_id: "obs-1", T_camera_object: pose, mesh_obj: "v -0.02 -0.02 0\nv 0.02 -0.02 0\nv 0 0.02 0\nf 1 2 3\n",
+    observation_id: "obs-1", history_id: "1790000000000000000", archive_status: "complete",
+    T_camera_object: pose, mesh_obj: "v -0.02 -0.02 0\nv 0.02 -0.02 0\nv 0 0.02 0\nf 1 2 3\n",
     cloud: { xyz_m: [[0, 0, .2], [.01, 0, .2], [0, .01, .2]], rgb: [[255, 0, 0], [0, 255, 0], [0, 0, 255]] },
     grasps: [{ grasp_id: "grasp_01", status: "pending", radius_m: .007, T_camera_contact: pose }],
     screening: { status: "insufficient_evidence", warning: "uncalibrated", metrics: { silhouette_iou: .8 } }, motion_reason: "TCP 未配置" });
   await expect(page.locator("#warning")).toContainText("uncalibrated");
+  await expect(page.locator("#score-preview-image")).toBeVisible();
+  await expect(page.locator("#score-preview-image")).toHaveAttribute("src", "/6d_pose_history/api/records/1790000000000000000/preview/score");
+  await expect(page.locator("#score-preview-link")).toHaveAttribute("href", "/6d_pose_history/api/records/1790000000000000000/files/vis_score.png");
   await expect(page.locator("#grasp")).toHaveValue("grasp_01");
   await expect(page.locator("#prepare")).toBeDisabled();
   await expect(page.locator("#minus")).toBeDisabled();
@@ -83,7 +92,21 @@ test("capture, upload and pose review keep motion disabled without calibration",
   await page.mouse.up();
   expect((await viewer.screenshot()).equals(before)).toBe(false);
   await page.screenshot({ path: info.outputPath("pose6d-review.png") });
+  // Opening this result must preserve the captured observation and pose review.
+  await context.route("**/6d_pose_history/1790000000000000000/", route => route.fulfill({
+    contentType: "text/html", body: "<h1>本次历史</h1>",
+  }));
+  const popupPromise = page.waitForEvent("popup");
+  await page.locator("#history-result").click();
+  const popup = await popupPromise;
+  await expect(popup).toHaveURL(/\/6d_pose_history\/1790000000000000000\/$/);
+  await expect(page).toHaveURL(/\/6d_pose.html$/);
+  await expect(page.locator("#grasp")).toHaveValue("grasp_01");
+  await expect(page.locator("#warning")).toContainText("uncalibrated");
+  await popup.close();
   await page.locator("#mask").setInputFiles({ name: "other.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
+  await expect(page.locator("#score-preview")).toBeHidden();
+  await expect(page.locator("#score-preview-image")).not.toHaveAttribute("src");
   await expect(page.locator("#grasp")).toBeDisabled();
   await expect(page.locator("#pose")).toHaveText("—");
   await page.locator("#capture").click();
@@ -91,7 +114,7 @@ test("capture, upload and pose review keep motion disabled without calibration",
   await expect(page.locator("#infer")).toBeDisabled();
 });
 
-test("reviewed suction motion sends only signed steps and displays confirmed distance", async ({ page }) => {
+test("reviewed suction motion sends only signed steps and displays confirmed distance", async ({ page }, info) => {
   await page.goto("6d_pose.html");
   await page.locator("#capture").click();
   const capture = await page.evaluate(() => (window as any).poseSocket.sent[0]);
@@ -110,7 +133,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
     cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
     grasps: [{ grasp_id: "g1", status: "reliable", radius_m: .007, T_camera_contact: pose,
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]] }],
-    screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置" });
+    screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
+    motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, lift_height_mm: 50 } });
   await page.evaluate(() => {
     const frames = { type: "pose6d_frames", arm: "r", available: true,
       tool_name: "tcpsuck", T_base_tcp: [[1, 0, 0, .15], [0, 1, 0, .2], [0, 0, 1, .35], [0, 0, 0, 1]],
@@ -144,7 +168,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await page.evaluate((id) => {
     const socket = (window as any).poseSocket;
     socket.emit({ type: "pose6d_motion", request_id: id, session_id: "session-2", state: "preparing", busy: true, lease_retained: true });
-    socket.emit({ type: "pose6d_motion", request_id: id, session_id: "session-2", state: "ready", busy: false, confirmed_mm: 40, lease_retained: true });
+    socket.emit({ type: "pose6d_motion", request_id: id, session_id: "session-2", state: "ready", busy: false,
+      confirmed_mm: 40, auto_suction_ready: true, lease_retained: true });
   }, prepare.request_id);
   await expect(page.locator("#distance")).toHaveValue("40.0");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -158,6 +183,24 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
     session_id: "session-2", state: "ready", busy: false, confirmed_mm: -10, lease_retained: true }), jog.request_id);
   await expect(page.locator("#distance")).toHaveValue("-10.0");
+  await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_motion", session_id: "session-2",
+    state: "ready", busy: false, confirmed_mm: 40, auto_suction_ready: true, lease_retained: true }));
+  await page.locator("#vacuum-confirmed").check();
+  await expect(page.locator("#auto-suction")).toBeEnabled();
+  await page.locator("#auto-suction").click();
+  const automatic = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(automatic.type).toBe("pose6d_auto_suction");
+  expect(automatic.session_id).toBe("session-2");
+  expect(automatic.vacuum_confirmed).toBe(true);
+  await expect(page.locator("#vacuum-confirmed")).not.toBeChecked();
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "lifted", busy: false, auto_suction_ready: false,
+    lease_retained: true, message: "自动运动完成；真空由外部保持开启" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("提升完成");
+  await expect(page.locator("#auto-suction")).toBeDisabled();
+  await expect(page.locator("#minus")).toBeDisabled();
+  await page.screenshot({ path: info.outputPath("pose6d-auto-lift.png"), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("workspace uses capture-time BASE transform, toggles without robot commands and survives telemetry loss", async ({ page }) => {
@@ -253,22 +296,35 @@ test("automatic SAM instances show timings and send the selected instance to Fou
   await page.evaluate((event) => (window as any).poseSocket.emit(event), {
     type: "pose6d_instances", request_id: segment.request_id, observation_id: "obs-auto", status: "ok",
     detections: [{ instance_id: "obs-auto:0", detection_id: "0", class_name: "eu", confidence: .94,
-      bbox: [0, 0, 1, 1], status: "ok", sam_score: .88, sam_predict_ms: 12.5, mask_pixels: 9, valid_depth_pixels: 8 }],
+      bbox: [0, 0, 1, 1], status: "ok", sam_score: .88, sam_predict_ms: 12.5, mask_pixels: 9, valid_depth_pixels: 8 },
+    { instance_id: "obs-auto:7", detection_id: "7", class_name: "eu", confidence: .91,
+      bbox: [0, 0, 1, 1], status: "ok", sam_score: .85, sam_predict_ms: 10, mask_pixels: 8, valid_depth_pixels: 7 }],
     detection_overlay: png,
     timings: { yolo_inference_ms: 12.3, yolo_request_ms: 15.5, yolo_round_trip_ms: 19.9,
       sam_inference_ms_total: 45, sam_image_ms: 23, sam_predict_ms_total: 22, sam_round_trip_ms: 50 },
   });
   await expect(page.locator("#vision-timings")).toContainText("YOLO 12.3 ms");
   await expect(page.locator("#vision-timings")).toContainText("SAM 总计 45.0 ms");
+  await expect(page.locator("#instances-overview")).toHaveAttribute("src", png);
+  await expect(page.locator('#instance-list button[data-instance-id="obs-auto:7"]')).toContainText("#7 · eu");
+  const viewerBounds = (await page.locator("#viewer").boundingBox())!;
+  for (const id of ["rgb", "depth", "instances-overview", "overlay"]) {
+    const bounds = (await page.locator(`#${id}`).boundingBox())!;
+    expect(bounds.y + bounds.height, `${id} must be above the point cloud`).toBeLessThan(viewerBounds.y);
+  }
   const instance = page.locator('#instance-list button[data-instance-id="obs-auto:0"]');
-  await expect(instance).toContainText("eu · 0.94");
+  await expect(instance).toContainText("#0 · eu · 0.94");
   await instance.click();
   const previewRequest = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
   expect(previewRequest).toMatchObject({ type: "pose6d_preview", observation_id: "obs-auto", instance_id: "obs-auto:0" });
+  const preview = await page.evaluate(() => document.createElement("canvas").toDataURL());
   await page.evaluate((event) => (window as any).poseSocket.emit(event), {
     type: "pose6d_instance_preview", request_id: previewRequest.request_id, observation_id: "obs-auto",
-    instance_id: "obs-auto:0", preview: png, mask_pixels: 9, valid_depth_pixels: 8,
+    instance_id: "obs-auto:0", preview, mask_pixels: 9, valid_depth_pixels: 8,
   });
+  await expect(page.locator("#overlay")).toHaveAttribute("src", preview);
+  await expect(page.locator("#overlay-caption")).toHaveText("#0 · SAM 实例");
+  await expect(page.locator("#instances-overview")).toHaveAttribute("src", png);
   await expect(page.locator("#infer")).toBeEnabled();
   await page.locator("#infer").click();
   const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
