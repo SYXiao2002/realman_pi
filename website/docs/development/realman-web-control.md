@@ -350,6 +350,7 @@ launcher 从不终止任何进程，停止仍走“终止行为树”。`realman
 | --- | --- | --- |
 | `joint_state` | `arm`, `positions_rad`, `stamp_ns` | 各 arm 的实体 URDF 姿态唯一来源，以及未编辑时的滑轨值 |
 | `connection` | `arm`, `connected` | 控制器在线状态 |
+| `vacuum_state` | `arm`, `enabled`, `available`, `holding`, `io`, `raw_input`, `stale_after_sec` | 两页共用的吸盘红绿灯；状态超时自动灰灯 |
 | `coordinate_state` | `arm`, `motion_allowed`, `preferred_reference`, `tool`, `work` | 各 arm 的激活坐标、可运动状态和默认参考系 |
 | `action_state` | `action`, `request_id`, `state` | submitting/accepted/canceling；`stopped` 表示 Action 结果通道在运动中断后不可用 |
 | `action_feedback` | `feedback` | 原 Action feedback 的 JSON 映射 |
@@ -631,6 +632,26 @@ Action cancel。浏览器刷新不会留下仍由网页拥有的速度命令。
 - 没有 `end_effectors.yaml` 时 `end_effectors` 为空，页面显示不带夹爪的机械臂。
 
 模型只反映反馈，**不会**发送任何夹爪命令；开合操作仍使用页面的夹爪按钮、键盘或 Pika 路径。
+
+## 吸盘真空传感器状态
+
+`:8765/` 主界面与 `/6d_pose.html` 的吸盘区域始终显示左、右臂吸盘指示灯：绿灯“已吸附”，红灯“未吸附”；未启用、机械臂离线、IO 读取失败或状态超时均为灰灯，并显示原因。指示灯与当前选中的运动机械臂无关，刷新或重新连接后自动接收最新状态。悬停可查看机械臂、IO 端口和有效读数。
+
+配置统一放在 `config/ros/vacuum_sensors.yaml`，由每臂 `realman_driver` 读取 `arms.<l|m|r>`。`enabled` 控制监测开关，`io` 是该臂控制器端口号（1–4），`active_level` 是吸住物体时的输入电平（0 或 1），`publish_rate_hz` 控制读取和发布频率。当前右臂 IO3 已启用，NPN 低电平有效；2026-11-19 空载只读实测为 IO3=1、通用输入模式。未来左臂安装后设置 `arms.l.enabled: true` 并核对 IO 和有效电平即可，页面无需改动。驱动只读输入，不设置 IO 模式或真空阀输出；输入端口须提前配置正确。
+
+驱动按默认 5 Hz 发布 `/<arm>/vacuum/state`，类型为 `std_msgs/msg/String`，内容为 JSON（与坐标状态话题方式一致），QoS 为 reliable、transient-local、depth=1：
+
+```json
+{"type":"vacuum_state","arm":"r","enabled":true,"io":3,"active_level":0,"available":true,"holding":false,"raw_input":1,"api2_status":0,"stamp_ns":1790000000000000000,"stale_after_sec":2.0,"message":"未吸附"}
+```
+
+ROS 消费者须同时检查 `enabled && available` 才能使用 `holding`，并在超过 `stale_after_sec` 未收到新消息后视为未知。未启用或无有效读数时，`holding`、`raw_input` 为 `null`，不会伪造“未吸附”。订阅后需持续接收新消息，不能把 transient-local 保留的旧消息当成持续有效证据。Web 新连接只补发尚未超时的缓存，浏览器在断开连接或反馈超时后清除红/绿灯。
+
+```bash
+ros2 topic echo /r/vacuum/state
+```
+
+修改 YAML 后重启驱动生效；驱动 launch 参数 `vacuum_config_file` 可覆盖路径（默认跟随 `REALMAN_CONFIG_ROOT/ros/vacuum_sensors.yaml`）。`end_effectors.yaml` 继续负责三维显示模型。本功能仅提供状态监测，不改变 6D Pose 的运动或人工真空确认流程。
 
 ## URDF 与影子模型
 

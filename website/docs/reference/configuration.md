@@ -14,6 +14,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | 文件 | 管什么 | 消费者 | 专题页 |
 | --- | --- | --- | --- |
 | `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂、SDK 接收等待 `sdk_timeout_ms`（正整数毫秒） | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
+| `vacuum_sensors.yaml` | 各臂真空传感器启用、控制器输入 IO、吸附有效电平和发布频率；右臂 IO3 NPN 启用，左臂预留禁用；修改后重启驱动 | `realman_robot_driver` → ROS2/Web | [吸盘状态](../development/realman-web-control#吸盘真空传感器状态) |
 | `realman_driver_mock.yaml` | 离线 mock 驱动（TEST-NET 地址，永不连接真机） | `realman_driver_test` 服务 | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_coordinates.yaml` | 每臂工具/工作坐标的**期望状态**（`tcpgrip`、`cell`、`pikabase`），启动时校验并自动修复失配 | 驱动 `CoordinateManager`、BT、Web | [Action 开发与测试](../development/realman-action-development) |
 | `realman_motion.yaml` | 每臂运动限值：普通会话 `max_*`、Pika 专用 `hard_max_*`、控制周期、watchdog、`pose_max_joint_speed_dps` | 驱动、Web、键盘/Pika router | [驱动与运动控制](../development/realman-driver-scaffold#参数) |
@@ -60,7 +61,7 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `docker/compose.yaml` | 全部 Compose 服务；根目录 `docker-compose.yml` 只是 discovery adapter |
 | `docker/ros2-humble-rviz.Dockerfile` | 多阶段镜像：Node 构建 BT 编辑器静态文件 → ROS 2 Humble 运行镜像 |
 | `docker/compose.grasp.yaml`、`docker/grasp-server.Dockerfile` | 显式启动的纯 Python/CUDA 算法服务；`GRASP_REFERENCE_REPO` 是原源码构建 context，`GRASP_MODELS_DIR` 是只读权重，`logs/` 挂载归档；无 ROS、机器人 SDK 或串口 |
-| `docker/compose.pose6d.yaml`、`docker/pose6d-server.Dockerfile` | 显式启动的 FoundationPose CUDA 服务；`POSE6D_REFERENCE_REPO`、`POSE6D_WEIGHTS_DIR`、`POSE6D_MESH_DIR` 指定只读算法/模型资源，WS 默认仅绑定 loopback；无 ROS、机器人 SDK 或串口 |
+| `docker/compose.pose6d.yaml`、FoundationPose 的 `docker/pose6d-server.Dockerfile` | 显式启动的 FoundationPose CUDA 服务；`POSE6D_REFERENCE_REPO`、`POSE6D_WEIGHTS_DIR`、`POSE6D_MESH_DIR` 指定只读算法/模型资源，WS 8092、历史 HTTP 8095 默认仅绑定 loopback；`POSE6D_HISTORY_DIR` 持久化历史；无 ROS、机器人 SDK 或串口 |
 | `python/grasp-server-requirements.txt`、`python/grasp-reference-requirements.txt` | 固定算法模型和 WS 依赖；不进入机器人 ROS 镜像 |
 | `grasp/server.yaml`、`models.yaml`、`gripper_specs.yaml` | 原项目后端、种子/warmup/context、输入结果归档、权重与原始源码 SHA（含几何竖直对齐 `grasp_selection.py`）和实测夹爪几何；几何接触中心偏移由 `ros/grasp_bridge.yaml` 负责，见[抓取契约](../development/grasping) |
 | `python/realman-sdk-requirements.txt` | 固定 `Robotic_Arm==1.1.6`（只有官方 PyPI 提供，镜像源需回退） |
