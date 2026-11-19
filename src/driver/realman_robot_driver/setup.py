@@ -18,6 +18,7 @@ setup(
                 *glob("../../../config/ros/realman_driver*.yaml"),
                 "../../../config/ros/realman_coordinates.yaml",
                 "../../../config/ros/realman_motion.yaml",
+                "../../../config/ros/vacuum_sensors.yaml",
             ],
         ),
     ],

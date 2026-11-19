@@ -540,7 +540,7 @@ def test_startup_rejects_busy_arm_without_adapter_calls():
 
 
 def test_launches_declare_coordinate_and_motion_config_paths():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert expected <= _declared_launch_arguments(SINGLE_LAUNCH_PATH)
     assert expected <= _declared_launch_arguments(THREE_LAUNCH_PATH)
@@ -548,7 +548,7 @@ def test_launches_declare_coordinate_and_motion_config_paths():
 
 
 def test_driver_launches_pass_coordinate_and_motion_parameters_to_nodes():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert any(
         expected <= keys
@@ -561,7 +561,7 @@ def test_driver_launches_pass_coordinate_and_motion_parameters_to_nodes():
 
 
 def test_system_launch_forwards_coordinate_and_motion_config_paths():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert any(
         expected <= keys
@@ -1326,6 +1326,65 @@ def test_node_source_passes_motion_completion_and_stop_safety_limits():
         "joint_goal_tolerance_deg=self.motion_settings.joint_goal_tolerance_deg"
         in source
     )
+
+
+@requires_ros_action_runtime
+def test_vacuum_topic_replays_then_tracks_input_and_read_failure(tmp_path):
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+    from std_msgs.msg import String
+
+    config = tmp_path / "vacuum.yaml"
+    config.write_text("publish_rate_hz: 5.0\narms:\n  r: {enabled: true, io: 3, active_level: 0}\n")
+    rclpy.init()
+    driver = peer = None
+    executor = SingleThreadedExecutor()
+    received = []
+    try:
+        driver = RealManDriverNode(namespace="r", parameter_overrides=[
+            rclpy.parameter.Parameter("robot_ip", value="192.0.2.124"),
+            rclpy.parameter.Parameter("mock_mode", value=True),
+            rclpy.parameter.Parameter("auto_connect", value=False),
+            rclpy.parameter.Parameter("vacuum_config_file", value=str(config)),
+        ])
+        driver.state_timer.cancel()
+        driver.coordinate_state_timer.cancel()
+        driver.vacuum_state_timer.cancel()
+        assert driver.adapter.connect() == 0
+        driver.adapter.controller_io_inputs = lambda: (0, [0, 0, 1, 0])
+        driver._publish_vacuum_state()
+        # Late subscribers must receive the unloaded state without another read.
+        peer = Node("late_vacuum_subscriber")
+        peer.create_subscription(String, "/r/vacuum/state", received.append,
+                                 QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+        executor.add_node(driver)
+        executor.add_node(peer)
+
+        def wait_for(count):
+            deadline = time.monotonic() + 3
+            while len(received) < count and time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.05)
+            assert len(received) >= count
+            return json.loads(received[-1].data)
+
+        state = wait_for(1)
+        assert state["enabled"] and state["available"] and state["holding"] is False
+        driver.adapter.controller_io_inputs = lambda: (0, [1, 1, 0, 1])
+        driver._publish_vacuum_state()
+        assert wait_for(2)["holding"] is True
+        driver.adapter.controller_io_inputs = lambda: (-2, None)
+        driver._publish_vacuum_state()
+        state = wait_for(3)
+        assert state["available"] is False and state["holding"] is None
+        assert state["api2_status"] == -2
+    finally:
+        executor.shutdown()
+        if peer is not None:
+            peer.destroy_node()
+        if driver is not None:
+            driver.destroy_node()
+        rclpy.shutdown()
 
 
 @requires_ros_action_runtime

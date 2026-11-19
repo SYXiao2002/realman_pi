@@ -566,6 +566,13 @@ class RealManSdkAdapter:
             "rm_get_arm_current_trajectory", "SDK trajectory query failed", mock_success={}
         )
 
+    def controller_io_inputs(self) -> Any:
+        """Read controller IO1..IO4; -1 marks a port that is not an input."""
+        return self._query(
+            "rm_get_io_input", "SDK controller input read failed",
+            mock_success=(0, [-1, -1, -1, -1]),
+        )
+
     def current_arm_state(self) -> Any:
         return self._query("rm_get_current_arm_state", "SDK arm state query failed")
 

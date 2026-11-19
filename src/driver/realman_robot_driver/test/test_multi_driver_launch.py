@@ -53,6 +53,7 @@ def test_launch_builds_only_present_driver_sections(launch_module, monkeypatch, 
             "config_file": str(config),
             "coordinates_config_file": str(CONFIG_ROOT / "realman_coordinates.yaml"),
             "motion_config_file": str(CONFIG_ROOT / "realman_motion.yaml"),
+            "vacuum_config_file": str(CONFIG_ROOT / "vacuum_sensors.yaml"),
         }
     )
     # Capture launch descriptions; never execute hardware drivers in this test.

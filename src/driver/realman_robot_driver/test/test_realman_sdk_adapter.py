@@ -27,6 +27,9 @@ class FakeRobot:
         self.calls.append(("rm_get_joint_degree",))
         return self.joint_result
 
+    def rm_get_io_input(self):
+        return self._call("rm_get_io_input")
+
     def rm_movej(self, joint, velocity, radius, connect, block):
         return self._call("rm_movej", joint, velocity, radius, connect, block)
 
@@ -131,6 +134,20 @@ def adapter(fake_robot):
 def test_movej_is_nonblocking_and_preserves_degrees(adapter, fake_robot):
     assert adapter.movej([1.0] * 6, 20, 0, False) == 0
     assert fake_robot.calls[-1] == ("rm_movej", [1.0] * 6, 20, 0, 0, 0)
+
+
+def test_controller_inputs_preserve_levels_and_vendor_errors(adapter, fake_robot):
+    for result in [(0, [1, -1, 0, 1]), (-2, None)]:
+        fake_robot.results["rm_get_io_input"] = result
+        assert adapter.controller_io_inputs() == result
+        assert fake_robot.calls[-1] == ("rm_get_io_input",)
+
+
+def test_mock_inputs_do_not_invent_a_sensor_reading():
+    adapter = RealManSdkAdapter(ip="192.0.2.123", port=8080, thread_mode="RM_TRIPLE_MODE_E",
+                               robot_model="RM65-B", mock_mode=True, arm_id="r")
+    assert adapter.connect() == 0
+    assert adapter.controller_io_inputs() == (0, [-1, -1, -1, -1])
 
 
 @pytest.mark.parametrize(

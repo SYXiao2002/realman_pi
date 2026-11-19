@@ -17,6 +17,9 @@ def _launch_node(context):
     coordinates_config_file = Path(
         LaunchConfiguration("coordinates_config_file").perform(context)
     ).expanduser()
+    vacuum_config_file = Path(
+        LaunchConfiguration("vacuum_config_file").perform(context)
+    ).expanduser()
     motion_config_file = Path(
         LaunchConfiguration("motion_config_file").perform(context)
     ).expanduser()
@@ -37,6 +40,7 @@ def _launch_node(context):
                 {
                     "coordinates_config_file": str(coordinates_config_file),
                     "motion_config_file": str(motion_config_file),
+                    "vacuum_config_file": str(vacuum_config_file),
                 },
             ],
         )
@@ -80,6 +84,11 @@ def generate_launch_description():
                 "motion_config_file",
                 default_value=str(default_motion_config),
                 description="Motion safety limits under root config/ros.",
+            ),
+            DeclareLaunchArgument(
+                "vacuum_config_file",
+                default_value=str(config_root / "ros" / "vacuum_sensors.yaml"),
+                description="Read-only suction sensor controller inputs under root config/ros.",
             ),
             OpaqueFunction(function=_launch_node),
         ]

@@ -56,6 +56,7 @@ from .pose_math import (
     quaternion_to_euler,
 )
 from .realman_sdk_adapter import RealManSdkAdapter, RobotState
+from .vacuum_sensor import VacuumSensorConfig
 
 
 _ARMS = frozenset({"l", "m", "r"})
@@ -129,6 +130,14 @@ class RealManDriverNode(Node):
             self.declare_parameter(
                 "motion_config_file", _config_path("realman_motion.yaml")
             ).value
+        )
+        self.vacuum_config_file = str(
+            self.declare_parameter(
+                "vacuum_config_file", _config_path("vacuum_sensors.yaml")
+            ).value
+        )
+        self.vacuum_sensor = VacuumSensorConfig.from_yaml(
+            self.vacuum_config_file, self.arm_id
         )
         self.joint_names = list(
             self.declare_parameter(
@@ -378,6 +387,13 @@ class RealManDriverNode(Node):
             ),
         )
         self.connected_publisher = self.create_publisher(Bool, "connected", 10)
+        self.vacuum_state_publisher = self.create_publisher(
+            String, "vacuum/state",
+            QoSProfile(
+                depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
         # Renewal/watchdog cannot queue behind blocking SDK/IK service calls.
         # Serialize both together so a stale expiry cannot stop a replacement task.
         self.task_callback_group = MutuallyExclusiveCallbackGroup()
@@ -420,6 +436,9 @@ class RealManDriverNode(Node):
         ]
         period = 1.0 / self.state_publish_rate
         self.state_timer = self.create_timer(period, self._publish_state)
+        self.vacuum_state_timer = self.create_timer(
+            1.0 / self.vacuum_sensor.publish_rate_hz, self._publish_vacuum_state,
+        )
         self.coordinate_state_timer = self.create_timer(
             1.0 / self.coordinate_state_publish_rate,
             self._publish_coordinate_state,
@@ -1261,6 +1280,14 @@ class RealManDriverNode(Node):
                 self._connect_to_robot()
         except Exception as error:
             self.get_logger().error(f"Automatic RealMan reconnect failed: {error}")
+
+    def _publish_vacuum_state(self) -> None:
+        event = self.vacuum_sensor.sample(
+            self.adapter, self.arm_id, self.get_clock().now().nanoseconds,
+        )
+        self.vacuum_state_publisher.publish(
+            String(data=json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+        )
 
     def _publish_state(self) -> None:
         self._maybe_reconnect()
