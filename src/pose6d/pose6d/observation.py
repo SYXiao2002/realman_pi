@@ -131,7 +131,10 @@ class ObservationStore:
             request = {"type": "register", "version": 1, "request_id": uuid.uuid4().hex,
                        "observation_id": observation_id, "object_id": object_id,
                        "model_sha256": model_sha256, "rgb": obs["rgb"], "depth_m": obs["depth_m"],
-                       "mask": obs["mask"], "K": obs["K"]}
+                       "mask": obs["mask"], "K": obs["K"],
+                       "capture_timestamp_ns": str(obs["timestamp_ns"]), "capture_clock": "ros",
+                       "camera_frame": obs["camera_frame"], "instance_id": obs.get("selected_instance_id"),
+                       "mask_source": "sam2" if obs.get("selected_instance_id") else "manual"}
             return self._generation, request
 
     def accept_result(self, generation, request, result):

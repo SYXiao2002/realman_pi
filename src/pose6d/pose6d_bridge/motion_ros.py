@@ -307,7 +307,7 @@ class MotionRosPort:
         poses = list(samples(actual, target, self.config))
         screen_workspace(poses, self.config, self.suction, guard)
 
-    def execute(self, target, token, cancel, feedback, *, command="movel"):
+    def execute(self, target, token, cancel, feedback, *, command="movel", velocity_percent=None):
         commands = {"movel": ExecuteMotion.Goal.MOVEL, "movej_p": ExecuteMotion.Goal.MOVEJ_P}
         if command not in commands:
             raise ValueError("unsupported motion command")
@@ -318,7 +318,7 @@ class MotionRosPort:
         goal.command = commands[command]
         goal.reference_type, goal.reference_name = ExecuteMotion.Goal.BASE, "base"
         goal.pose_position_m, goal.pose_quaternion_wxyz = to_pose(target)
-        goal.velocity_percent = self.config["velocity_percent"]
+        goal.velocity_percent = self.config["velocity_percent"] if velocity_percent is None else velocity_percent
         goal.blend_radius_percent, goal.connect = 0, False
         goal.timeout_sec, goal.task_token = float(self.config["timeout_sec"]), token
         with self.goal_lock:

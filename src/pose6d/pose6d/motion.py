@@ -30,16 +30,26 @@ def validate_config(config, suction):
         raise ValueError("configure the controller suction tool_name")
     configured_transform(config.get("T_contact_tcp"))
     lo, hi = config.get("min_distance_m"), config.get("max_distance_m")
+    prepare_distance = config.get("prepare_distance_m")
     if (type(lo) not in (int, float) or type(hi) not in (int, float)
-            or not math.isfinite(lo) or not math.isfinite(hi) or not lo < 0 or hi < .04):
-        raise ValueError("configure signed min_distance_m < 0 and max_distance_m >= 0.04")
+            or not math.isfinite(lo) or not math.isfinite(hi) or not lo < 0
+            or type(prepare_distance) not in (int, float) or not math.isfinite(prepare_distance)
+            or not 0 < prepare_distance <= hi):
+        raise ValueError("configure signed min_distance_m < 0 and max_distance_m >= prepare_distance_m")
     for key in ("max_step_m", "timeout_sec", "position_tolerance_m", "angular_tolerance_rad",
                 "cartesian_sample_step_m", "angular_sample_step_rad",
                 "collision_margin_m",
                 "lease_ttl_sec", "service_timeout_sec"):
         positive(config, key)
-    if type(config.get("velocity_percent")) is not int or not 1 <= config["velocity_percent"] <= 100:
-        raise ValueError("configure velocity_percent in 1..100")
+    for key in ("velocity_percent", "prepare_velocity_percent", "approach_velocity_percent",
+                "contact_velocity_percent", "lift_velocity_percent"):
+        if type(config.get(key)) is not int or not 1 <= config[key] <= 100:
+            raise ValueError(f"configure {key} in 1..100")
+    second_prepare = config.get("second_prepare_distance_m")
+    if (type(second_prepare) not in (int, float) or not math.isfinite(second_prepare)
+            or not 0 <= second_prepare < prepare_distance):
+        raise ValueError("configure second_prepare_distance_m between zero and prepare_distance_m")
+    positive(config, "lift_height_m")
     bounds = np.asarray(config.get("workspace_m"), dtype=float)
     if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or not np.all(bounds[0] < bounds[1]):
         raise ValueError("configure measured workspace_m bounds")
@@ -140,6 +150,9 @@ class MotionController:
                     "state": jog.state if jog else "review", "busy": self.inflight.locked(),
                     "confirmed_mm": jog.confirmed_m * 1000 if jog and jog.confirmed_m is not None else None,
                     "pending_mm": jog.pending_m * 1000 if jog and jog.pending_m is not None else None,
+                    "auto_suction_ready": bool(jog and jog.state == "ready" and math.isclose(
+                        jog.confirmed_m, self.config.get("prepare_distance_m", math.nan),
+                        rel_tol=0, abs_tol=1e-9)),
                     "lease_retained": bool(session and session.get("token")) or bool(
                         getattr(self.port, "lease_uncertain", lambda: False)()), "message": self.reason}
 
@@ -169,7 +182,8 @@ class MotionController:
                 c = self.config
                 jog = JogSession(contact, normal, configured_transform(c["T_contact_tcp"]), min_m=c["min_distance_m"],
                                  max_m=c["max_distance_m"], max_step_m=c["max_step_m"],
-                                 position_tolerance_m=c["position_tolerance_m"], angular_tolerance_rad=c["angular_tolerance_rad"])
+                                 position_tolerance_m=c["position_tolerance_m"], angular_tolerance_rad=c["angular_tolerance_rad"],
+                                 prepare_distance_m=c["prepare_distance_m"])
                 self.cancel.clear()
                 self.session = {"id": uuid.uuid4().hex, "owner": owner, "jog": jog, "token": "",
                                 "observation": obs, "grasp_id": grasp["grasp_id"],
@@ -182,7 +196,8 @@ class MotionController:
                 self.session["token"] = token
                 self.renew_at = self.clock()
             actual = self.port.current()
-            self._execute(actual, jog.prepare(), feedback, command="movej_p")
+            self._execute(actual, jog.prepare(), feedback, command="movej_p",
+                          velocity_percent=self.config["prepare_velocity_percent"])
         except Exception:
             # A rejected/stale command must never invalidate another session.
             if created_id is not None:
@@ -219,7 +234,58 @@ class MotionController:
             self._guard()
             actual = self.port.current()
             target = session["jog"].jog(step_m, actual)
-            self._execute(actual, target, feedback)
+            self._execute(actual, target, feedback, velocity_percent=self.config["velocity_percent"])
+        except Exception:
+            if uncertain and session_id is not None:
+                self._fail(session_id)
+            raise
+        finally:
+            self.inflight.release()
+            if session_id is not None and self._is_blocked(session_id):
+                self._release_if_drained(session_id)
+        return self.status()
+
+    def auto_suction(self, command, feedback):
+        if not self.inflight.acquire(False):
+            raise ValueError("motion busy; commands are not queued")
+        session_id = None
+        uncertain = False
+        try:
+            with self.lock:
+                session = self._owned(command["client_id"], command["session_id"])
+                session_id = session["id"]
+                if command.get("vacuum_confirmed") is not True:
+                    raise ValueError("confirm that vacuum is already enabled externally")
+                jog = session["jog"]
+                if jog.state != "ready" or not math.isclose(
+                        jog.confirmed_m, self.config["prepare_distance_m"], rel_tol=0, abs_tol=1e-9):
+                    raise ValueError("automatic suction can start only at the preparation position")
+
+            self._guard()
+            actual = self.port.current()
+            target = jog.begin_auto_suction(actual, self.config["second_prepare_distance_m"])
+            uncertain = True
+            self.reason = "MOVEL approaching second preparation position"
+            feedback(self.status())
+            actual = self._execute(actual, target, feedback, velocity_percent=self.config["approach_velocity_percent"],
+                                   finish=False)
+            jog.finish_auto_distance(actual)
+
+            target = jog.begin_auto_distance(0)
+            self.reason = "MOVEL approaching suction position slowly"
+            feedback(self.status())
+            actual = self._execute(actual, target, feedback, velocity_percent=self.config["contact_velocity_percent"],
+                                   finish=False)
+            jog.finish_auto_distance(actual)
+
+            target = jog.begin_lift(actual, self.config["lift_height_m"])
+            self.reason = "MOVEL lifting vertically in BASE +Z"
+            feedback(self.status())
+            actual = self._execute(actual, target, feedback, velocity_percent=self.config["lift_velocity_percent"],
+                                   finish=False)
+            jog.finish_lift(actual)
+            self.reason = "自动运动完成；真空由外部保持开启"
+            feedback(self.status())
         except Exception:
             if uncertain and session_id is not None:
                 self._fail(session_id)
@@ -240,7 +306,7 @@ class MotionController:
         if session and session.get("token"):
             self.port.validate(session["token"])
 
-    def _execute(self, actual, target, feedback, command="movel"):
+    def _execute(self, actual, target, feedback, command="movel", velocity_percent=None, finish=True):
         self._guard()
         session = self.session
         self.reason = "checking workspace"
@@ -250,10 +316,14 @@ class MotionController:
         self.reason = f"{command.upper()} in progress"
         feedback(self.status())
         # Port must require ROS SUCCEEDED plus driver success and terminal_state.
-        self.port.execute(target, session["token"], self.cancel, feedback, command=command)
+        self.port.execute(target, session["token"], self.cancel, feedback, command=command,
+                          velocity_percent=velocity_percent)
         self._guard()
-        session["jog"].finish(True, self.port.current())
-        self.reason = "TCP readback confirmed; + moves outward, − moves inward"
+        confirmed = self.port.current()
+        if finish:
+            session["jog"].finish(True, confirmed)
+            self.reason = "TCP readback confirmed; + moves outward, − moves inward"
+        return confirmed
 
     def _is_blocked(self, session_id):
         with self.lock:

@@ -5,6 +5,7 @@ from collections import deque
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -145,7 +146,8 @@ class PoseBridge(Node):
         try:
             command = json.loads(message.data)
             if not isinstance(command, dict) or command.get("type") not in (
-                    "capture", "segment", "preview", "infer", "select_tool", "prepare", "jog", "stop", "close", "heartbeat", "disconnect", "clients"):
+                    "capture", "segment", "preview", "infer", "select_tool", "prepare", "jog",
+                    "auto_suction", "stop", "close", "heartbeat", "disconnect", "clients"):
                 raise ValueError("unknown command")
             if command["type"] == "clients":
                 self.reconcile_clients(command.get("client_ids"))
@@ -153,7 +155,7 @@ class PoseBridge(Node):
             if command["type"] == "heartbeat":
                 # Accept heartbeats from pages opened before this bridge update.
                 return
-            if command["type"] in ("prepare", "jog", "stop", "close", "heartbeat", "disconnect"):
+            if command["type"] in ("prepare", "jog", "auto_suction", "stop", "close", "heartbeat", "disconnect"):
                 if command["type"] == "disconnect":
                     self.mark_disconnected(command.get("client_id", ""))
                 threading.Thread(target=self.run_motion_command, args=(command,), daemon=True).start()
@@ -282,6 +284,8 @@ class PoseBridge(Node):
                 result = self.motion.prepare(command, feedback)
             elif kind == "jog":
                 result = self.motion.jog(command, feedback)
+            elif kind == "auto_suction":
+                result = self.motion.auto_suction(command, feedback)
             elif kind in ("stop", "close"):
                 result = self.motion.stop(client, command.get("session_id"))
                 if kind == "close":
@@ -593,8 +597,16 @@ class PoseBridge(Node):
             for item in metadata:
                 x1, y1, x2, y2 = item["bbox"]
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (35, 145, 170), 2)
-                cv2.putText(annotated, f"{item['class_name']} {item['confidence']:.2f}",
-                            (x1, max(18, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, .5, (35, 145, 170), 1)
+            # Draw IDs last so other detection boxes cannot obscure the labels.
+            # These observation-local IDs also prefix the browser's instance buttons.
+            for item in metadata:
+                text = f"#{item['detection_id']}"
+                (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .75, 2)
+                x = max(0, min(item["bbox"][0], width - tw - 10))
+                y = max(0, min(item["bbox"][1], height - th - baseline - 10))
+                cv2.rectangle(annotated, (x, y), (x + tw + 10, y + th + baseline + 10), (35, 75, 85), -1)
+                cv2.putText(annotated, text, (x + 5, y + th + 5), cv2.FONT_HERSHEY_SIMPLEX,
+                            .75, (255, 255, 255), 2, cv2.LINE_AA)
             return {"type": "pose6d_instances", "observation_id": oid, "detections": metadata,
                     "detection_overlay": image_url(annotated), "timings": vision,
                     "status": record["status"], "message": "SAM instances ready" if metadata else "No YOLO detections"}
@@ -664,9 +676,21 @@ class PoseBridge(Node):
             if grasp.get("status") == "deprecated":
                 continue
             contact, normal = suction_pose(T_camera_object, grasp["contact_region"])
-            prepared = tcp_target(contact, normal, .04, np.eye(4))
+            prepare_distance = self.motion_config.get("prepare_distance_m", .04)
+            if (type(prepare_distance) not in (int, float) or not math.isfinite(prepare_distance)
+                    or prepare_distance <= 0):
+                prepare_distance = .04
+            second_prepare_distance = self.motion_config.get("second_prepare_distance_m", .005)
+            if (type(second_prepare_distance) not in (int, float) or not math.isfinite(second_prepare_distance)
+                    or second_prepare_distance < 0):
+                second_prepare_distance = .005
+            lift_height = self.motion_config.get("lift_height_m", .05)
+            if type(lift_height) not in (int, float) or not math.isfinite(lift_height) or lift_height <= 0:
+                lift_height = .05
+            prepared = tcp_target(contact, normal, prepare_distance, np.eye(4))
             try:
-                prepared_tcp = tcp_target(contact, normal, .04, configured_transform(self.motion_config["T_contact_tcp"]))
+                prepared_tcp = tcp_target(contact, normal, prepare_distance,
+                                          configured_transform(self.motion_config["T_contact_tcp"]))
             except (KeyError, ValueError, TypeError):
                 prepared_tcp = None
             grasps.append({"grasp_id": grasp["grasp_id"], "status": grasp["status"],
@@ -685,11 +709,16 @@ class PoseBridge(Node):
                 "instance_id": obs.get("selected_instance_id"),
                 "mask_source": "sam2" if obs.get("selected_instance_id") else "manual",
                 "vision_timings": obs.get("vision"),
+                "history_id": result.get("history_id"), "history_path": result.get("history_path"),
+                "archive_status": result.get("archive_status"), "archive_error": result.get("archive_error"),
                 "T_camera_object": result["T_camera_object"],
                 "T_base_camera": obs["T_base_camera"].tolist() if obs["T_base_camera"] is not None else None,
                 "base_frame": self.profile["base_frame"],
                 "workspace_m": self.motion_config.get("workspace_m"),
                 "score": result["score"], "screening": screen, "grasps": grasps,
+                "motion_waypoints": {"prepare_distance_mm": prepare_distance * 1000,
+                                     "second_prepare_distance_mm": second_prepare_distance * 1000,
+                                     "lift_height_mm": lift_height * 1000},
                 "overlay": "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None,
                 "cloud": points, "mesh_obj": (self.mesh_dir / "TexturedMeshSimplified.obj").read_text(encoding="utf-8"),
                 "motion_ready": ready, "motion_reason": motion_reason,

@@ -34,9 +34,16 @@ motion:
     xyz_m: [0, 0, 0]         # controller TCP is the suction contact center
     rpy_rad: [0, 0, 0]       # same axes; R = Rz(yaw) Ry(pitch) Rx(roll)
   min_distance_m: -0.005    # allow only 5 mm past the estimated surface
-  max_distance_m: 0.1       # includes the +0.04 m preparation position
+  max_distance_m: 0.1       # includes the configured preparation position
   max_step_m: 0.005
   velocity_percent: 10
+  prepare_distance_m: 0.04
+  second_prepare_distance_m: 0.005
+  lift_height_m: 0.05
+  prepare_velocity_percent: 10
+  approach_velocity_percent: 20
+  contact_velocity_percent: 5
+  lift_velocity_percent: 10
   timeout_sec: 30
   position_tolerance_m: 0.002
   angular_tolerance_rad: 0.035

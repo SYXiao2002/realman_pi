@@ -13,18 +13,22 @@ from .geometry import rigid, tcp_target
 
 class JogSession:
     def __init__(self, contact, outward_normal, T_contact_tcp, *, min_m, max_m,
-                 max_step_m, position_tolerance_m, angular_tolerance_rad):
+                 max_step_m, position_tolerance_m, angular_tolerance_rad,
+                 prepare_distance_m=.04):
         self.contact = rigid(contact).copy()
         self.normal = np.asarray(outward_normal, dtype=float).copy()
         self.tool = rigid(T_contact_tcp).copy()
-        values = (min_m, max_m, max_step_m, position_tolerance_m, angular_tolerance_rad)
+        values = (min_m, max_m, max_step_m, position_tolerance_m, angular_tolerance_rad,
+                  prepare_distance_m)
         if any(not math.isfinite(v) for v in values):
             raise ValueError("jog limits must be finite")
-        if not min_m < 0 or max_m < .04 or min(max_step_m, position_tolerance_m, angular_tolerance_rad) <= 0:
+        if (not min_m < 0 or not min_m <= 0 < prepare_distance_m <= max_m
+                or min(max_step_m, position_tolerance_m, angular_tolerance_rad) <= 0):
             raise ValueError("invalid jog limits or tolerances")
         tcp_target(self.contact, self.normal, 0, self.tool)
         self.min_m, self.max_m = min_m, max_m
         self.max_step_m = max_step_m
+        self.prepare_distance_m = prepare_distance_m
         self.position_tolerance_m = position_tolerance_m
         self.angular_tolerance_rad = angular_tolerance_rad
         self.state = "review"
@@ -43,9 +47,58 @@ class JogSession:
     def prepare(self):
         if self.state != "review":
             raise ValueError("session cannot prepare in its current state")
-        self.pending_m = .04
+        self.pending_m = self.prepare_distance_m
         self.state = "preparing"
         return tcp_target(self.contact, self.normal, self.pending_m, self.tool)
+
+    def begin_auto_suction(self, actual_tcp, second_prepare_m):
+        if self.state != "ready" or not math.isclose(
+                self.confirmed_m, self.prepare_distance_m, rel_tol=0, abs_tol=1e-9):
+            raise ValueError("automatic suction requires the confirmed preparation position")
+        if not 0 <= second_prepare_m < self.prepare_distance_m:
+            raise ValueError("second preparation distance must be between contact and preparation")
+        self._check_pose(actual_tcp, self.prepare_distance_m)
+        self.pending_m = second_prepare_m
+        self.state = "auto_suction"
+        return tcp_target(self.contact, self.normal, second_prepare_m, self.tool)
+
+    def finish_auto_distance(self, actual_tcp):
+        if self.state != "auto_suction" or self.pending_m is None:
+            raise ValueError("automatic suction has no pending distance target")
+        self._check_pose(actual_tcp, self.pending_m)
+        self.confirmed_m, self.pending_m = self.pending_m, None
+
+    def begin_auto_distance(self, distance_m):
+        if self.state != "auto_suction" or self.pending_m is not None:
+            raise ValueError("automatic suction is not ready for its next distance target")
+        if not self.min_m <= distance_m <= self.max_m:
+            raise ValueError("automatic suction target is outside configured travel")
+        self.pending_m = distance_m
+        return tcp_target(self.contact, self.normal, distance_m, self.tool)
+
+    def begin_lift(self, actual_tcp, lift_height_m):
+        if self.state != "auto_suction" or self.pending_m is not None or not math.isclose(
+                self.confirmed_m, 0, rel_tol=0, abs_tol=1e-9):
+            raise ValueError("vertical lift requires confirmed arrival at the suction position")
+        self._check_pose(actual_tcp, 0)
+        if not math.isfinite(lift_height_m) or lift_height_m <= 0:
+            raise ValueError("lift height must be positive")
+        self.lift_target = rigid(actual_tcp).copy()
+        self.lift_target[2, 3] += lift_height_m
+        self.state = "lifting"
+        return self.lift_target.copy()
+
+    def finish_lift(self, actual_tcp):
+        if self.state != "lifting" or not hasattr(self, "lift_target"):
+            raise ValueError("vertical lift has no pending target")
+        actual = rigid(actual_tcp)
+        position_error = np.linalg.norm(actual[:3, 3] - self.lift_target[:3, 3])
+        relative = self.lift_target[:3, :3].T @ actual[:3, :3]
+        angle_error = math.acos(float(np.clip((np.trace(relative) - 1) / 2, -1, 1)))
+        if position_error > self.position_tolerance_m or angle_error > self.angular_tolerance_rad:
+            raise ValueError("actual TCP does not match the expected vertical lift pose")
+        self.confirmed_m, self.pending_m, self.state = None, None, "lifted"
+        del self.lift_target
 
     def jog(self, step_m, actual_tcp):
         if self.state != "ready":

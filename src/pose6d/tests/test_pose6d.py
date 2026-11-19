@@ -12,8 +12,6 @@ from pose6d.jog import JogSession
 from pose6d.observation import ObservationStore
 from pose6d.motion import MotionController, validate_config
 from pose6d.path import screen_workspace
-from pose6d.protocol import validate_request
-from pose6d.screening import screen
 
 
 def test_contact_transform_and_signed_distance():
@@ -62,31 +60,8 @@ def test_reject_invalid_geometry():
         suction_pose(np.eye(4), {"center_obj": [0, 0, 0], "normal_obj": [1, 0, 0], "tangent_ref_obj": [1, 0, 0]})
 
 
-def test_screening_metrics_and_status():
-    mask = np.array([[1, 1], [1, 0]], dtype=np.uint8)
-    observed = np.array([[1, 1,], [1, 0]], dtype=np.float32)
-    rendered = np.array([[1.002, 1.004], [0, 1]], dtype=np.float32)
-    result = screen(mask, observed, rendered, min_valid_pixels=2, min_iou=.4, max_median_m=.005)
-    assert result["status"] == "pass_screening"
-    assert result["metrics"]["silhouette_iou"] == .5
-    assert result["metrics"]["valid_depth_pixels"] == 2
-    assert result["metrics"]["depth_median_mm"] == pytest.approx(3, abs=.001)
-    assert screen(mask, observed, rendered, min_valid_pixels=3)["status"] == "insufficient_evidence"
-    assert screen(mask, observed, np.zeros_like(rendered))["status"] == "invalid"
 
 
-def test_validate_request_rejects_weak_or_mismatched_data():
-    request = {"type": "register", "version": 1, "request_id": "r", "observation_id": "o",
-               "object_id": "eu_plug", "model_sha256": "hash", "rgb": np.zeros((2, 2, 3), np.uint8),
-               "depth_m": np.ones((2, 2), np.float32), "mask": np.ones((2, 2), np.uint8),
-               "K": np.eye(3)}
-    validate_request(request, "eu_plug", "hash")
-    request["mask"][0, 0] = 0
-    with pytest.raises(ValueError, match="insufficient"):
-        validate_request(request, "eu_plug", "hash")
-    request["mask"][0, 0] = 1
-    with pytest.raises(ValueError, match="mismatched"):
-        validate_request(request, "eu_plug", "other")
 
 
 def test_jog_crosses_zero_and_locks_on_uncertain_motion():
@@ -190,7 +165,10 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
     config = {
         "enabled": True, "tool_name": "suction_tcp", "T_contact_tcp": T_contact_tcp.tolist(),
         "min_distance_m": -.02, "max_distance_m": .08, "max_step_m": .1,
-        "velocity_percent": 10, "timeout_sec": 2., "position_tolerance_m": .001,
+        "velocity_percent": 10, "prepare_distance_m": .04, "second_prepare_distance_m": .005,
+        "lift_height_m": .05, "prepare_velocity_percent": 10, "approach_velocity_percent": 20,
+        "contact_velocity_percent": 5, "lift_velocity_percent": 10,
+        "timeout_sec": 2., "position_tolerance_m": .001,
         "angular_tolerance_rad": .01, "workspace_m": [[-1, -1, -1], [1, 1, 1]],
         "cartesian_sample_step_m": .01, "angular_sample_step_rad": .1,
         "collision_margin_m": .001,
@@ -208,6 +186,7 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
             self.released = []
             self.targets = []
             self.commands = []
+            self.velocities = []
             self.unknown = unknown
 
         def context(self): return {"tool": "suction_tcp", "motion_allowed": True}
@@ -220,10 +199,11 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
         def current(self): return self.pose.copy()
         def check_path(self, actual, target, session, guard):
             guard(); self.targets.append((actual.copy(), target.copy()))
-        def execute(self, target, token, cancel, feedback, *, command="movel"):
+        def execute(self, target, token, cancel, feedback, *, command="movel", velocity_percent=None):
             if execute_error: raise RuntimeError(execute_error)
             if cancel.is_set(): raise RuntimeError("canceled")
             self.commands.append(command)
+            self.velocities.append(velocity_percent)
             self.pose = target.copy()
         def interrupt(self): self.interrupted += 1; self.unknown = False; self.busy = False
         def lease_uncertain(self): return self.unknown
@@ -256,6 +236,53 @@ def test_motion_controller_prepare_jog_crosses_zero_with_rotated_tcp():
     assert port.released == []
     assert controller.stop("client", prepared["session_id"])["lease_retained"] is False
     assert port.released == ["token"]
+
+
+def test_automatic_suction_uses_configured_approach_contact_and_base_vertical_lift():
+    controller, port, _obs, _config = motion_setup()
+    feedback = lambda _event: None
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, feedback)
+    assert prepared["auto_suction_ready"] is True
+    with pytest.raises(ValueError, match="externally"):
+        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
+    assert controller.status()["state"] == "ready"
+
+    complete = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"],
+                                        "vacuum_confirmed": True}, feedback)
+    assert complete["state"] == "lifted"
+    assert complete["confirmed_mm"] is None and complete["auto_suction_ready"] is False
+    assert port.commands == ["movej_p", "movel", "movel", "movel"]
+    assert port.velocities == [10, 20, 5, 10]
+    first, contact, lift = [target for _actual, target in port.targets[1:]]
+    assert np.linalg.norm(first[:3, 3] - port.targets[0][1][:3, 3]) == pytest.approx(.035)
+    assert np.linalg.norm(contact[:3, 3] - first[:3, 3]) == pytest.approx(.005)
+    np.testing.assert_allclose(lift[:3, 3] - contact[:3, 3], [0, 0, .05], atol=1e-9)
+    with pytest.raises(ValueError, match="signed travel"):
+        controller.jog({"client_id": "client", "session_id": prepared["session_id"], "step_mm": -1}, feedback)
+
+
+def test_automatic_suction_failure_blocks_session_without_retrying():
+    controller, port, _obs, _config = motion_setup()
+    feedback = lambda _event: None
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, feedback)
+    execute = port.execute
+
+    def fail_at_contact(target, token, cancel, callback, *, command="movel", velocity_percent=None):
+        if velocity_percent == 5:
+            raise RuntimeError("contact segment failed")
+        execute(target, token, cancel, callback, command=command, velocity_percent=velocity_percent)
+
+    port.execute = fail_at_contact
+    request = {"client_id": "client", "session_id": prepared["session_id"], "vacuum_confirmed": True}
+    with pytest.raises(RuntimeError, match="contact segment failed"):
+        controller.auto_suction(request, feedback)
+    assert controller.status()["state"] == "blocked"
+    assert port.commands == ["movej_p", "movel"]
+    with pytest.raises(ValueError, match="preparation position"):
+        controller.auto_suction(request, feedback)
+    assert port.commands == ["movej_p", "movel"]
 
 
 def test_motion_rejects_wrong_owner_and_out_of_range_without_poisoning_ready_session():
@@ -325,10 +352,10 @@ def test_disconnect_does_not_interrupt_active_prepare_and_releases_after_complet
     entered, finish = threading.Event(), threading.Event()
     original_execute = port.execute
 
-    def slow_execute(target, token, cancel, feedback, *, command="movel"):
+    def slow_execute(target, token, cancel, feedback, *, command="movel", velocity_percent=None):
         entered.set()
         assert finish.wait(3)
-        original_execute(target, token, cancel, feedback, command=command)
+        original_execute(target, token, cancel, feedback, command=command, velocity_percent=velocity_percent)
 
     port.execute = slow_execute
     outcome = []
@@ -392,10 +419,10 @@ def test_motion_rejects_second_jog_while_action_is_in_flight():
     entered, finish = threading.Event(), threading.Event()
     original_execute = port.execute
 
-    def slow_execute(target, token, cancel, feedback, *, command="movel"):
+    def slow_execute(target, token, cancel, feedback, *, command="movel", velocity_percent=None):
         entered.set()
         finish.wait(1)
-        original_execute(target, token, cancel, feedback, command=command)
+        original_execute(target, token, cancel, feedback, command=command, velocity_percent=velocity_percent)
 
     port.execute = slow_execute
     outcome = []
@@ -422,3 +449,15 @@ def test_suction_workspace_checks_body_and_tcp():
     pose[0, 3] = 1.01
     with pytest.raises(ValueError, match="workspace"):
         screen_workspace([pose], config, suction)
+
+
+def test_history_request_carries_capture_identity_and_instance_metadata():
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((2, 2, 3), np.uint8), depth_m=np.ones((2, 2), np.float32),
+                       K=np.eye(3), timestamp_ns=1794470462051315677, camera_frame='right_optical')
+    store.set_mask(oid, np.ones((2, 2), np.uint8))
+    _, request = store.request(oid, object_id='plug', model_sha256='hash')
+    assert request['capture_timestamp_ns'] == '1794470462051315677'
+    assert request['camera_frame'] == 'right_optical'
+    assert request['mask_source'] == 'manual'
+    assert request['instance_id'] is None

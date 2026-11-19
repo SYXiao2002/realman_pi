@@ -171,11 +171,11 @@ def test_motion_ros_port_sends_selected_base_command_with_token_and_requires_ter
     target = [[1, 0, 0, .1], [0, 1, 0, .2], [0, 0, 1, .3], [0, 0, 0, 1]]
     import numpy as np
     adapter.execute(np.asarray(target), "lease-token", __import__("threading").Event(), lambda _f: None,
-                    command=command)
+                    command=command, velocity_percent=13)
     sent = action.goal
     assert sent.command == expected
     assert sent.reference_type == ExecuteMotion.Goal.BASE and sent.reference_name == "base"
-    assert sent.velocity_percent == 7 and sent.blend_radius_percent == 0 and not sent.connect
+    assert sent.velocity_percent == 13 and sent.blend_radius_percent == 0 and not sent.connect
     assert sent.timeout_sec == 30.0
     assert sent.task_token == "lease-token" and list(sent.pose_position_m) == pytest.approx([.1, .2, .3])
     assert adapter.action_uncertain() is False
