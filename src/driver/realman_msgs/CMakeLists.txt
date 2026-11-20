@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RecoverMotion.srv"
   "srv/TaskControl.srv"
   "srv/TaskGripperCommand.srv"
+  "srv/SetToolPower.srv"
   "srv/ConfirmGrasp.srv"
   "srv/ListInputModes.srv"
   "srv/SelectInputMode.srv"

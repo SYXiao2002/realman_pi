@@ -240,6 +240,21 @@ def test_motion_action_contracts_are_exact():
     )
 
     _assert_interface_contract(
+        ROOT / "srv/SetToolPower.srv",
+        [
+            [
+                "bool enabled",
+                "string task_token",
+            ],
+            [
+                "bool success",
+                "string message",
+            ],
+        ],
+    )
+    assert '"srv/SetToolPower.srv"' in (ROOT / "CMakeLists.txt").read_text()
+
+    _assert_interface_contract(
         ROOT / "msg/CartesianVelocityState.msg",
         [
             [
