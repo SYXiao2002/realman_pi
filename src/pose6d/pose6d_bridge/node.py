@@ -684,6 +684,10 @@ class PoseBridge(Node):
             if (type(second_prepare_distance) not in (int, float) or not math.isfinite(second_prepare_distance)
                     or second_prepare_distance < 0):
                 second_prepare_distance = .005
+            contact_offset = self.motion_config.get("contact_offset_m", 0.0)
+            if (type(contact_offset) not in (int, float) or not math.isfinite(contact_offset)
+                    or contact_offset < 0):
+                contact_offset = 0.0
             lift_height = self.motion_config.get("lift_height_m", .05)
             if type(lift_height) not in (int, float) or not math.isfinite(lift_height) or lift_height <= 0:
                 lift_height = .05
@@ -718,6 +722,7 @@ class PoseBridge(Node):
                 "score": result["score"], "screening": screen, "grasps": grasps,
                 "motion_waypoints": {"prepare_distance_mm": prepare_distance * 1000,
                                      "second_prepare_distance_mm": second_prepare_distance * 1000,
+                                     "contact_offset_mm": contact_offset * 1000,
                                      "lift_height_mm": lift_height * 1000},
                 "overlay": "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None,
                 "cloud": points, "mesh_obj": (self.mesh_dir / "TexturedMeshSimplified.obj").read_text(encoding="utf-8"),

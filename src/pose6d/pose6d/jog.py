@@ -14,21 +14,24 @@ from .geometry import rigid, tcp_target
 class JogSession:
     def __init__(self, contact, outward_normal, T_contact_tcp, *, min_m, max_m,
                  max_step_m, position_tolerance_m, angular_tolerance_rad,
-                 prepare_distance_m=.04):
+                 prepare_distance_m=.04, contact_offset_m=0.0):
         self.contact = rigid(contact).copy()
         self.normal = np.asarray(outward_normal, dtype=float).copy()
         self.tool = rigid(T_contact_tcp).copy()
         values = (min_m, max_m, max_step_m, position_tolerance_m, angular_tolerance_rad,
-                  prepare_distance_m)
+                  prepare_distance_m, contact_offset_m)
         if any(not math.isfinite(v) for v in values):
             raise ValueError("jog limits must be finite")
-        if (not min_m < 0 or not min_m <= 0 < prepare_distance_m <= max_m
+        if (not min_m < 0 or contact_offset_m < 0
+                or not min_m <= -contact_offset_m <= max_m
+                or not min_m <= 0 < prepare_distance_m <= max_m
                 or min(max_step_m, position_tolerance_m, angular_tolerance_rad) <= 0):
             raise ValueError("invalid jog limits or tolerances")
         tcp_target(self.contact, self.normal, 0, self.tool)
         self.min_m, self.max_m = min_m, max_m
         self.max_step_m = max_step_m
         self.prepare_distance_m = prepare_distance_m
+        self.contact_distance_m = -contact_offset_m
         self.position_tolerance_m = position_tolerance_m
         self.angular_tolerance_rad = angular_tolerance_rad
         self.state = "review"
@@ -78,9 +81,9 @@ class JogSession:
 
     def begin_lift(self, actual_tcp, lift_height_m):
         if self.state != "auto_suction" or self.pending_m is not None or not math.isclose(
-                self.confirmed_m, 0, rel_tol=0, abs_tol=1e-9):
+                self.confirmed_m, self.contact_distance_m, rel_tol=0, abs_tol=1e-9):
             raise ValueError("vertical lift requires confirmed arrival at the suction position")
-        self._check_pose(actual_tcp, 0)
+        self._check_pose(actual_tcp, self.contact_distance_m)
         if not math.isfinite(lift_height_m) or lift_height_m <= 0:
             raise ValueError("lift height must be positive")
         self.lift_target = rigid(actual_tcp).copy()

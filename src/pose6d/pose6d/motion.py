@@ -30,12 +30,16 @@ def validate_config(config, suction):
         raise ValueError("configure the controller suction tool_name")
     configured_transform(config.get("T_contact_tcp"))
     lo, hi = config.get("min_distance_m"), config.get("max_distance_m")
+    contact_offset = config.get("contact_offset_m", 0.0)
     prepare_distance = config.get("prepare_distance_m")
     if (type(lo) not in (int, float) or type(hi) not in (int, float)
             or not math.isfinite(lo) or not math.isfinite(hi) or not lo < 0
             or type(prepare_distance) not in (int, float) or not math.isfinite(prepare_distance)
             or not 0 < prepare_distance <= hi):
         raise ValueError("configure signed min_distance_m < 0 and max_distance_m >= prepare_distance_m")
+    if (type(contact_offset) not in (int, float) or not math.isfinite(contact_offset)
+            or not 0 <= contact_offset <= -lo):
+        raise ValueError("configure contact_offset_m between 0 and -min_distance_m")
     for key in ("max_step_m", "timeout_sec", "position_tolerance_m", "angular_tolerance_rad",
                 "cartesian_sample_step_m", "angular_sample_step_rad",
                 "collision_margin_m",
@@ -185,7 +189,8 @@ class MotionController:
                 jog = JogSession(contact, normal, configured_transform(c["T_contact_tcp"]), min_m=c["min_distance_m"],
                                  max_m=c["max_distance_m"], max_step_m=c["max_step_m"],
                                  position_tolerance_m=c["position_tolerance_m"], angular_tolerance_rad=c["angular_tolerance_rad"],
-                                 prepare_distance_m=c["prepare_distance_m"])
+                                 prepare_distance_m=c["prepare_distance_m"],
+                                 contact_offset_m=c.get("contact_offset_m", 0.0))
                 self.cancel.clear()
                 self.session = {"id": uuid.uuid4().hex, "owner": owner, "jog": jog, "token": "",
                                 "observation": obs, "grasp_id": grasp["grasp_id"],
@@ -274,7 +279,7 @@ class MotionController:
                                    finish=False)
             jog.finish_auto_distance(actual)
 
-            target = jog.begin_auto_distance(0)
+            target = jog.begin_auto_distance(jog.contact_distance_m)
             self.reason = "MOVEL approaching suction position slowly"
             feedback(self.status())
             actual = self._execute(actual, target, feedback, velocity_percent=self.config["contact_velocity_percent"],

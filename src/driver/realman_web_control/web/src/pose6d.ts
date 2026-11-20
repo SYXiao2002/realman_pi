@@ -364,10 +364,11 @@ function connect() {
       const waypoints = msg.motion_waypoints || {};
       prepareDistanceMm = Number(waypoints.prepare_distance_mm ?? 40);
       secondPrepareDistanceMm = Number(waypoints.second_prepare_distance_mm ?? 5);
+      const contactOffsetMm = Number(waypoints.contact_offset_mm ?? 0);
       liftHeightMm = Number(waypoints.lift_height_mm ?? 50);
       el("prepare-legend").textContent = `准备位 +${prepareDistanceMm.toFixed(0)} mm（紫）`;
       el<HTMLButtonElement>("prepare").textContent = `移动到 +${prepareDistanceMm.toFixed(0)} mm 准备位`;
-      el("auto-path").textContent = `自动路径：${prepareDistanceMm.toFixed(0)} → ${secondPrepareDistanceMm.toFixed(0)} → 0 mm，BASE +Z 提升 ${liftHeightMm.toFixed(0)} mm`;
+      el("auto-path").textContent = `自动路径：${prepareDistanceMm.toFixed(0)} → ${secondPrepareDistanceMm.toFixed(0)} → ${(-contactOffsetMm).toFixed(0)} mm，BASE +Z 提升 ${liftHeightMm.toFixed(0)} mm`;
       draw(msg); resultId = msg.result_id; motionReady = msg.motion_ready; motionState = "review";
       const cupMm = Number(msg.suction?.cup_diameter_m ?? .01) * 1000;
       el("cup-info").textContent = `吸盘实物直径 ${cupMm.toFixed(1)} mm，细线圈表示人工标注接触区域。`;

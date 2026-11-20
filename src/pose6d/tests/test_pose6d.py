@@ -53,6 +53,15 @@ def test_motion_uses_a_registered_tool_and_valid_contact_transform():
     configured_transform(motion["T_contact_tcp"])
 
 
+def test_contact_offset_must_fit_within_signed_travel_limit():
+    root = Path(__file__).resolve().parents[3]
+    settings = yaml.safe_load((root / "config/ros/pose6d_bridge.yaml").read_text())
+    motion = dict(settings["motion"])
+    motion["contact_offset_m"] = -motion["min_distance_m"] + .001
+    with pytest.raises(ValueError, match="contact_offset_m"):
+        validate_config(motion, settings["suction"])
+
+
 def test_reject_invalid_geometry():
     with pytest.raises(ValueError):
         rigid(np.diag([-1, 1, 1, 1]))
@@ -164,7 +173,7 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
     T_contact_tcp[:3, 3] = [.012, -.003, .02]
     config = {
         "enabled": True, "tool_name": "suction_tcp", "T_contact_tcp": T_contact_tcp.tolist(),
-        "min_distance_m": -.02, "max_distance_m": .08, "max_step_m": .1,
+        "min_distance_m": -.02, "max_distance_m": .08, "contact_offset_m": .005, "max_step_m": .1,
         "velocity_percent": 10, "prepare_distance_m": .04, "second_prepare_distance_m": .005,
         "lift_height_m": .05, "prepare_velocity_percent": 10, "approach_velocity_percent": 20,
         "contact_velocity_percent": 5, "lift_velocity_percent": 10,
@@ -265,7 +274,8 @@ def test_automatic_suction_uses_configured_approach_contact_and_base_vertical_li
     assert complete["tool_power"]["voltage_v"] == 0
     first, contact, lift = [target for _actual, target in port.targets[1:]]
     assert np.linalg.norm(first[:3, 3] - port.targets[0][1][:3, 3]) == pytest.approx(.035)
-    assert np.linalg.norm(contact[:3, 3] - first[:3, 3]) == pytest.approx(.005)
+    assert np.linalg.norm(contact[:3, 3] - first[:3, 3]) == pytest.approx(.01)
+    assert contact[2, 3] == pytest.approx(first[2, 3] - .01)
     np.testing.assert_allclose(lift[:3, 3] - contact[:3, 3], [0, 0, .05], atol=1e-9)
     with pytest.raises(ValueError, match="signed travel"):
         controller.jog({"client_id": "client", "session_id": prepared["session_id"], "step_mm": -1}, feedback)

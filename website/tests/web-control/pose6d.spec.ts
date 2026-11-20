@@ -190,7 +190,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
     grasps: [{ grasp_id: "g1", status: "reliable", radius_m: .007, T_camera_contact: pose,
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]] }],
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
-    motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, lift_height_mm: 50 } });
+    motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50 } });
+  await expect(page.locator("#auto-path")).toContainText("40 → 5 → -5 mm");
   await page.evaluate(() => {
     const frames = { type: "pose6d_frames", arm: "r", available: true,
       tool_name: "tcpsuck", T_base_tcp: [[1, 0, 0, .15], [0, 1, 0, .2], [0, 0, 1, .35], [0, 0, 0, 1]],

@@ -35,6 +35,7 @@ motion:
     rpy_rad: [0, 0, 0]       # same axes; R = Rz(yaw) Ry(pitch) Rx(roll)
   min_distance_m: -0.005    # allow only 5 mm past the estimated surface
   max_distance_m: 0.1       # includes the configured preparation position
+  contact_offset_m: 0.005   # automatic suction advances 5 mm into the estimated surface
   max_step_m: 0.005
   velocity_percent: 10
   prepare_distance_m: 0.04
