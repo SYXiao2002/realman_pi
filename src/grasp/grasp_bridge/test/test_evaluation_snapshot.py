@@ -8,7 +8,7 @@ import cv2
 import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from grasp_bridge.evaluation import snapshot
+from grasp_bridge.evaluation import DISPLAY_CLOUD_MAX_POINTS, snapshot
 
 
 def observation(base_camera):
@@ -21,6 +21,7 @@ def observation(base_camera):
 
 def profile():
     return {"name": "right_wrist", "arm": "r", "base_frame": "r/base_link", "tool_name": "tcp",
+            "workspace_m": [[-.5, -.5, 0.], [.5, .5, 1.]],
             "gripper_geometry": {"verified": False}, "calibration_data": {"calibration_id": None},
             "readiness_problems": ["verified calibration identity", "measured gripper geometry"]}
 
@@ -32,14 +33,29 @@ def request():
 
 
 def test_snapshot_keeps_registered_rgbd_and_full_base_pose():
-    base_camera = np.eye(4); base_camera[:3, 3] = [1., 2., 3.]
+    base_camera = np.eye(4); base_camera[:3, 3] = [.1, .2, .3]
     candidate = {"candidate_id": "c1", "T_camera_grasp": np.eye(4).tolist(), "score": .8}
     result = snapshot(observation(base_camera), profile(), request(), response={"candidates": [candidate]}, phase="inferred")
     assert result["read_only"] and not result["execution_ready"]
     assert len(result["cloud"]["xyz_m"]) == 64
     assert result["cloud"]["xyz_m"][0] == [-.2, -.2, .5]
-    assert result["candidates"][0]["T_base_grasp"][0][3] == 1.
+    assert result["candidates"][0]["T_base_grasp"][0][3] == .1
     assert result["images"]["rgb"].startswith("data:image/jpeg;base64,")
+    assert result["workspace_m"] == [[-.5, -.5, 0.], [.5, .5, 1.]]
+
+
+def test_snapshot_marks_each_candidate_with_plan_outcome():
+    candidates = [
+        {"candidate_id": "c1", "T_camera_grasp": np.eye(4).tolist(), "score": .8},
+        {"candidate_id": "c2", "T_camera_grasp": np.eye(4).tolist(), "score": .7},
+    ]
+    result = snapshot(observation(np.eye(4)), profile(), request(), response={"candidates": candidates},
+                      plan={"candidate_id": "c1"}, rejections=[{"candidate_id": "c2", "reason": "IK failed"}],
+                      source="behavior_tree", phase="planned")
+    assert [item["planning_status"] for item in result["candidates"]] == ["selected", "rejected"]
+    assert result["candidates"][1]["planning_reason"] == "IK failed"
+    assert result["source"] == "behavior_tree"
+    assert result["images"] == {}
 
 
 def test_snapshot_does_not_fabricate_unavailable_base_transform():
@@ -50,6 +66,33 @@ def test_snapshot_does_not_fabricate_unavailable_base_transform():
     assert result["T_base_camera"] is None
     assert result["candidates"][0]["T_base_grasp"] is None
     assert result["base_camera_transform"] == obs["base_camera_transform"]
+    assert result["cloud"]["workspace_crop_status"] == "missing_base_camera"
+    assert result["cloud"]["xyz_m"] == []
+
+
+def test_display_cloud_is_cropped_in_base_workspace_but_keeps_camera_coordinates():
+    Tbc = np.eye(4)
+    Tbc[:3, 3] = [.15, 0., 0.]
+    obs = observation(Tbc)
+    p = profile()
+    p["workspace_m"] = [[.1, -.1, .4], [.2, .1, .6]]
+    result = snapshot(obs, p, request(), response={"candidates": []})
+    assert result["cloud"]["workspace_crop_status"] == "applied"
+    assert len(result["cloud"]["xyz_m"]) == 15
+    assert result["cloud"]["workspace_point_count"] == 15
+    assert all(-.05 - 1e-9 <= point[0] <= .05 + 1e-9
+               and -.1 - 1e-9 <= point[1] <= .1 + 1e-9
+               for point in result["cloud"]["xyz_m"])
+    assert all(point[2] == .5 for point in result["cloud"]["xyz_m"])
+
+
+def test_display_cloud_backprojects_skewed_intrinsics_like_workspace_crop():
+    obs = observation(np.eye(4))
+    obs["K"] = np.array([[10., 2., 4.], [0., 10., 4.], [0., 0., 1.]])
+
+    result = snapshot(obs, profile(), request(), response={"candidates": []})
+
+    np.testing.assert_allclose(result["cloud"]["xyz_m"][0], [-.16, -.2, .5])
 
 
 def test_lossless_instance_labels_become_review_image_without_binary_in_json():
@@ -81,10 +124,50 @@ def test_snapshot_keeps_both_alignment_stages_in_same_capture():
 
 def test_display_cloud_matches_original_worker_z_range_without_changing_depth():
     obs = observation(None)
-    obs["depth_m"][0, :4] = [.1, .2, 1.5, 2.]
+    obs["T_base_camera"] = np.eye(4)
+    obs["depth_m"][0, :4] = [.1, .19, 1.6, 2.]
     before = obs["depth_m"].copy()
     result = snapshot(obs, profile(), request(), response={"diagnostics": {"z_range_m": [.2, 1.5]}})
     assert len(result["cloud"]["xyz_m"]) == 60
     assert result["cloud"]["z_range_m"] == [.2, 1.5]
     assert result["depth_stats"]["valid_pixels"] == 64
     np.testing.assert_array_equal(before, obs["depth_m"])
+
+
+def test_display_cloud_is_dense_but_bounded_for_web_review():
+    obs = observation(np.eye(4))
+    obs["color_bgr"] = np.zeros((240, 240, 3), np.uint8)
+    obs["depth_m"] = np.full((240, 240), 0.5, np.float32)
+    obs["K"] = np.array([[200., 0., 120.], [0., 200., 120.], [0., 0., 1.]])
+    result = snapshot(obs, profile(), request(), response={"candidates": []})
+    assert len(result["cloud"]["xyz_m"]) == DISPLAY_CLOUD_MAX_POINTS
+    assert len(result["cloud"]["rgb"]) == DISPLAY_CLOUD_MAX_POINTS
+    assert DISPLAY_CLOUD_MAX_POINTS > 4096
+
+
+def test_snapshot_keeps_collision_geometry_and_bounded_display_masks():
+    labels = np.ones((8, 8), np.uint16)
+    ok, encoded = cv2.imencode(".png", labels)
+    assert ok
+    p = profile()
+    p["gripper_geometry"] = {"id": "test", "min_opening_m": 0., "max_opening_m": .08,
+                              "finger_thickness_m": .01, "finger_width_m": .02,
+                              "finger_depth_m": .04, "clearance_m": .003}
+    candidate = {"candidate_id": "1:0", "object_id": "1", "class_name": "eu", "score": .8,
+                 "width_m": .03, "T_camera_grasp": np.eye(4).tolist(),
+                 "collision": {"status": "unknown", "geometry": {
+                     "model": "visual_finger_boxes/v1", "frame": "grasp_contact", "opening_m": .036,
+                     "boxes": [{"name": "left_finger", "center_m": [-.023, 0, -.02], "size_m": [.01, .02, .04]},
+                               {"name": "right_finger", "center_m": [.023, 0, -.02], "size_m": [.01, .02, .04]}]},
+                     "worst_stage": None, "min_clearance_m": None, "max_penetration_m": None,
+                     "collision_points": 0, "near_points": 0, "local_environment_points": 0,
+                     "collision_clusters": 0,
+                     "stages": {stage: {"status": "unknown", "min_clearance_m": None,
+                                        "max_penetration_m": None, "collision_points": 0, "near_points": 0,
+                                        "local_environment_points": 0, "collision_clusters": 0}
+                                for stage in ("pregrasp", "approach_sweep", "grasp", "lift")}}}
+    result = snapshot(observation(np.eye(4)), p, request(), response={"candidates": [candidate],
+        "diagnostics": {"segmap_png": encoded.tobytes()}})
+    collision = result["candidates"][0]["collision"]
+    assert len(collision["display"]["near_mask"]) == result["cloud"]["displayed_point_count"]
+    assert len(collision["display"]["collision_mask"]) == result["cloud"]["displayed_point_count"]

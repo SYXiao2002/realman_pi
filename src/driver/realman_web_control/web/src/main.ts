@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import URDFLoader from "urdf-loader";
 import "./theme.css";
 import "./style.css";
+import { VacuumIndicators } from "./vacuum_status";
 import { AXIS_COLORS, VelocityTrace } from "./velocity_trace";
 import { parsePoseGoal, parseMotionSettings, motionRequest } from "./motion_goal";
 import { activeRouterBranch, ancestors, buildBtTree, findInputRouter, renderBreadcrumb, renderBtNode, type BtRuntime } from "./bt_tree";
@@ -143,6 +144,8 @@ app.innerHTML = `
     <span id="auth-button" class="status-pill ready">CONTROL OPEN</span>
     <a href="/calibration.html" class="button ghost">相机标定</a>
     <a href="/grasp.html" class="button ghost">Grasp 评估</a>
+    <a href="/6d_pose.html" class="button ghost">6D 位姿</a>
+    <a href="/6d_pose_history/" class="button ghost">6D 历史</a>
     <button id="cancel-motion" class="button ghost" type="button" disabled>取消 Action</button>
     <button id="recover-motion" class="button secondary" type="button" disabled>恢复机械臂</button>
     <button id="stop-button" class="button danger" type="button" disabled>■ 软件停止</button>
@@ -166,6 +169,7 @@ app.innerHTML = `
       <section id="velocity-telemetry-panel" class="panel panel-section"><div class="panel-heading compact"><div><span class="eyebrow">VELOCITY TELEMETRY</span><h2>命令与实际末端速度</h2></div><span class="mini-state">L + R</span></div><div class="telemetry-legend" id="velocity-telemetry-legend">${["X", "Y", "Z"].map((axis, index) => `<span class="legend-axis"><i style="background: ${AXIS_COLORS[index]}"></i>${axis}</span>`).join("")}<span class="legend-line solid"><i></i>实际</span><span class="legend-line dashed"><i></i>命令（限速后）</span><span class="legend-hint">最近 10 s · 纵轴按数据自动缩放</span></div><div id="velocity-telemetry-grid" class="velocity-telemetry-grid"></div></section>
     </div>
     <aside class="controls">
+      <section class="panel panel-section" aria-label="吸盘状态"><div class="panel-heading compact"><div><span class="eyebrow">VACUUM / L + R</span><h2>吸盘状态</h2></div></div><div id="vacuum-status"></div></section>
       <section id="input-mode-card" class="panel panel-section input-mode-card" hidden>
         <div class="panel-heading compact"><div><span class="eyebrow">GLOBAL INPUT</span><h2>输入模式</h2></div><span id="input-mode-active" class="mini-state">WAIT</span></div>
         <div class="input-mode-body"><label>当前选择<select id="input-mode-select" aria-label="输入模式"></select></label><div id="input-mode-detail" class="input-mode-detail" aria-live="polite">等待输入模式状态</div></div>
@@ -291,6 +295,7 @@ const viewerState = $("#viewer-state");
 const canvas = $("#canvas") as HTMLCanvasElement;
 const viewer = $("#viewer");
 const fleetStrip = $("#fleet-strip");
+const vacuumIndicators = new VacuumIndicators($("#vacuum-status"));
 const selectedArmLabel = $("#selected-arm-label");
 const inputModeCard = $("#input-mode-card") as HTMLElement;
 const inputModeSelect = $("#input-mode-select") as HTMLSelectElement;
@@ -1576,6 +1581,7 @@ function updateGripperList(list: any[]) {
 }
 
 function handleMessage(message: Message) {
+  vacuumIndicators.receive(message);
   if (message.type === "hello") {
     readOnly = Boolean(message.read_only);
     mode.textContent = readOnly ? "READ ONLY" : "CONTROL READY";
@@ -1942,6 +1948,7 @@ function connect() {
     updateButtons();
   });
   socket.addEventListener("close", () => {
+    vacuumIndicators.disconnect();
     releaseKeyboardInput();
     setConnection(false);
     activeInputModeRequest = "";
@@ -2392,6 +2399,7 @@ let btLibrary: BtLibrary = { available: false };
 let btSelectedTree = "";
 try { btSelectedTree = window.localStorage.getItem(btSelectedStorageKey) ?? ""; } catch { /* per-viewer convenience only */ }
 let btStartArmedUntil = 0;
+let btPickerHtml = "";
 let btStartPending: { tree: string; dryRun: boolean; since: number; startedAt?: number } | undefined;
 function treeMeta(tree: BtLibraryTree) {
   if (!tree.valid) return "XML 无法解析";
@@ -2411,8 +2419,9 @@ function renderBtPickerList() {
       <span class="bt-option-name">${escapeHtml(tree.name.replace(/\.xml$/, ""))}</span><span class="bt-option-meta">${escapeHtml(treeMeta(tree))}</span></div>`;
   const favorites = trees.filter((tree) => tree.favorite);
   const others = trees.filter((tree) => !tree.favorite);
-  btPickerList.innerHTML = (favorites.length ? `<div class="bt-option-group">收藏</div>${favorites.map(row).join("")}` : "")
+  const html = (favorites.length ? `<div class="bt-option-group">收藏</div>${favorites.map(row).join("")}` : "")
     + `<div class="bt-option-group">${favorites.length ? "其它" : "全部"}</div>${others.map(row).join("") || `<div class="bt-option-empty">没有行为树文件</div>`}`;
+  if (btPickerHtml !== html) { btPickerHtml = html; btPickerList.innerHTML = html; }
 }
 function renderBtLauncher() {
   btLauncherSection.hidden = btRuntime.available || !btLibrary.available;

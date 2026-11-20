@@ -35,7 +35,7 @@ def runtime(selection):
 
 
 @pytest.mark.parametrize("angle", [0., .7, 1.5707963267948966])
-def test_geometry_reuses_original_and_preserves_center_and_metadata(runtime, angle):
+def test_geometry_reuses_original_and_leaves_center_offset_to_bridge(runtime, angle):
     Tbc = np.eye(4); c, s = np.cos(angle), np.sin(angle)
     Tbc[:3, :3] = [[c, 0, s], [0, 1, 0], [-s, 0, c]]
     Tbc[:3, 3] = [1., 2., 3.]
@@ -51,7 +51,10 @@ def test_geometry_reuses_original_and_preserves_center_and_metadata(runtime, ang
     np.testing.assert_array_equal(candidate["T_camera_native_grasp_aligned"], expected)
     np.testing.assert_allclose(Tbc[:3, :3] @ candidate["T_camera_grasp"][:3, 2], [0, 0, -1], atol=1e-12)
     np.testing.assert_allclose(candidate["T_camera_grasp"][:3, 3], candidate["T_camera_grasp_before_alignment"][:3, 3], atol=1e-12)
-    np.testing.assert_allclose(candidate["T_camera_grasp"], adapt_native_candidate(expected, offset_m=.09), atol=0)
+    original_contact = adapt_native_candidate(expected, offset_m=.09)
+    np.testing.assert_array_equal(candidate['T_camera_grasp'], original_contact)
+    assert 'geometry_center_offset_m' not in candidate['metrics']
+    assert 'geometry_center_offset_m' not in diagnostics
     assert candidate["score"] == 1.7 and candidate["width_m"] == .1
     assert diagnostics["vertical_alignment_status"] == "applied"
     validate_response(dict(protocol_version=1, type="result", **identity(request), model_id="original", gripper_id=request["gripper"]["id"], candidates=candidates), request)
@@ -67,6 +70,8 @@ def test_unavailable_alignment_never_fabricates_after_pose(runtime, backend_name
     assert candidate["T_camera_native_grasp_aligned"] is None
     assert candidate["T_camera_grasp_after_alignment"] is None
     np.testing.assert_array_equal(candidate["T_camera_grasp"], candidate["T_camera_grasp_before_alignment"])
+    original_contact = adapt_native_candidate(runtime.raw, offset_m=.09 if backend_name == 'geometry' else .1034)
+    np.testing.assert_allclose(candidate['T_camera_grasp'], original_contact, atol=1e-12)
 
 
 def test_uncalibrated_geometry_cannot_become_live_plan(runtime):

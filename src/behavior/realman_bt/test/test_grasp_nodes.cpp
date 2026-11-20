@@ -9,13 +9,17 @@
 #include <vector>
 
 #include "bt_core/xml_parser.hpp"
+#include "bt_nodes/decorator/repeat_node.hpp"
+#include "bt_nodes/decorator/retry_node.hpp"
 #include "bt_nodes/control/sequence_node.hpp"
 #include "realman_bt/grasp_nodes.hpp"
 #include "realman_bt/move_j_node.hpp"
+#include "realman_bt/save_camera_frames_node.hpp"
 #include "realman_msgs/action/execute_motion.hpp"
 #include "realman_msgs/srv/task_control.hpp"
 #include "realman_msgs/srv/task_gripper_command.hpp"
 #include "realman_msgs/srv/confirm_grasp.hpp"
+#include "realman_msgs/srv/save_camera_images.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
 using Status = bt_core::NodeStatus;
@@ -35,6 +39,8 @@ int main(int argc, char** argv) {
   std::vector<std::string> stages;
   int acquired = 0, renewed = 0, released = 0, gripper_calls = 0, motion_calls = 0, plan_calls = 0;
   bool leased = false, busy = false, delay_plan = false, delay_acquire = false, deny_renew = false;
+  bool delay_motion = false;
+  std::shared_ptr<rclcpp_action::ServerGoalHandle<Motion>> pending_motion;
   std::string fail_stage;
   std::shared_ptr<rmw_request_id_t> pending_acquire_header;
   std::shared_ptr<Lease::Response> pending_acquire_response;
@@ -91,14 +97,29 @@ int main(int argc, char** argv) {
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }, [](auto) { return rclcpp_action::CancelResponse::ACCEPT; },
       [&](std::shared_ptr<rclcpp_action::ServerGoalHandle<Motion>> handle) {
+    if (delay_motion) { pending_motion = handle; return; }
     auto result = std::make_shared<Motion::Result>();
     result->success = fail_stage != stages.back();
     result->message = result->success ? "complete" : "simulated stage failure";
     if (result->success) handle->succeed(result); else handle->abort(result);
   });
+  // grasp.xml saves a right-wrist frame after plan/close/lift. Serve that snapshot
+  // so the best-effort leaves resolve on the next tick instead of waiting out their
+  // 13s client deadline (run() below only allows 8s). They record no stage, so the
+  // stage-ordering assertions stay valid.
+  auto snapshot_server = ros_node->create_service<realman_msgs::srv::SaveCameraImages>(
+      "/camera_snapshot/save",
+      [&](const std::shared_ptr<realman_msgs::srv::SaveCameraImages::Request>,
+          std::shared_ptr<realman_msgs::srv::SaveCameraImages::Response> res) {
+        res->success = true;
+        res->message = "saved 1 frame(s)";
+        res->saved_paths = {"/tmp/snap/camera_right_test.jpg"};
+      });
 
   bt_core::NodeFactory factory;
   factory.registerNodeType<bt_nodes::SequenceNode>("Sequence");
+  factory.registerNodeType<bt_nodes::RepeatNode>("Repeat");
+  factory.registerNodeType<bt_nodes::RetryNode>("Retry");
   factory.registerNodeType<realman_bt::TaskLeaseNode>("TaskLease");
   factory.registerNodeType<realman_bt::PlanGraspNode>("PlanGrasp");
   factory.registerNodeType<realman_bt::TaskGripperNode>("TaskGripper");
@@ -106,6 +127,7 @@ int main(int argc, char** argv) {
   factory.registerNodeType<realman_bt::GraspHoldNode>("GraspHold");
   factory.registerNodeType<realman_bt::GraspConfirmNode>("GraspConfirm");
   factory.registerNodeType<realman_bt::MoveJNode>("MoveJ");
+  factory.registerNodeType<realman_bt::SaveCameraFramesNode>("SaveCameraFrames");
   bt_core::XmlParser parser(factory);
   auto bb = bt_core::Blackboard::create();
   realman_bt::RuntimeDiagnostics diagnostics;
@@ -121,14 +143,19 @@ int main(int argc, char** argv) {
       {"grasp_base_frame", "r/base_link"}, {"grasp_tool_name", "tcpgrip"},
       {"grasp_gripper", "gripper_right"}, {"grasp_target_label", "box"},
       {"grasp_backend", "mock"}, {"grasp_observation_joint_degrees", "1,2,3,4,5,6"},
-      {"grasp_return_joint_degrees", "7,8,9,10,11,12"},
-      {"grasp_readiness_detail", ""}}) bb->set<std::string>(kv.first, kv.second);
-  bb->set<bool>("grasp_execution_ready", true);
+      {"grasp_return_joint_degrees", "7,8,9,10,11,12"}}) bb->set<std::string>(kv.first, kv.second);
   bb->set<int>("grasp_velocity_percent", 5);
   for (const auto* key : {"grasp_acquire_timeout_sec", "grasp_motion_timeout_sec", "grasp_plan_timeout_sec", "grasp_gripper_timeout_sec"}) bb->set<double>(key, 2.0);
   bb->set<double>("grasp_lease_ttl_sec", 0.15);
   bb->set<double>("grasp_hold_sec", 0.15);
+  bb->set<double>("grasp_motion_result_grace_sec", 0.15);
   bb->set<double>("grasp_confirmation_timeout_sec", 2.0);
+  // The production tree is configured for continuous operation; this test
+  // exercises one complete cycle and then expects a terminal SUCCESS.
+  bb->set<int>("grasp_cycles", 1);
+  // The executor seeds this empty and PlanGrasp overwrites it each cycle; seed it
+  // here too so save_after_plan/close/lift resolve session_id="{grasp_session}".
+  bb->set<std::string>("grasp_session", "");
   auto tree = parser.loadFromFile(GRASP_TREE_FILE, bb);
   auto drain = [&]() {
     for (auto it = drains.begin(); it != drains.end();) {
@@ -178,10 +205,22 @@ int main(int argc, char** argv) {
   bb->set<bool>("dry_run", false);
   confirm_client = ros_node->create_client<Confirm>("/grasp_nodes_test/confirm_grasp");
   assert(run() == Status::SUCCESS);
-  assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "confirm", "return", "release_open", "release"}));
+  assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "return", "release_open", "release"}));
   assert(renewed > 0 && !leased);
   assert(!bb->get<std::string>(realman_bt::kTaskTokenKey).has_value());
   assert(!bb->get<std::shared_ptr<Plan::Result>>(realman_bt::kGraspPlanKey).has_value());
+
+  // Failure survives Sequence halt, Repeat, and TaskLease cleanup at the root.
+  tree.halt(); stages.clear(); fail_stage = "lift";
+  assert(run() == Status::FAILURE && !leased);
+  assert(tree.root()->failureReason().find("lift") != std::string::npos);
+  assert(tree.root()->failureReason().find("simulated stage failure") != std::string::npos);
+  fail_stage.clear();
+
+  // The production tree completes without any operator confirmation request.
+  // Retain separate lifecycle coverage for the optional GraspConfirm leaf.
+  tree.halt();
+  tree = parser.loadFromFile(CONFIRMATION_TEST_TREE_FILE, bb);
 
   // Every stage fails closed, releases once idle, and prevents later commands.
   const std::vector<std::string> task_stages{"open", "observe", "plan", "pregrasp", "grasp", "close", "lift", "confirm", "return", "release_open"};
@@ -234,7 +273,9 @@ int main(int argc, char** argv) {
   assert(stages[stages.size() - 3] == "return" && stages[stages.size() - 2] == "release_open");
   bool reported_failed = false;
   for (const auto& entry : diagnostics.snapshot().events) {
-    assert(entry.source == "EXECUTOR" || entry.source == "ACTION");
+    // grasp.xml embeds SaveCameraFrames (a service leaf) after plan/close/lift, so
+    // SERVICE joins EXECUTOR and ACTION as a legitimate diagnostic source here.
+    assert(entry.source == "EXECUTOR" || entry.source == "ACTION" || entry.source == "SERVICE");
     assert(entry.detail.find("test-secret") == std::string::npos);
     if (entry.phase == "observed_outcome" && entry.detail.find("failed_grasp;") == 0) reported_failed = true;
   }
@@ -323,10 +364,6 @@ int main(int argc, char** argv) {
   assert(drains.empty() && !leased);
   assert(stages == std::vector<std::string>({"acquire", "open", "observe", "plan", "release"}));
 
-  // Rejected physical readiness cannot acquire a lease or open the gripper.
-  tree.halt(); bb->set<bool>("grasp_execution_ready", false); stages.clear();
-  assert(run() == Status::FAILURE && stages.empty());
-
   // Readiness can arrive after a leaf was constructed. Expiry must be checked
   // again at async_send_goal/request, rather than only before client creation.
   tree.halt();
@@ -337,6 +374,32 @@ int main(int argc, char** argv) {
   delayed_plan->pregrasp_position_m = {0.2, 0.1, 0.3};
   delayed_plan->pregrasp_quaternion_wxyz = {1, 0, 0, 0};
   bb->set<std::shared_ptr<Plan::Result>>(realman_bt::kGraspPlanKey, delayed_plan);
+  // The driver's deadline can expire before its bounded stop/result arrives.
+  // Keep ticking beyond the motion deadline and retain the driver's diagnosis.
+  leased = true; delay_motion = true;
+  auto grace_tree = parser.loadFromText(
+      "<root main_tree_to_execute='M'><BehaviorTree ID='M'><GraspWaypoint arm_id='r' waypoint='pregrasp' velocity_percent='5' dry_run='false' timeout_sec='0.2' result_grace_sec='1'/></BehaviorTree></root>", bb);
+  deadline = std::chrono::steady_clock::now() + 3s;
+  while (!pending_motion && std::chrono::steady_clock::now() < deadline) {
+    pump(); assert(grace_tree.tickOnce() == Status::RUNNING);
+  }
+  assert(pending_motion);
+  const auto stop_until = std::chrono::steady_clock::now() + 350ms;
+  while (std::chrono::steady_clock::now() < stop_until) {
+    pump(); assert(grace_tree.tickOnce() == Status::RUNNING);
+  }
+  auto stopped_result = std::make_shared<Motion::Result>();
+  stopped_result->success = false;
+  stopped_result->message = "driver timeout: inactive after controlled stop";
+  pending_motion->abort(stopped_result); pending_motion.reset();
+  auto grace_status = Status::RUNNING;
+  deadline = std::chrono::steady_clock::now() + 500ms;
+  while (grace_status == Status::RUNNING && std::chrono::steady_clock::now() < deadline) {
+    pump(); grace_status = grace_tree.tickOnce();
+  }
+  assert(grace_status == Status::FAILURE);
+  assert(grace_tree.root()->failureReason().find(stopped_result->message) != std::string::npos);
+  grace_tree.halt(); leased = false; delay_motion = false;
   auto delayed_motion = parser.loadFromText(
       "<root main_tree_to_execute='M'><BehaviorTree ID='M'><GraspWaypoint arm_id='l' waypoint='pregrasp' velocity_percent='5' dry_run='false' timeout_sec='2'/></BehaviorTree></root>", bb);
   auto delayed_close = parser.loadFromText(

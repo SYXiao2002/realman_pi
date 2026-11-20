@@ -10,9 +10,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from grasp_bridge.geometry import from_pose, pose_drift, restricted_waypoints, to_pose
-from grasp_bridge.planner import choose_plan
-from grasp_bridge.rgbd import CameraModel, image_array, register_depth, validate_timing
+from grasp_bridge.geometry import (adjust_geometry_response, discard_out_of_workspace,
+                                   from_pose, pose_drift, restricted_waypoints, to_pose)
+from grasp_bridge.planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
+from grasp_bridge.rgbd import (CameraModel, crop_depth_to_workspace, image_array,
+                               register_depth, validate_timing)
 
 
 def camera(frame="optical"):
@@ -30,6 +32,39 @@ def test_registration_uses_extrinsic_baseline_and_nearest_surface():
     assert registered[4, 4] == 1.0
     assert registered[4, 3] == 0
     assert np.count_nonzero(registered) == 1
+
+
+def test_workspace_depth_crop_uses_camera_to_base_rotation_and_zeroes_outside():
+    depth = np.ones((2, 2), dtype=np.float32)
+    depth[1, 1] = 0
+    K = np.eye(3)
+    T_base_camera = np.eye(4)
+    T_base_camera[:3, :3] = [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]]
+    T_base_camera[:3, 3] = [.5, .5, 0.]
+    before = depth.copy()
+    cropped = crop_depth_to_workspace(
+        depth, K, T_base_camera,
+        [[.49, 1.49, .99], [.51, 1.51, 1.01]])
+    np.testing.assert_array_equal(cropped, [[0., 1.], [0., 0.]])
+    np.testing.assert_array_equal(depth, before)
+
+
+def test_workspace_depth_crop_keeps_float32_boundary_points_with_skew_intrinsics():
+    depth = np.full((3, 3), 0.4, dtype=np.float32)
+    K = np.array([[20., 2., 1.], [0., 20., 1.], [0., 0., 1.]])
+    workspace = [[-0.055, -0.02, 0.39999999],
+                 [0.055, 0.02, 0.40000001]]
+
+    cropped = crop_depth_to_workspace(depth, K, np.eye(4), workspace)
+
+    assert np.count_nonzero(cropped) == 9
+
+
+def test_workspace_depth_crop_rejects_invalid_box_or_missing_transform():
+    with pytest.raises(ValueError, match="workspace"):
+        crop_depth_to_workspace(np.ones((2, 2)), np.eye(3), np.eye(4), [[0, 0, 0], [0, 1, 1]])
+    with pytest.raises(ValueError, match="4x4"):
+        crop_depth_to_workspace(np.ones((2, 2)), np.eye(3), None, [[0, 0, 0], [1, 1, 1]])
 
 
 def test_image_decode_respects_padding_and_depth_units():
@@ -63,6 +98,57 @@ def test_capture_chain_and_grasp_tool_offset_compose_once():
     assert pose_drift(points["grasp"], points["lift"])[0] == pytest.approx(0.1)
 
 
+def test_bridge_geometry_offset_moves_all_contact_stages_and_preserves_native_pose():
+    Tbc = np.eye(4)
+    Tbc[:3, :3] = [[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]]
+    native = from_pose([.1, .2, .5], [1, 0, 0, 0])
+    before = native.copy(); before[2, 3] += .09
+    after = before.copy(); after[:3, :3] = np.diag([1., -1., -1.])
+    response = {"candidates": [{
+        "candidate_id": "c1", "backend": "geometry", "T_camera_native_grasp": native,
+        "T_camera_grasp": after, "T_camera_grasp_before_alignment": before,
+        "T_camera_grasp_after_alignment": after, "metrics": {"native_origin_offset_m": .09},
+    }], "diagnostics": {"archive_id": "frozen"}}
+
+    adjusted = adjust_geometry_response(response, {"backend": "geometry", "T_base_camera": Tbc}, offset_m=.2)
+    candidate = adjusted["candidates"][0]
+    down_camera = Tbc[:3, :3].T @ [0., 0., -.2]
+    for field, original in (("T_camera_grasp", after),
+                            ("T_camera_grasp_before_alignment", before),
+                            ("T_camera_grasp_after_alignment", after)):
+        np.testing.assert_allclose(candidate[field][:3, 3], original[:3, 3] + down_camera)
+        np.testing.assert_array_equal(candidate[field][:3, :3], original[:3, :3])
+    np.testing.assert_array_equal(candidate["T_camera_native_grasp"], native)
+    assert candidate["metrics"]["geometry_center_offset_m"] == .2
+    assert adjusted["diagnostics"]["geometry_center_offset_source"] == "grasp_bridge"
+
+
+def test_bridge_geometry_offset_is_consumed_by_planner_and_not_cgn():
+    candidate = {"candidate_id": "c1", "backend": "geometry", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    response = adjust_geometry_response({"candidates": [candidate]},
+                                        {"backend": "geometry", "T_base_camera": np.eye(4)},
+                                        offset_m=.2)
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .01, "lift_m": .01,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": 1., "clearance_m": 0.},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    plan = calculate_plan(response["candidates"], profile, np.eye(4))
+    assert plan["waypoints"]["grasp"]["position_m"] == pytest.approx([0., 0., .3])
+    cgn = {"candidate_id": "cgn", "backend": "contact_graspnet",
+           "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    cgn_adjusted = adjust_geometry_response({"candidates": [cgn]},
+                                             {"backend": "contact_graspnet", "T_base_camera": np.eye(4)},
+                                             offset_m=.2)
+    np.testing.assert_array_equal(cgn_adjusted["candidates"][0]["T_camera_grasp"], cgn["T_camera_grasp"])
+
+
+def test_bridge_geometry_offset_falls_back_to_candidate_approach_axis_without_calibration():
+    candidate = {"candidate_id": "c1", "backend": "geometry",
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    adjusted = adjust_geometry_response({"candidates": [candidate]}, {"backend": "geometry"}, offset_m=.01)
+    np.testing.assert_allclose(adjusted["candidates"][0]["T_camera_grasp"][:3, 3], [0., 0., .51])
+
+
 def test_invalid_rotation_and_workspace_escape_rejected():
     bad = np.eye(4)
     bad[0, 0] = -1
@@ -71,6 +157,33 @@ def test_invalid_rotation_and_workspace_escape_rejected():
     with pytest.raises(ValueError, match="corridor"):
         restricted_waypoints(np.eye(4), from_pose([0, 0, 0.9], [1, 0, 0, 0]), np.eye(4),
                              approach_m=0.1, lift_m=0.2, workspace=[[-1, -1, 0], [1, 1, 1]])
+
+
+def test_workspace_filter_discards_out_of_bounds_grasp_centers_before_planning():
+    T_base_camera = np.eye(4)
+    T_base_camera[:3, 3] = [.05, 0., .1]
+    candidates = [
+        {"candidate_id": "inside", "T_camera_grasp": from_pose([0, 0, .3], [1, 0, 0, 0])},
+        {"candidate_id": "outside", "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])},
+        {"candidate_id": "broken", "T_camera_grasp": None},
+    ]
+    filtered = discard_out_of_workspace({"candidates": candidates, "diagnostics": {"z_range_m": [.1, .9]}},
+                                        T_base_camera, [[-.1, -.1, .35], [.1, .1, .45]])
+    assert [item["candidate_id"] for item in filtered["candidates"]] == ["inside"]
+    report = filtered["diagnostics"]["workspace_filter"]
+    assert (report["input_candidates"], report["kept_candidates"], report["discarded_candidates"]) == (3, 1, 2)
+    reasons = {item["candidate_id"]: item["reason"] for item in report["discarded"]}
+    assert "outside workspace_m" in reasons["outside"] and "z=0.600" in reasons["outside"]
+    assert "unusable" in reasons["broken"]
+    # Existing diagnostics survive alongside the filter report.
+    assert filtered["diagnostics"]["z_range_m"] == [.1, .9]
+
+
+def test_workspace_filter_rejects_invalid_box_and_transform():
+    with pytest.raises(ValueError, match="workspace"):
+        discard_out_of_workspace({"candidates": []}, np.eye(4), [[0, 0, 0], [0, 1, 1]])
+    with pytest.raises(ValueError, match="4x4"):
+        discard_out_of_workspace({"candidates": []}, None, [[-1, -1, -1], [1, 1, 1]])
 
 
 def test_ik_rejects_first_candidate_then_samples_second_corridor():
@@ -95,3 +208,41 @@ def test_ik_rejects_first_candidate_then_samples_second_corridor():
     assert len(candidates) == 3 and candidates[0]["width_m"] == .1
     assert all(point[0] != .2 for point in visited)
     assert len(visited) >= 12  # endpoints alone cannot pass this evidence.
+
+
+def test_geometric_plan_is_independent_of_ik_and_keeps_pose_waypoints():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": 0.05, "lift_m": 0.05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    plan = calculate_plan([candidate], profile, np.eye(4))
+    assert plan["candidate_id"] == "c1"
+    assert all(item["joint_degrees"] is None for item in plan["waypoints"].values())
+    with_seed = attach_seed_joints(plan, [1, 2, 3, 4, 5, 6])
+    assert all(item["joint_degrees"] == [1, 2, 3, 4, 5, 6]
+               for item in with_seed["waypoints"].values())
+
+
+def test_all_rejected_candidates_remain_structured_on_exception():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .05, "lift_m": .05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0])}
+    with pytest.raises(NoReachableCandidate) as failure:
+        choose_plan([candidate], profile, np.eye(4), [0]*6, lambda *_: (_ for _ in ()).throw(ValueError("IK failed")),
+                    sample_step_m=.01, max_joint_step=15)
+    assert failure.value.rejections == [{"candidate_id": "c1", "reason": "IK failed"}]
+
+
+def test_collision_gate_blocks_even_without_ik_precheck():
+    profile = {"T_grasp_tcp": np.eye(4), "approach_m": .05, "lift_m": .05,
+               "gripper_geometry": {"min_opening_m": 0., "max_opening_m": .08, "clearance_m": .002},
+               "workspace_m": [[-1, -1, 0], [1, 1, 1]]}
+    candidate = {"candidate_id": "c1", "width_m": .03,
+                 "T_camera_grasp": from_pose([0, 0, .5], [1, 0, 0, 0]),
+                 "collision": {"status": "unknown"}}
+    with pytest.raises(NoReachableCandidate) as failure:
+        calculate_plan([candidate], profile, np.eye(4), collision_config={"blocking_statuses": ["unknown"]})
+    assert "collision status is unknown" in failure.value.rejections[0]["reason"]

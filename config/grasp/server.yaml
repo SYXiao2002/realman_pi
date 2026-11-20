@@ -9,7 +9,7 @@ models_manifest: models.yaml
 # Unmodified reference files are supplied by a named Docker build context.
 # For host replay use --reference-backend /path/to/chaung_wei_2_jiao_fu/backend.
 reference_backend: /opt/grasp/reference/backend
-detection_confidence: 0.5
+detection_confidence: 0.25
 # Same inputs/seed/warmup as tools/offline_grasp/evaluate.py. No extra filters.
 z_range_m: [0.2, 1.5]
 seed: 42

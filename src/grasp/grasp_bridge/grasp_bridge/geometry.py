@@ -59,6 +59,97 @@ def pose_drift(a, b):
     return float(np.linalg.norm(a[:3,3]-b[:3,3])), angle
 
 
+def apply_geometry_center_offset(T_camera_grasp, T_base_camera=None, *, offset_m=0.0):
+    """Move a geometry contact pose down after backend inference.
+
+    The correction keeps the grasp axes unchanged. With a capture-time base
+    transform, ``-Z`` is expressed in camera coordinates; without one, the
+    candidate's local approach axis is the only available fallback.
+    """
+    T = transform(T_camera_grasp)
+    offset_m = float(offset_m)
+    if not math.isfinite(offset_m) or not 0 <= offset_m <= 0.2:
+        raise ValueError("geometry center offset must be finite in [0, 0.2]")
+    if offset_m == 0:
+        return T
+    if T_base_camera is None:
+        down_camera = T[:3, 2]
+    else:
+        base = transform(T_base_camera)
+        down_camera = base[:3, :3].T @ np.array([0.0, 0.0, -1.0])
+    T[:3, 3] += down_camera * offset_m
+    return T
+
+
+def adjust_geometry_response(response, request, *, offset_m=0.0):
+    """Apply bridge-owned geometry correction to a backend response."""
+    adjusted = dict(response)
+    backend = request.get("backend")
+    candidates = []
+    for candidate in response.get("candidates", []):
+        item = dict(candidate)
+        if backend == "geometry":
+            for field in ("T_camera_grasp", "T_camera_grasp_before_alignment",
+                          "T_camera_grasp_after_alignment"):
+                if item.get(field) is not None:
+                    item[field] = apply_geometry_center_offset(
+                        item[field], request.get("T_base_camera"), offset_m=offset_m)
+            metrics = dict(item.get("metrics") or {})
+            metrics["geometry_center_offset_m"] = float(offset_m)
+            metrics["geometry_center_offset_source"] = "grasp_bridge"
+            item["metrics"] = metrics
+        candidates.append(item)
+    adjusted["candidates"] = candidates
+    diagnostics = dict(response.get("diagnostics") or {})
+    diagnostics["geometry_center_offset_m"] = float(offset_m) if backend == "geometry" else 0.0
+    diagnostics["geometry_center_offset_source"] = "grasp_bridge"
+    adjusted["diagnostics"] = diagnostics
+    return adjusted
+
+
+def discard_out_of_workspace(response, T_base_camera, workspace):
+    """Drop candidates whose grasp center leaves the base-frame workspace box.
+
+    The center is the contact-frame origin of ``T_camera_grasp`` after backend
+    alignment and the bridge-owned offset, mapped into the base frame with the
+    frozen capture transform. Discarding happens before collision annotation
+    and planning so out-of-workspace poses never consume IK or corridor checks;
+    the corridor in :func:`restricted_waypoints` still validates the full
+    pregrasp/grasp/lift path of every surviving candidate. The counts and
+    per-candidate reasons are recorded in the response diagnostics, which the
+    review snapshot forwards as ``server_diagnostics``.
+    """
+    adjusted = dict(response or {})
+    candidates = list(adjusted.get("candidates", []))
+    base = transform(T_base_camera)
+    bounds = np.asarray(workspace, dtype=float)
+    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[0] >= bounds[1]):
+        raise ValueError("workspace must contain measured min/max xyz")
+    kept, discarded = [], []
+    for candidate in candidates:
+        item = dict(candidate)
+        try:
+            center = (base @ transform(item["T_camera_grasp"]))[:3, 3]
+        except (KeyError, TypeError, ValueError) as exc:
+            reason = f"grasp center is unusable: {exc}"
+        else:
+            reason = None if np.all(center >= bounds[0]) and np.all(center <= bounds[1]) else (
+                "grasp center outside workspace_m: "
+                + ", ".join(f"{axis}={value:.3f}" for axis, value in zip("xyz", center)))
+        if reason is None:
+            kept.append(item)
+        else:
+            discarded.append({"candidate_id": item.get("candidate_id"), "reason": reason})
+    adjusted["candidates"] = kept
+    diagnostics = dict(adjusted.get("diagnostics") or {})
+    diagnostics["workspace_filter"] = {
+        "input_candidates": len(candidates), "kept_candidates": len(kept),
+        "discarded_candidates": len(discarded), "discarded": discarded,
+    }
+    adjusted["diagnostics"] = diagnostics
+    return adjusted
+
+
 def restricted_waypoints(T_base_camera, T_camera_grasp, T_grasp_tcp, *, approach_m, lift_m, workspace):
     """TCP endpoints and straight corridor in a measured axis-aligned convex box.
 

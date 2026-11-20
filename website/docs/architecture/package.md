@@ -23,6 +23,7 @@ realman_pi/
 │   ├── driver/               realman_robot_driver、realman_msgs、realman_web_control、xbox_controller_driver
 │   ├── gripper/              gripper_ros2、gripper_ros2_msgs（左右 42D，保留可选 Changingtek 支持）
 │   ├── grasp/                纯 Python 算法服务与协议 + ROS grasp_bridge（纯规划）
+│   ├── pose6d/               FoundationPose 单帧推理、RGB-D bridge 与受门禁的吸盘点动
 │   ├── policy_bridge/        VLA 策略 WebSocket ⇄ ROS 2 协议桥
 │   ├── recording/            数据录制与回放：realman_recording、realman_recording_msgs
 │   ├── realman_bringup/      系统 launch 编排
@@ -55,6 +56,7 @@ realman_pi/
 | `gripper_ros2`、`gripper_ros2_msgs` | Python / IDL | 夹爪 manager：串口独占、service/topic | `gripper_manager` |
 | `realman_recording`、`realman_recording_msgs` | Python / IDL | 只订阅的数据录制：recorder、预检、LeRobot v3 导出、Web 实时与回放页 | `recording.launch.py`、`recording_runtime_probe` |
 | `grasp_bridge` | Python | 腕 RGB-D 配对/配准、WS 推理、TCP 转换与受限 IK，不执行运动 | `grasp_bridge.launch.py` |
+| `pose6d_bridge` | Python | 单帧 RGB-D + mask 位姿、筛查和可选吸盘 MOVEL 点动；运动默认禁用 | `pose6d_bridge_node` |
 | `policy_bridge` | Python | 策略 WebSocket 桥与 mock 策略服务 | `policy_bridge_node`、`mock_policy_server` |
 | `realman_camera_calibration` | Python | ChArUco 采样与手眼求解 | `camera_calibration_node` |
 | `sensor_bringup`、宿主机 `orbbec_camera` | Python / 二进制 ROS 包 | 四路 Orbbec RGB 启动与出图；厂商驱动不由本仓库构建 | `src/sensor_bringup/scripts/host_cameras.py` |

@@ -1,0 +1,7 @@
+# Use the checked-in SAM2.1 Hiera Tiny source and a read-only checkpoint mount.
+model_config: configs/sam2.1/sam2.1_hiera_t.yaml
+checkpoint_path: /models/sam2.1_hiera_tiny.pt
+checkpoint_sha256: 7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69
+max_detections: 16
+max_image_pixels: 1000000
+max_mask_bytes: 16777216

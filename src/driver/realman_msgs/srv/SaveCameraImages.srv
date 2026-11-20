@@ -1,0 +1,15 @@
+# Snapshot request from a behavior-tree leaf. image_topics carries the full
+# camera image topics to capture (for example /camera_left/color/image_raw);
+# directory is the absolute destination folder; timeout_sec bounds how long the
+# server waits for one fresh frame per topic before giving up.
+string[] image_topics
+string directory
+float64 timeout_sec
+# Optional session tag. The server names each frame <label>_<session_id>.jpg so
+# the after_plan/after_close/after_lift captures of one grasp cycle share a tag
+# and can be grouped. Empty keeps the original <label>_<capture-timestamp>.jpg.
+string session_id
+---
+bool success
+string message
+string[] saved_paths

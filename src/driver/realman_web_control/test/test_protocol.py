@@ -72,6 +72,94 @@ def test_plan_grasp_is_read_only_and_armless():
                                   "target_label": "eu"}))
 
 
+def test_tool_power_commands_have_strict_fields_and_boolean_value():
+    assert parse_message('{"type":"tool_power_status","request_id":"power-read"}') == {
+        "type": "tool_power_status", "request_id": "power-read",
+    }
+    assert parse_message('{"type":"tool_power_set","request_id":"power-set","enabled":true}') == {
+        "type": "tool_power_set", "request_id": "power-set", "enabled": True,
+    }
+    for message in (
+        {"type": "tool_power_status", "request_id": "power-read", "enabled": False},
+        {"type": "tool_power_set", "request_id": "power-set", "enabled": 1},
+        {"type": "tool_power_set", "request_id": "power-set", "enabled": False, "arm": "l"},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(message))
+
+
+def test_tool_power_set_is_blocked_by_read_only_policy():
+    from realman_web_control.protocol import reject_if_read_only
+
+    with pytest.raises(ProtocolError, match="read-only"):
+        reject_if_read_only("tool_power_set", True, "power-set")
+    reject_if_read_only("tool_power_status", True, "power-read")
+
+
+def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
+    select_tool = {"type": "pose6d_select_tool", "request_id": "t1", "tool_name": "tcpsuck"}
+    assert parse_message(json.dumps(select_tool)) == select_tool
+    prepare = {"type": "pose6d_prepare", "request_id": "p1", "observation_id": "o1", "result_id": "r1",
+               "grasp_id": "left", "review_confirmed": True, "warning_confirmed": False}
+    assert parse_message(json.dumps(prepare)) == prepare
+    jog = {"type": "pose6d_jog", "request_id": "j1", "session_id": "s1", "step_mm": -2.5}
+    assert parse_message(json.dumps(jog)) == jog
+    auto = {"type": "pose6d_auto_suction", "request_id": "a1", "session_id": "s1"}
+    assert parse_message(json.dumps(auto)) == auto
+    heartbeat = {"type": "pose6d_heartbeat", "request_id": "h1", "session_id": "s1"}
+    assert parse_message(json.dumps(heartbeat)) == heartbeat
+    assert parse_message('{"type":"pose6d_close","request_id":"c1"}') == {
+        "type": "pose6d_close", "request_id": "c1", "session_id": "",
+    }
+    for invalid in (
+        {**jog, "pose_position_m": [0, 0, 0]},
+        {**jog, "step_mm": 0},
+        {**jog, "step_mm": float("nan")},
+        {**prepare, "review_confirmed": 1},
+        {**auto, "vacuum_confirmed": 1},
+        {**auto, "speed_percent": 10},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+
+
+def test_pose6d_automatic_segmentation_selects_only_a_bridge_owned_instance():
+    segment = {"type": "pose6d_segment", "request_id": "s1", "observation_id": "o1"}
+    assert parse_message(json.dumps(segment)) == segment
+    preview = {"type": "pose6d_preview", "request_id": "p1", "observation_id": "o1",
+               "instance_id": "o1:0"}
+    assert parse_message(json.dumps(preview)) == preview
+    infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(infer)) == infer
+    for invalid in (
+        {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1"},
+        {**infer, "mask_png": "encoded"},
+        {**preview, "mask_png": "encoded"},
+        {**segment, "instance_id": "o1:0"},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+    preview = {"type": "pose6d_preview", "request_id": "p1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(preview)) == preview
+    infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
+    assert parse_message(json.dumps(infer)) == infer
+    manual = {"type": "pose6d_infer", "request_id": "i2", "observation_id": "o1", "mask_png": "abc"}
+    assert parse_message(json.dumps(manual)) == manual
+    for invalid in (
+        {**infer, "mask_png": "abc"},
+        {"type": "pose6d_preview", "request_id": "p2", "observation_id": "o1"},
+        {**infer, "mask": [1]},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(invalid))
+
+
+@pytest.mark.parametrize("kind", ["clients", "pose6d_clients", "client_connected", "client_disconnected"])
+def test_browser_cannot_spoof_internal_socket_membership(kind):
+    with pytest.raises(ProtocolError):
+        parse_message(json.dumps({"type": kind, "request_id": "spoof", "client_ids": []}))
+
+
 @pytest.mark.parametrize("mode", ["", "Policy", "pika!", "a-b", "a_b", "2policy", "策略", "a" * 97])
 def test_select_input_mode_rejects_invalid_identifiers(mode):
     with pytest.raises(ProtocolError, match="mode_id"):
@@ -138,6 +226,7 @@ def test_calibration_messages_require_one_supported_arm():
         '"session_id":"","start_new_session":true,"arm_id":"r"}'
     )
     assert capture["arm_id"] == "r"
+    assert capture["purpose"] == ""
     solved = parse_message(
         '{"type":"solve_calibration","request_id":"solve-1","session_id":"session-1","arm_id":"r"}'
     )
@@ -155,6 +244,37 @@ def test_calibration_messages_require_one_supported_arm():
     for arm in ("m", "", ["l", "r"]):
         with pytest.raises(ProtocolError, match="arm_id"):
             parse_message(json.dumps({"type": "solve_calibration", "request_id": "s", "arm_id": arm}))
+
+
+def test_calibration_capture_purpose_is_constrained():
+    verify = parse_message(
+        '{"type":"capture_calibration_sample","request_id":"cap-v",'
+        '"session_id":"","start_new_session":true,"arm_id":"r","purpose":"verify"}'
+    )
+    assert verify["purpose"] == "verify"
+    with pytest.raises(ProtocolError, match="purpose"):
+        parse_message(
+            '{"type":"capture_calibration_sample","request_id":"cap-x",'
+            '"session_id":"","start_new_session":true,"arm_id":"r","purpose":"calibrate"}'
+        )
+
+
+def test_verify_calibration_message_is_normalized():
+    parsed = parse_message(
+        '{"type":"verify_calibration","request_id":"ver-1","arm_id":"r",'
+        '"baseline_session_id":"session-a","verify_session_id":"session-b"}'
+    )
+    assert parsed == {
+        "type": "verify_calibration",
+        "request_id": "ver-1",
+        "arm_id": "r",
+        "baseline_session_id": "session-a",
+        "verify_session_id": "session-b",
+    }
+    with pytest.raises(ProtocolError, match="baseline_session_id"):
+        parse_message(
+            '{"type":"verify_calibration","request_id":"ver-2","arm_id":"r","verify_session_id":"session-b"}'
+        )
 
 
 def test_kinematics_messages_are_normalized():

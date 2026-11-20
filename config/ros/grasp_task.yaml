@@ -1,13 +1,17 @@
-# Behavior-tree task controls only. Geometry and robot identities stay in
-# grasp_profiles.yaml; inference/capture settings stay in grasp_bridge.yaml.
+# Behavior-tree task controls only. Profile and backend are shared with
+# grasp.html through grasp_bridge.yaml; robot geometry stays in grasp_profiles.yaml.
 version: 1
-profile: right_wrist
-# Pick an explicit supported class before live execution. null fails validation.
-target_label: null
-backend: geometry  # geometry/contact_graspnet; mock is isolated replay only.
-lease_ttl_sec: 5.0
+# The lease spans gripper preparation, observation/inference, and all grasp
+# waypoints. The BT renews it while the task is running.
+# Number of complete grasp cycles: -1 keeps repeating until stopped; a positive
+# value runs that many successful cycles. Any failed cycle stops the task.
+cycles: -1
+lease_ttl_sec: 10800.0
 acquire_timeout_sec: 10.0
 motion_timeout_sec: 30.0
+# Let the driver finish its bounded stop and return diagnostic results before
+# the BT cancels an unresponsive Action. This does not extend robot motion.
+motion_result_grace_sec: 5.0
 plan_timeout_sec: 30.0
 # Existing 42D manager waits up to 20 seconds for an endpoint response.
 gripper_timeout_sec: 25.0

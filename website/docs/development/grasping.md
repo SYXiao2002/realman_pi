@@ -5,12 +5,59 @@ description: 纯 Python/CUDA WebSocket 抓取服务、左右腕配置、右臂�
 
 # 独立抓取算法与腕部规划桥
 
+## 单帧 6D 位姿开发状态
+
+`src/pose6d/pose6d/` 包含独立的 FoundationPose 单帧注册服务、二值 mask 和 RGB-D 数据校验、原始 OBJ 轮廓与深度筛查、观测绑定、吸盘几何和服务端点动状态机。算法服务的二进制 WebSocket 使用 `grasp_protocol` 的有界 MessagePack 编码；模型由 OBJ 文件的 SHA-256 标识。筛查阈值未校准时返回 `insufficient_evidence`，不会把网络分数当作概率。筛查通过也不能证明位姿正确。
+
+`config/docker/compose.pose6d.yaml` 和相邻 FoundationPose 仓库的 `docker/pose6d-server.Dockerfile` 定义独立 GPU 镜像，默认从相邻的 `FoundationPose` 目录读取构建源，并只读挂载权重和 `eu_plug` 网格。可通过 Compose 文件中的 `POSE6D_*` 变量调整来源；服务默认只绑定本机 WebSocket 8092 和历史 HTTP 8095 端口。算法服务、历史存储和查看页面均由 FoundationPose 仓库维护，线上固定 `debug=2`；本仓库仅保留 ROS 客户端和 `/6d_pose_history/` 同源代理。历史通过专用持久化 volume 保存，主页面和 `/6d_pose.html` 均提供入口。已用本地 BundleSDF CUDA 基础镜像和固定提交的 nvdiffrast 源码缓存构建，并以真实欧规插头 RGB-D 和 mask 完成容器 WebSocket 推理。默认基础镜像的构建尚未验证。
+
+ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载 RGB、上传单通道 8 位 PNG mask、单帧推理和相机系点云/OBJ/吸盘审阅。Mask 必须与下载 RGB 来自同一观测且分辨率一致；页面提醒操作者确认来源，系统不能从文件内容证明这一点。服务端预注册模型，请求传递模型 ID 与哈希。`pose6d_bridge` 在主 Compose 的 `pose6d` profile 中，参数位于 `config/ros/pose6d_bridge.yaml`。2026-11-10 已从真实 `/6d_pose.html` 页面完成 right wrist RGB-D 采集，RGB 与 Depth 为 848×530，frame 为 `camera_right_color_optical_frame`，标定状态为 `available`。
+
+3D 预览以冻结的采集相机坐标系为原点；坐标轴按 X 红、Y 绿、Z 蓝显示。橙色箭头为朝外表面法向 `n`，青色箭头为标注原始切向参考 `tangent_ref_obj` 经物体旋转后的方向，接触系红色 X 轴为该参考在切平面上的归一化投影，+Z 为进给方向 `-n`。吸取方式下拉框选中哪个，就只显示该方式的吸盘、接触区域、法向、切向参考、坐标轴与标签；其他候选隐藏。紫色吸盘显示所选方式沿朝外法向偏移 40 mm 的准备位，并显示对应接触/TCP 坐标系。其 `T_camera_prepare_contact`、`T_camera_prepare_tcp` 由后端使用运动相同的坐标变换计算；浏览器选择图层和吸取方式不发送动作。
+
+`pose6d_frames` 每 0.2 秒广播当前控制器工具的 BASE 位姿 `T_base_tcp` 和当前相机位姿 `T_base_camera_live`，从新鲜法兰 TF、已匹配的活动工具及手眼标定计算。页面以采集时 `T_base_camera` 的逆矩阵把实时坐标轴放入冻结场景，机械臂移动时点云/物体保持固定，当前 TCP 和相机坐标轴更新。反馈丢失、TF 过旧或工具不匹配时隐藏实时轴并显示原因；页面超过 1.5 秒未收到遥测也隐藏实时轴。“显示全部”重新取景以包含可见工作区、相机原点、物体、所选吸取方式的准备位和当前 TCP。
+
+“配置工作区”与切向参考、相机、当前 TCP、准备位使用同一排 checkbox，可随时显示或隐藏。线框盒直接来自运行中 bridge 的 `motion.workspace_m`（`config/ros/pose6d_bridge.yaml` 及本地覆盖），以 `base_frame` 为坐标系、单位米；页面标明 BASE frame 及 XYZ 毫米范围。采集、推理和遥测事件均携带这两个字段。盒体用采集时 `T_base_camera` 的逆矩阵放入冻结场景，跟随实时相机移动不会改变其位置；缺少采集手眼变换或有效范围时不绘制，实时工具遥测暂时丢失不影响已有工作区显示。该范围约束运动中的 TCP 和吸盘扫掠体；显示开关只控制绘图。
+
+### 吸盘运动接线与当前门禁
+
+“吸盘与运动”中的右臂工具端电源开关控制电磁阀：24 V 开启吸盘，0 V 关闭吸盘。手动切换调用 `/r/tool_power`，等待驱动回读确认后显示结果；运动会话持有租约时禁用手动切换。
+
+在准备位点击“自动接近并提升”后，bridge 先通过带当前任务令牌的 `/r/tool_power_control` 开启并验证 24 V，再执行 `40 → 5 → 0 mm` 接近和 BASE +Z 提升。只有提升成功且 TCP 到位回读确认后才关闭到 0 V，不再要求勾选“外部开启真空”。这些操作由服务端完成，浏览器断线不会跳过提升后的关闭。中途停止或运动失败时保持吸附；电源切换失败或结果未知时阻断后续运动并显示未确认状态，不自动重试。运动事件的 `tool_power` 携带本会话的电源回读，页面同时更新开关和状态文字；吸附红绿灯继续使用独立真空传感器反馈。
+
+网页只发送当前 observation/result/grasp/session ID、人工复核确认和有符号毫米步长，不接受浏览器提供任意目标位姿。`pose6d_bridge` 通过 `MotionRosPort` 读取 `/<arm>/get_current_pose`，检查采样路径的工作区，以 `/<arm>/task_control` 持有驱动租约，并通过 `/<arm>/execute_motion` 的 BASE/MOVEL 执行；运动前不做逐点 IK 或关节连续性预检。只有 ROS Action 成功、驱动结果成功且 TCP 回读与目标位置/方向及停稳状态相符，才提交当前 `x`。准备按钮移动到法向线上 `+40 mm`；之后 `+` 沿法向远离物体，`−` 沿法向靠近，步长可调且距离允许跨过零变为负数。每次最多一个在途命令；页面切后台和浏览器断线不会停止已下发的动作，断线后 bridge 等待当前动作终态再释放会话。人工停止、工具/坐标变化或未知 Action 结果仍会停止或锁定会话，不自动重发。
+
+冻结 observation 不再按经过时间自动失效，已移除 `motion.observation_validity_sec`。离线制作 mask 后仍可使用同一观测，运动中也不因观测年龄中止；重新采集、更换 mask/工具、断线或显式关闭会话仍会清理相应审阅身份。场景改变时操作者需要重新采集。实时关节反馈、工具匹配、页面心跳和任务租约的检查继续有效。
+
+观测归属绑定实际浏览器 WebSocket 连接。Web control 每秒、连接变更及转发 pose6d 请求前发送在线连接全集；bridge 会清理已不在线的 owner，覆盖网页服务单独重启或断线通知丢失的情况。断线时仍在进行的采集/推理会在完成后清理，不能重新锁住旧身份。其他仍在线页面保留其观测归属；断线后的运动由 bridge 等待终态，之后释放任务租约并关闭旧会话，新页面必须重新采集。无法确认终态或释放租约时保留锁定，不允许新页面绕过。该机制按连接状态清理，与 observation 年龄无关。
+
+`fresh, stationary six-joint feedback is unavailable` 表示无法确认最新的六关节反馈和连续停稳区间。新鲜度只约束最新样本和相邻反馈间隔，停稳检查使用覆盖完整 `settle_sec` 的历史，而非只保留 `maximum_joint_state_age_sec` 内的样本；两项参数来自 `config/ros/grasp_bridge.yaml`，允许停稳时间大于单条反馈新鲜度。超时消息包含具体原因：反馈过旧、时间戳重复/倒序、数据间隙、历史长度不足或测得关节速度过高。
+
+用户提供的吸盘直径已登记为 **10 mm**，用于渲染吸盘圆盘和扫掠几何。右臂控制器工具 `tcpsuck` 的法兰偏移与方向由 `config/ros/realman_coordinates.yaml` 定义，现场调整安装尺寸后应以该文件和控制器匹配回读为准；`T_contact_tcp` 为单位变换，因为选中的 `tcpsuck` TCP 原点就是吸盘接触点。运动配置已启用，实时坐标状态回报当前工具为 `tcpsuck` 且与配置匹配。该状态只验证软件和控制器坐标一致；实机吸盘接触点/法线、外接头包络、运动边界和接触行为尚未完成验证。`T_contact_tcp` 仍可用接触系中的 TCP 原点 `xyz_m` 和 `[roll, pitch, yaw]` `rpy_rad` 配置；角度单位为弧度，按 `Rz(yaw) Ry(pitch) Rx(roll)` 转成内部矩阵。不要用 10 mm 直径推导 TCP 或安全压入行程。运动配置用同目录 `pose6d_bridge.local.yaml` 深合并，保存后重启桥；缺少运动参数时采集、解算和可视化仍可使用。
+
+运动路径不进行点云或其他障碍物碰撞检测，因为腕部深度点云可能包含吸盘自身。工作区检查不能证明全臂或路径没有碰撞；配置 `allow_partial_scene: true` 表示接受此限制，操作者须逐次检查整个运动路径和筛查告警。负 `x` 表示相对估计表面继续向内的目标位置，不是测得的吸盘压缩量；系统没有力控或接触力限制。
+
+运行步骤（机器人侧使用主 compose 的 host network，算法端口仅绑定宿主机 loopback）：
+
+```bash
+docker compose --project-directory . -f config/docker/compose.pose6d.yaml up -d pose6d_server
+./rm65 up
+```
+
+`./rm65 up`（含 `desktop`、`policy`）统一管理 `pose6d_bridge`，`down` 会先停止 bridge，`status`/`logs` 包含它。已有生产图时，也可单独使用 `docker compose --profile pose6d up -d pose6d_bridge`；FoundationPose 算法容器独立于 `rm65` 的启停。
+
+打开 `http://<robot-host>:8765/6d_pose.html`。若算法尚未就绪，检查 `config/docker/compose.pose6d.yaml` 服务日志和 `config/ros/pose6d_bridge.yaml` 的 `ws_uri`。首次 Docker 构建可按前面的 FoundationPose 基础镜像/本地缓存说明指定 `POSE6D_BASE_IMAGE`、`POSE6D_USE_PREINSTALLED_PYTORCH3D` 和 `POSE6D_NVDIFFRAST_SOURCE`。
+
+宿主 ROS 环境中 pose6d Python 测试 26 项、Web 协议测试 33 项和目标 ROS 包测试 281 项通过；WebControl 桌面/移动回归 116 项通过。包含 bridge 的 ROS 镜像已重建。模型服务容器已用实帧完成推理，且 WebSocket ready 返回注册模型身份。
+
+右腕相机到网页的真实采集链路现已验证。`tcpsuck` 配置已在实时右臂坐标状态中得到匹配回读，运动状态机已接入服务端 Action 与任务租约适配，当前运动配置已启用；尚未执行实机运动或吸取测试。使用前仍须现场核实吸盘接触点和法线方向、本体外形、路径及工作区，实施范围和未完成项见仓库 `docs/plans/2026-11-10-6d-pose-suction.md`。
+
 算法服务在独立 Docker 内运行，通过 WebSocket 接收 RGB-D 和目标类别，直接调用 `chaung_wei_2_jiao_fu` 的原始算法，返回相机坐标系中的抓取候选。容器不安装 ROS 2。机器人侧 `grasp_bridge` 采集观测、冻结坐标并筛选计划；行为树负责动作编排，机器人与夹爪驱动负责控制权和实际执行。
 
-首版选右臂与右腕相机，场景限定静态桌面、停稳观测及经过验证的接近走廊。不需要 global 相机或多臂基座标定。左腕使用独立 profile、标定和几何，完成验收后复用同一算法服务。
+首版选右臂与右腕相机，场景限定静态桌面和停稳观测。不需要 global 相机或多臂基座标定。左腕使用独立 profile、标定和几何，复用同一算法服务。
 
 ::: warning 实测状态
-仓库中的抓取配置尚未完成物理验收：手眼结果、真实 42D 开口和指爪、TCP 关系、观察位、返回位与工作区均需现场确认。空值和 `verified: false` 会阻止真实计划或执行。软件测试通过不代表机器人已经抓取成功。
+行为树不再要求人工填写 `verified`、测量误差或走廊审批字段。操作者负责确认共享配置与现场设备相符，并承担实机运行风险；软件不会替操作者认证抓取安全。必需的矩阵、位姿、工作区和夹爪尺寸仍须存在且格式有效。
 :::
 
 ## 组件与源码
@@ -32,6 +79,7 @@ flowchart TB
 | 公共协议 | `src/grasp/grasp_protocol/` | 有界 MessagePack/NumPy、身份与矩阵校验 |
 | 算法封装 | `src/grasp/grasp_server/` | 原始 InferenceWorker 的输入、输出、溯源与归档；不另写候选算法 |
 | ROS 规划 | `src/grasp/grasp_bridge/` | 配对、D2C、拍照 TF、IK、诊断和可视化 |
+| 单帧位姿与吸盘 | `src/pose6d/` | FoundationPose 注册、筛查、RGB-D bridge、吸盘预览与受门禁的逐步 MOVEL |
 | 任务编排 | `src/behavior/realman_bt/` | 任务控制权、抓取阶段、取消和故障处理 |
 | 标定 | `src/sensor/realman_camera_calibration/` | 左右腕依次独立会话，不推导臂间布局 |
 
@@ -56,13 +104,13 @@ flowchart LR
 
 | 权威文件 | 内容 |
 | --- | --- |
-| `config/ros/grasp_profiles.yaml` | 臂、相机、夹爪、工具引用、姿态和受限工作区 |
+| `config/ros/grasp_profiles.yaml` | 臂、相机、夹爪、工具引用、姿态、受限工作区（TCP 走廊）与碰撞检测区 |
 | `config/ros/camera_extrinsics.yaml` | 经过审批的单臂手眼身份、矩阵及独立验证误差 |
-| `config/ros/grasp_task.yaml` | 目标与后端、租约、各阶段及人工确认超时 |
-| `config/ros/grasp_bridge.yaml` | WS 地址、模型身份、时序、停稳和规划限制 |
+| `config/ros/grasp_task.yaml` | 目标、租约和各阶段超时；profile/backend 默认来自 `grasp_bridge.yaml` |
+| `config/ros/grasp_bridge.yaml` | WS 地址、模型身份、时序、停稳、规划限制、接触中心偏移和点云夹爪防碰阈值 |
 | `config/grasp/gripper_specs.yaml` | 真实指爪和开口；兼容位置值不是毫米 |
 | `config/grasp/models.yaml` | 模型与原始算法文件哈希、CGN 原生坐标约定 |
-| `config/grasp/server.yaml` | 独立服务后端、原项目路径、种子、warmup、CGN context、归档和推理期限 |
+| `config/grasp/server.yaml` | 独立服务后端、原项目路径、种子、warmup、CGN context、归档和推理期限；不负责几何接触中心偏移 |
 | `config/docker/compose.grasp.yaml` | 算法容器；正常机器人启动不会拉起它 |
 
 默认 profile 是 `right_wrist`；`left_wrist` 保留独立配置且未验收。选用哪个 profile，就使用它的相机、基座、法兰、IK namespace 和夹爪。TCP 只引用 `realman_coordinates.yaml` 的工具，不复制另一份偏移。更换相机安装或夹爪后重新确认相关身份和测量。
@@ -75,7 +123,7 @@ flowchart LR
 
 桥接默认订阅所选腕相机的原始 RGB、原始深度和各自 CameraInfo。它检查消息时间差、新鲜度、光学 frame、分辨率与标定内参哈希，依据实际光学外参进行 D2C 重投影，并用最近表面 z-buffer 处理遮挡。深度不会通过 resize 对齐。RGB 同时去畸变，发送的 K 与对齐深度属于同一针孔图像。`16UC1` 按毫米转换为米，`32FC1` 已是米；无效深度为零。
 
-采集前需要连续、足够新鲜的关节反馈证明停稳；缺少 velocity 字段时由连续位置计算速度。机器人规划要求经过验证的近俯视观察方向。只读评估允许缺少手眼导出的向上向量，此时向原几何生成器传入 `None`，与原离线采集一致。
+采集前需要连续、足够新鲜的关节反馈证明停稳；缺少 velocity 字段时由连续位置计算速度。规划和 IK 完成后，桥接会在 `config/ros/grasp_bridge.yaml` 的 `post_plan_settle_timeout_sec` 窗口内等待新的、连续停稳的关节反馈，再检查最新 TF 与拍照姿态的漂移；这样可吸收规划期间机械臂刚停下或反馈短暂断流的情况，持续运动或反馈长期过期仍会拒绝旧计划。`robot_state_publisher` 的 `/joint_states` 订阅 QoS 与 RealMan driver 的 RELIABLE 发布对齐，避免 BEST_EFFORT 订阅端丢样造成派生 TF 间断。最新 flange TF 被拒绝时，错误会包含 frame、TF 时间戳、查询时刻和 age，便于区分陈旧、未来时间戳与调度延迟。机器人规划要求经过验证的近俯视观察方向。只读评估允许缺少手眼导出的向上向量，此时向原几何生成器传入 `None`，与原离线采集一致。
 
 统一使用 `T_A_B` 将 B 中的点变换到 A：
 
@@ -92,11 +140,27 @@ T_base_tcp = T_base_flange(t_capture) × T_flange_color
 
 几何候选生成后，算法服务直接调用原项目 `grasp_selection.py` 的 `align_grasp_to_base_vertical`：使用采集时冻结的 `T_base_camera`，把接近轴强制对齐所选基座的 −Z，并保留接触中心。该函数连同原 worker 一起原样复制、校验源码哈希，不维护另一份对齐算法。与原在线服务一致，Contact-GraspNet 不执行这一步。
 
-每个候选保留生成时的 `T_camera_native_grasp` 和对齐后的 `T_camera_native_grasp_aligned`；`T_camera_grasp_before_alignment` / `T_camera_grasp_after_alignment` 是各阶段转换到接触中心的矩阵。原点转换仅沿该阶段本地 Z 移动：几何使用原 worker 的 wrist offset，CGN 使用 manifest 固定的 native hand depth。`T_camera_grasp` 在对齐成功时采用对齐后结果，规划直接消费该矩阵；分数、宽度、目标归属和候选顺序不变。`vertical_alignment.status` 为 `applied`、`missing_base_camera` 或 `backend_not_applicable`。只读评估缺少基座变换时保留生成结果，对齐后字段为 null；几何真实规划缺少该变换会拒绝推理。CGN 的对齐后字段也为 null，页面明确标注沿用原始结果。
+后端返回候选后，`grasp_bridge` 才应用 `config/ros/grasp_bridge.yaml` 中的 `geometry_center_offset_m`。正值以米为单位沿采集时所选基座的 −Z 下移；例如 `0.01` 表示下移 10 mm，实际值以该配置为准；设为 `0` 可恢复未偏移结果。bridge 同时调整 `T_camera_grasp`、`T_camera_grasp_before_alignment` 和 `T_camera_grasp_after_alignment`，所以可视化、Pose 卡片、规划和 evaluation 快照使用同一份结果；`T_camera_native_grasp` 与 `T_camera_native_grasp_aligned` 保留后端原始矩阵。该偏移只应用于 geometry，不应用于 Contact-GraspNet。Web 三维/投影视图以调整后的接触中心为坐标原点，不显示原始腕部 pose 原点。
 
-这些原点是算法坐标约定，不是机器人 TCP 标定。候选 X 是闭合方向，Z 是正向接近方向。预抓取沿负 Z 撤开；提起沿所选基座的正 Z。机器人姿态采用米与 `quaternion_wxyz`，算法不返回机器人 TCP。推理完成后不会重新取最新腕部 TF 替换拍照 TF；桥接只用当前姿态检查观测是否已经失效。
+每个候选保留生成时的 `T_camera_native_grasp` 和对齐后的 `T_camera_native_grasp_aligned`；`T_camera_grasp_before_alignment` / `T_camera_grasp_after_alignment` 是各阶段转换到接触中心的矩阵。原点转换仅沿该阶段本地 Z 移动：几何使用原 worker 的 wrist offset，CGN 使用 manifest 固定的 native hand depth。`T_camera_grasp` 在对齐成功时采用对齐后结果，规划直接消费该矩阵；分数、宽度、目标归属和候选顺序不变。`vertical_alignment.status` 为 `applied`、`missing_base_camera` 或 `backend_not_applicable`。行为树规划请求要求有效的采集时 `T_base_camera`，以便按 profile 工作区裁切深度；采集后的 bridge offset 使用同一冻结的 `T_base_camera`，没有它时只在纯离线几何单元路径中沿候选接近轴回退。CGN 的对齐后字段为 null，页面明确标注沿用原始结果。
 
-`/grasp.html` 在页面上方提供全宽的采集机械臂布局，自动取景覆盖所选臂、采集点云和候选，并突出显示所选对齐后接触中心。布局下方可切换候选，直接对照相机系与基座系的前后 XYZ（m）和 WXYZ，无需展开诊断 JSON。数值显示使用接触中心矩阵，算法线框仍使用原生矩阵；三臂世界布局仅参与展示。交互、不可用状态和只读边界见 [Web 评估页](./realman-web-control#grasp-离线评估页)。
+这些原点是算法坐标约定，不是机器人 TCP 标定。候选 X 是闭合方向，Z 是正向接近方向。预抓取沿负 Z 撤开；提起沿所选基座的正 Z。机器人姿态采用米与 `quaternion_wxyz`，算法不返回机器人 TCP。推理完成后不会重新取最新腕部 TF 替换拍照 TF；桥接只用当前姿态检查观测是否已经失效。`geometry_center_offset_m` 必须是 `config/ros/grasp_bridge.yaml` 中 `[0, 0.2]` m 内的有限数，改配置后重启 `grasp_bridge`；旧 evaluation snapshot 不会自动重算。
+
+### 点云夹爪防碰
+
+`src/grasp/grasp_bridge/grasp_bridge/gripper_collision.py` 在后端对齐和接触中心偏移完成后评估每个候选。它只生成两个 `visual_finger_boxes/v1` 手指盒体：开口为候选宽度加两侧 clearance 后按 `min_opening_m` / `max_opening_m` 夹紧，盒体尺寸为厚度、宽度、深度；`finger_width_m` 缺失或无效时回退为厚度。碰撞模块、evaluation 快照和 Web 三维渲染共用同一份 `candidate.collision.geometry`，不覆盖 palm、腕部、机械臂连杆或完整工具。
+
+评估按 `pregrasp`、`approach_sweep`、`grasp`、`lift` 四阶段检查环境点云。碰撞检测使用独立的 `collision_workspace_m` 区域裁剪深度：它是 `workspace_m`（TCP 走廊，只约束 pregrasp/grasp/lift 三个 TCP 点的可达范围）的**超集**，额外纳入手指在走廊外仍可能触及的障碍（如料箱壁）。推理与 TCP 走廊校验始终用较窄的 `workspace_m` 裁剪，只有喂给碰撞检测的点云用较宽的 `collision_workspace_m`。未配置 `collision_workspace_m` 时回退到 `workspace_m`；一旦配置，必须是有效盒体且完整包含 `workspace_m`，否则 profile 不就绪。目标候选的实例分割点被排除，标签 0 仍是环境。`min_clearance_m` 是手指盒体 SDF 的有符号最小值，`max_penetration_m` 是最大穿透深度；穿透点以 `cluster_voxel_m` 的 26 邻域聚类，达到 `minimum_collision_points` 才确认 `collision`。点数不足、分割身份缺失、采集外参缺失或碰撞配置关闭会返回 `unknown`，不会解释为安全。
+
+`collision.blocking_statuses` 决定哪些状态阻断规划。当前 `config/ros/grasp_bridge.yaml` 配置为 `[collision]`：`warning` 和 `unknown` 仅提示，保留状态、原因、间隙、穿透和显示 mask，允许通过防碰门后继续检查工作区、夹爪开口和可选 IK。warning 也可能包含浅穿透或未形成确认碰撞簇的穿透点；unknown 表示点云、分割、外参或局部证据不足，二者都不代表安全。候选仍按后端顺序选择，不因 warning 或 unknown 自动重排。即使 `ik_precheck: false`，确认的 `collision` 仍阻断。需要恢复严格策略时，把 `warning`、`unknown` 加回列表；省略该配置时，代码默认也只阻断 `collision`。修改列表后重启 `grasp_bridge` 才生效，已有 evaluation 快照不会自动重算。
+
+为避免候选数和点云规模使 `PlanGrasp` 超过 `config/ros/grasp_task.yaml` 的规划期限，碰撞模块先用四阶段手指盒体扫掠的基座系包围盒做保守 broad-phase，再对保留的点执行原有 SDF 和聚类。包围盒在手指局部坐标系扩展后再旋转，完整保留 warning envelope 与局部证据点；同时用一个样本的实际 SDF 上界扩展范围，保留各阶段的精确最小间隙。相同分割实例共用环境点云，显示 mask 也采用相同的筛选。候选顺序、阻断阈值和碰撞结论保持不变。
+
+规划 Action 的 `diagnostics_json.timings_ms` 和 `grasp_bridge` ROS 日志记录 `capture`、`workspace_crop`、`inference`、`collision`、`visualization`、`waypoint_plan`、`settle`、`finalize`、`review` 与 `total` 的毫秒耗时；只读评估只包含实际执行的阶段。失败结果也保留已执行阶段与出错阶段的耗时，拒绝快照耗时记为 `rejection_review`。其中 `capture` 包含 profile/租约准备，`collision` 包含推理后的租约检查与接触偏移，`review` 包含显示分类和快照发布，可据此区分算法服务、本地防碰与 Web 快照耗时。
+
+两个页面显示完整候选；当前选中候选的临近点为黄色、碰撞点为红色，表格同步显示状态、间隙、穿透、点数和最差阶段。Web 只对 `workspace_m` 内最多 35,000 个显示点使用分类 mask，规划指标始终来自未抽样的碰撞检测区点云；检测区更宽时，其外沿障碍参与判定但不进入显示点云。三维布局视图中，绿色盒是 TCP 走廊 `workspace_m`、琥珀色盒是更宽的碰撞检测区 `collision_workspace_m`（两者不同时才画后者）。结果只描述当前可见传感器点云，不能证明遮挡区域或其他实体无碰撞。
+
+`/grasp.html` 在页面上方提供全宽的采集机械臂布局，自动取景覆盖所选臂、采集点云和候选，并突出显示所选对齐后接触中心。Pose 默认只显示当前选中的一个；范围控件可显示所选实例的全部 Pose 或所有实例 Pose，也可通过候选 checkbox 自由组合。候选行、Pose 下拉框和复核对象共用当前选择。布局点云由采集时 RGB 与注册深度按内参逐像素反投影，颜色取同一像素 RGB；点先变换到所选 `base_frame`，只保留 `workspace_m` 盒内的点，输出绘图时仍使用相机光学系坐标，再用该 observation 冻结的 `T_base_camera` 放入基座系。推理请求在原分辨率保留 RGB，只将注册深度中工作区外的像素置零；几何与 CGN 都从这份深度生成点云。缺少采集外参、workspace 无效或裁切后不足 100 个有效深度像素时，推理在发请求前失败。快照显示同一裁切深度，`depth_stats.valid_pixels` 是裁切后数量，另保留裁切前后的计数；显示点云仍最多均匀抽样到 35,000 点，点径默认固定为 3.5 px。ROS 到 Web 的评估事件限制为 8 MiB。这个 `workspace_m` 是 profile 的 TCP 规划范围，不是夹爪/机械臂碰撞模型；裁切不能替代碰撞检测。`/grasp_plan.html` 是行为树规划专用的只读页面：它订阅同一 evaluation 快照，Pose 默认显示被选中的计划候选，可切换为候选所属实例的全部 Pose 或所有实例 Pose，点击候选行可聚焦到单个 Pose。页面显示所有候选的通过/拒绝原因、选中的 pregrasp/grasp/lift 计划、采集机械臂和 profile 工作区线框，不提供运动或夹爪控制。几何候选 ID `object_id:index` 中，`object_id` 是实例分割 ID，`index` 是该实例内从 0 开始的候选序号，例如 `16:0` 是实例 16 的第一个候选；其他后端的 ID 由后端定义。叶节点只发起 `PlanGrasp`，不负责打开浏览器。数值、候选 pose 和线框均使用接触中心矩阵，隐藏原始腕部 pose 坐标轴；三臂世界布局仅参与展示。交互、不可用状态和只读边界见 [Web 评估页](./realman-web-control#grasp-离线评估页)。
 
 ## 单臂标定接入
 
@@ -108,11 +172,11 @@ PYTHONPATH=src/grasp/grasp_bridge python3 -m grasp_bridge.calibration_import \
   --result logs/camera_calibration/<session>/calibration_result.json
 ```
 
-导入会核对会话、相机安装、臂、坐标与内容哈希，将矩阵写入忽略提交的 `camera_extrinsics.local.yaml`，保持 `verified: false`。完成留出样本和实际夹持区域精度验证后，再填写验证误差上限、实测误差及审批状态。求解器残差不自动变成抓取精度验收。
+导入会核对会话、相机安装、臂、坐标与内容哈希，将矩阵写入忽略提交的 `camera_extrinsics.local.yaml`。导入数据由 Web 评估和行为树共用；操作者负责确认它与现场安装相符。
 
 桥接直接使用经审阅的法兰到 color optical 矩阵，不额外发布相机安装 TF。设备内部 depth/color optical 关系仍由相机驱动发布；同一 frame 不得有两个 parent。
 
-保存标定会话不等于抓取 profile 已加载外参。左右腕分别导入对应会话，导入器合并写入根配置下的 `config/ros/camera_extrinsics.local.yaml`，保留另一臂数据；每次评估重新加载 profile，无需重启机械臂驱动。已导入但尚未完成物理精度验收的结果可用于只读对齐，`verified: false` 不会阻断这一步，也不会因此允许真实规划。
+左右腕分别导入对应会话，导入器合并写入根配置下的 `config/ros/camera_extrinsics.local.yaml` 并保留另一臂数据；每次评估重新加载 profile，无需重启机械臂驱动。导入的变换可用于 Web 评估与 BT 规划，不要求额外填写 `verified` 或误差批准字段。
 
 采集时仅查询现有 `l/base_link ← l/link_6` 或 `r/base_link ← r/link_6`，以彩色图像时间戳计算 `T_base_camera = T_base_flange × T_flange_color`。标定结果里的 `tool_to_camera` 指的是不可变法兰 `link_6`，不能叠加控制器 TCP 偏移，也不使用 URDF 示意相机 frame 替代真实 color optical 外参。移动机械臂改变前一项；相机安装未变时，手眼外参不变。
 
@@ -158,7 +222,7 @@ docker compose --project-directory . -f config/docker/compose.grasp.yaml logs --
 
 输入包含 task/request/observation ID、generation、拍照时间戳、config ID、color optical frame、BGR `uint8[H,W,3]`、已配准米制深度 `float32[H,W]`、K、可选相机系向上单位向量、采集时 `T_base_camera`、目标类别、CGN context 与夹爪身份。基座变换必须为刚性齐次矩阵；同时提供向上向量时须与变换导出的基座 +Z 一致。输出逐项保留身份，并包含模型和夹爪身份、前后候选矩阵及对齐状态、估计开口、目标归属与后端评分。`frame.npz` 和完整请求归档保留该冻结变换，replay 自动读取它；旧离线文件没有该字段时仅显示原始结果。
 
-机器人规划的 `expected_model_id` 必须固定为已核验服务身份。显式 `evaluation_only=true` 允许未固定模型身份，仍核对 hello 与结果的身份一致性；若配置了固定身份，评估也必须匹配。一次任务只有一个在途请求；超时、取消、断线和 generation/profile 变化使旧结果失效。重新连接不重放观测。GPU 计算可能继续，但失效结果不会恢复为可执行计划。
+`expected_model_id` 可选；配置后仍会核对服务 hello 与结果身份。未配置时也会核对 hello 与结果身份一致。一次任务只有一个在途请求；超时、取消、断线和 generation/profile 变化使旧结果失效。重新连接不重放观测。GPU 计算可能继续，但失效结果不会恢复为可执行计划。
 
 ## ROS 规划与无运动验证
 
@@ -174,7 +238,7 @@ ros2 launch grasp_bridge grasp_bridge.launch.py config_root:="$PWD/config"
 
 宿主机构建须先安装上面的共享传输依赖；Ubuntu 22.04 自带的 websockets 版本不足以提供同步客户端。ROS Docker 已安装这些依赖。
 
-默认配置 `dry_run=true` 时创建 RGB-D、关节和 TF 的只读订阅，允许 Web grasp 评估页采集观测；不创建 IK 或任务状态 client，因此不会生成 waypoint。未批准的手眼标定会阻止基座系 pose 计算，但相机系图像和深度仍可审阅。只读评估不要求已测量的夹爪尺寸或手眼：只发送夹爪身份，保留原始相机系候选。真实规划才要求实测工具，并在 bridge 规划阶段根据开口筛选，原始候选列表不被改写。普通规划请求仍会被 dry-run 拒绝。携带任务 lease 的请求在采集、推理前后及输出计划前使用只读 `TaskControl STATUS` 核对有效期；撤销或过期会使计划失效。独立只读评估不携带 lease。真实观测与 IK 规划需要显式设置 `dry_run:=false`，完成几何/标定/走廊输入并固定模型身份；该入口仍不发送机械臂或夹爪命令。
+`grasp_bridge.yaml` 是页面与 XML 共用的 profile/backend 默认配置；机器人姿态、标定、TCP 和夹爪几何仍来自共享 profile 配置。`grasp.html` 始终使用 `evaluation_only=true`，只读评估不调用 IK。bridge 内部先执行点云夹爪防碰，再进行抓取几何和 seeded IK 预检；防碰阻断状态会以结构化候选拒绝原因进入行为树快照。当前 `ik_precheck: false` 允许时间紧的现场路径直接产出三个 MOVEL pose，由控制器在执行时检查笛卡尔运动；当前防碰策略只阻断 `collision`，`warning` 和 `unknown` 仅提示，但 unknown 不代表安全。bridge 仍不发送机器人或夹爪动作，`grasp.xml` 的后续叶节点负责下发 MOVEL 和夹爪命令。人工 `verified` 字段不再阻断运行，必要配置仍需结构完整。操作者对配置与现场设备相符负责，并承担实机风险。行为树保留显式 `REALMAN_BT_DRY_RUN=false` 开关。启动顺序：`./rm65 up`，随后 `REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
 | 接口 | 类型/意义 |
 | --- | --- |
@@ -185,22 +249,24 @@ ros2 launch grasp_bridge grasp_bridge.launch.py config_root:="$PWD/config"
 | `/grasp_bridge/overlay` | `sensor_msgs/Image`，去畸变 RGB 上的候选中心 |
 | `/<arm>/solve_ik` | 既有 IK Service；使用当前关节 seed 和默认工具 |
 
-规划会逐段采样预抓取—抓取—提起的直线走廊，拒绝工作区越界、IK 失败或过大的关节分支变化。它不提供全场景整臂碰撞规划：到达预抓取位和返回位的整臂路径必须预先验证，其他机械臂必须停放。
+几何规划先生成并筛选预抓取—抓取—提起三个 TCP pose；`ik_precheck: true` 时再逐段采样直线走廊，拒绝 IK 失败或过大的关节分支变化。默认关闭预检时，工作区和夹爪开口仍检查，但三个 pose 直接交给后续 MOVEL 叶节点，由控制器进行实际可达性判断。这个模块不提供全场景整臂碰撞规划：到达预抓取位和返回位的整臂路径必须预先验证，其他机械臂必须停放。
+
+`config/ros/grasp_bridge.yaml` 的 `maximum_ik_step_degrees` 限制当前种子到预抓取解、以及走廊上每两个相邻 IK 解之间任一关节的角度差。默认 15° 用于拒绝 seeded IK 在不同逆解分支间跳变，减少规划路径中突然的大关节变化；每段直线按 `cartesian_sample_step_m` 取样后逐点检查。该连续性门槛可能拒绝需要较大关节变化但几何可达的候选；它只检查 TCP 直线走廊上的 IK 连续性，不检查整臂碰撞或预抓取位之前的路径，调高阈值不能替代这些安全验证。
 
 ### 从候选审阅到首次抓取
 
 建议先完成右腕、几何后端、单个静止物体的完整闭环，再扩展多目标与 CGN。页面中的人工“接受”是离线标注，不会锁定后续任务的目标，也不会授权执行；现有 `choose_plan()` 按算法顺序选择首个通过开口、工作区和逐段 IK 校验的候选。真实任务在观察位停稳后重新采集，不复用浏览器中的旧快照。
 
-1. **确定接触中心到 TCP 的实测关系。** 核对 `gripper_specs.yaml` 的真实开口、指深、厚度与间隙，以及 `grasp_profiles.yaml` 的 `T_grasp_tcp`。规划使用 `T_base_camera(t_capture) × T_camera_grasp_after_alignment × T_grasp_tcp`；仅在 TCP 与接触中心的原点和轴向重合、该变换为单位矩阵时，对齐后的基座系接触中心位姿才等于 TCP 目标。手眼的留出验证误差还需满足 `camera_extrinsics.yaml` 中的验收要求。
+1. **确定接触中心到 TCP 的实测关系。** 核对 `gripper_specs.yaml` 的真实开口、指深、厚度与间隙，以及 `grasp_profiles.yaml` 的 `T_grasp_tcp`。规划使用 `T_base_camera(t_capture) × T_camera_grasp_after_alignment × T_grasp_tcp`；仅在 TCP 与接触中心的原点和轴向重合、该变换为单位矩阵时，对齐后的基座系接触中心位姿才等于 TCP 目标。手眼外参的实测误差由操作者现场评估。
 2. **先验证计划。** 补齐 profile 的观察位、返回位、工作区、接近与提起距离，并实测完整走廊。确认配置与服务模型身份后，用规划桥只输出 `pregrasp/grasp/lift`，核查基座坐标、TCP 朝向和 IK 连续性。现有规划不检查全场景的夹指、腕部和整臂碰撞；对齐轴正确、分数高或 IK 有解均不能替代这项验证。
-3. **分阶段执行既有行为树。** `config/behavior-trees/grasp.xml` 已编排张爪、观察、规划、预抓取、下降、闭爪、提起、保持、人工确认、返回和释放。预抓取沿候选负 Z 撤开，几何竖直对齐后即基座正 Z；下降沿接近方向，提起沿基座正 Z。全流程使用同一任务 lease，移动后观测失效则重新采集；执行前完成 dry-run，再由操作员决定真实运动。
+3. **分阶段执行行为树。** `config/behavior-trees/grasp.xml` 编排张爪、观察、规划、预抓取、下降、闭爪、提起、保持、返回和释放，不再等待人工确认。预抓取沿候选负 Z 撤开，几何竖直对齐后即基座正 Z；下降沿接近方向，提起沿基座正 Z。全流程使用同一任务 lease，移动后观测失效则重新采集；实机执行由操作者负责。
 4. **分别记录命令与物理结果。** 首次验收关注夹指是否真正围住物体、提起后是否稳定，以及释放后的状态。42D 的闭合反馈不能证明抓稳；确认失败时保留现场状态，按人工决定处置，不能自动重跑会先张爪的完整树。
 
 `/grasp.html` 另提供受限的手动基座系 MOVEL 测试入口：选择在线 observation 中的候选会填入其基座系接触中心 XYZ/WXYZ，点击发送后复用 `/<arm>/execute_motion`。仅当驱动坐标状态确认 `motion_allowed=true`、机械臂在线且当前 TCP 与快照工具一致时放行；离线导入不能运动。对右臂而言，只有 `T_grasp_tcp` 为单位矩阵时接触中心 Pose 才能直接作为 TCP 目标。这个测试入口不是抓取任务执行器，不会调用 IK 连续性或碰撞走廊校验，也不会自动闭爪或提起；仍需先独立验证目标和全程安全性。
 
 ## 结果与限制
 
-42D 只有全开、全闭；候选宽度只用于筛选。命令完成、兼容位置、电流或 `torque_reached` 不能证明物体已抓稳。提起后保持并通过视频或人工确认；`GraspConfirm` 仅在等待期间提供 `/realman_bt_executor/confirm_grasp`，要求当前 task ID、明确的观察结果及放回决定。批准后沿已验证的载物返回路径到释放位，再张开夹爪；拒绝、超时或取消不会自动放回或松开。配置和请求示例见[抓取行为树](./behavior-tree-motion)。
+42D 只有全开、全闭；候选宽度只用于筛选。命令完成、兼容位置、电流或 `torque_reached` 不能证明物体已抓稳。树会提起、保持、按配置返回并张开夹爪，不等待人工确认；操作者负责判断当前目标和现场条件，并承担抓取失败或释放的风险。配置细节见[抓取行为树](./behavior-tree-motion)。
 
 [抓取行为树](./behavior-tree-motion)通过任务控制权覆盖观察、推理、机械臂和夹爪阶段。驱动拒绝不持有任务 token 的竞争写命令，租约失效也不能跳过未确认停止的硬件工作。算法、规划、执行和抓取结果分别记录，避免将“候选非空”计为抓取成功。
 
@@ -229,3 +295,5 @@ PYTHONPATH=src/grasp PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 | 左腕 `CV2856D0008H` | 15 | 15 | 15 |
 
 这只证明相同冻结输入的算法与传输一致。实时 SDK D2C 与 bridge 软件 D2C 的像素差异、真实曝光/深度档位、物理精度和实际抓取须分别现场验收；不能将候选非空视为抓取成功。
+
+6D 解算完成后，`6d_pose.html` 通过本次 `history_id` 读取 `/6d_pose_history/api/records/{id}/preview/score`，展示与历史页相同的最高分候选图（候选 ID、评分与 RGB / Depth 对比）。重新采集、修改 Mask、切换实例或重新解算会清除旧图；归档/图片不可用时显示提示，保持当前位姿与运动复核流程。历史详情页最右侧另提供按评分降序排列的前三十候选，窄屏时位于三维视图下方；原最高分预览保持原位。

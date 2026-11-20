@@ -23,7 +23,7 @@ def test_control_router_is_the_literal_authoritative_mode_catalog():
     assert document.attrib == {
         "main_tree_to_execute": "InputControl",
         "realman_arm_id": "r",
-        "realman_required_arms": "l,m,r",
+        "realman_required_arms": "l,r",
         "realman_launch": "control_router",
         "realman_stop_on_terminal": "false",
         "realman_exit_on_terminal": "false",
@@ -105,6 +105,7 @@ def test_control_router_is_the_literal_authoritative_mode_catalog():
             assert entry_move.attrib == {
                 "name": entry_name,
                 "dry_run": "{dry_run}",
+                "arms": "l,r",
                 "l_joint_degrees": "{pika_l_joint_degrees}",
                 "m_joint_degrees": "{pika_m_joint_degrees}",
                 "r_joint_degrees": "{pika_r_joint_degrees}",
@@ -179,6 +180,7 @@ def test_policy_branch_supervises_the_task_from_inside_the_tree():
     assert rehome.attrib == {
         "name": "policy_rehome",
         "dry_run": "{dry_run}",
+        "arms": "l,r",
         "l_joint_degrees": "{pika_l_joint_degrees}",
         "m_joint_degrees": "{pika_m_joint_degrees}",
         "r_joint_degrees": "{pika_r_joint_degrees}",

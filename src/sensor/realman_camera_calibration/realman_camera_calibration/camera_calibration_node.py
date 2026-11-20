@@ -22,7 +22,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.time import Time
 from rclpy.qos import qos_profile_sensor_data
-from realman_msgs.srv import CaptureCalibrationSample, SolveCalibration, UpdateCalibrationLayout
+from realman_msgs.srv import CaptureCalibrationSample, SolveCalibration, UpdateCalibrationLayout, VerifyCalibration
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 import tf2_ros
@@ -36,6 +36,7 @@ from .calibration_math import (
     mean_transform_and_spread,
     solve_hand_eye,
     transform_matrix,
+    verify_hand_eye,
 )
 from .config import load_config
 from .input_health import classify_camera_input
@@ -133,6 +134,12 @@ class CameraCalibrationNode(Node):
             self._solve,
             callback_group=self._callback_group,
         )
+        self._verify_service = self.create_service(
+            VerifyCalibration,
+            str(services.get("verify", "/camera_calibration/verify")),
+            self._verify,
+            callback_group=self._callback_group,
+        )
         self._layout_service = self.create_service(
             UpdateCalibrationLayout,
             str(services.get("update_layout", "/camera_calibration/update_layout")),
@@ -200,20 +207,27 @@ class CameraCalibrationNode(Node):
 
     def _capture_locked(self, request, response):
         arm = request.arm_id or self._config["sampling"]["default_arm"]
+        purpose = str(getattr(request, "purpose", "") or "")
+        if purpose not in ("", "verify"):
+            raise ValueError("capture purpose must be empty or 'verify'")
         identity = session_identity(self._config, arm)
         response.arm_id = arm
         if request.start_new_session:
             if request.session_id:
                 raise ValueError("start_new_session requires an empty session_id")
-            self._start_session(arm)
+            self._start_session(arm, purpose)
         elif request.session_id:
             self._load_session(request.session_id, arm)
         elif not self._session_id:
-            self._start_session(arm)
+            self._start_session(arm, purpose)
         elif self._manifests[self._session_id]["identity"] != identity:
             raise ValueError("selected arm differs from the active session; start or load its own session")
         session_id = self._session_id
         manifest = self._manifests[session_id]
+        if str(manifest.get("purpose", "")) != purpose:
+            raise ValueError(
+                "session purpose differs from the request; start a matching session"
+            )
         response.session_id = session_id
         samples = self._samples[session_id][arm]
         response.sample_count = len(samples)
@@ -366,6 +380,8 @@ class CameraCalibrationNode(Node):
         self._load_session(session_id, arm)
         samples = self._samples[session_id][arm]
         manifest = self._manifests[session_id]
+        if str(manifest.get("purpose", "")) == "verify":
+            raise ValueError("a verification session cannot be solved as a calibration")
         response.sample_count = len(samples)
         minimum = int(self._config["sampling"]["minimum_samples_per_arm"])
         if len(samples) < minimum:
@@ -416,12 +432,110 @@ class CameraCalibrationNode(Node):
         self.get_logger().info(response.message)
         return response
 
-    def _start_session(self, arm: str) -> None:
+    def _verify(self, request, response):
+        if not self._operation_lock.acquire(blocking=False):
+            response.message = "another calibration operation is in progress"
+            return response
+        try:
+            return self._verify_locked(request, response)
+        except Exception as error:
+            response.message = f"calibration verify rejected: {error}"
+            self.get_logger().error(response.message)
+            return response
+        finally:
+            self._operation_lock.release()
+
+    def _verify_locked(self, request, response):
+        arm = request.arm_id or self._config["sampling"]["default_arm"]
+        session_identity(self._config, arm)
+        baseline_id = request.baseline_session_id
+        verify_id = request.verify_session_id
+        response.arm_id = arm
+        response.verify_session_id = verify_id
+        if not baseline_id or not verify_id:
+            raise ValueError("verification requires a baseline solved session and a verify session")
+        tool_to_camera = self._baseline_tool_to_camera(baseline_id, arm)
+        verify_dir = self._session_directory(verify_id)
+        verify_manifest, samples = restore_session(verify_dir, self._config, arm)
+        if str(verify_manifest.get("purpose", "")) != "verify":
+            raise ValueError("verify_session_id does not name a verification session")
+        verification = self._config["verification"]
+        if len(samples) < int(verification["sample_count"]):
+            raise ValueError(
+                f"verification needs at least {int(verification['sample_count'])} fixed-board samples"
+            )
+        metrics = verify_hand_eye(samples, tool_to_camera)
+        passed = (
+            metrics["translation_spread_m"] <= float(verification["maximum_translation_spread_m"])
+            and metrics["rotation_spread_rad"] <= float(verification["maximum_rotation_spread_rad"])
+            and metrics["max_reprojection_error_px"] <= float(verification["maximum_reprojection_error_px"])
+        )
+        record = {
+            "schema_version": 1, "arm_id": arm,
+            "baseline_session_id": baseline_id, "verify_session_id": verify_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "sample_count": metrics["sample_count"],
+            "translation_spread_m": metrics["translation_spread_m"],
+            "rotation_spread_rad": metrics["rotation_spread_rad"],
+            "mean_reprojection_error_px": metrics["mean_reprojection_error_px"],
+            "max_reprojection_error_px": metrics["max_reprojection_error_px"],
+            "base_to_board": matrix_json(metrics["base_to_board"]),
+            "thresholds": dict(verification),
+            "passed": bool(passed),
+        }
+        result_path = verify_dir / "verification_result.json"
+        temporary = result_path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(record, indent=2, allow_nan=False), encoding="utf-8")
+            temporary.replace(result_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        response.success = True
+        response.sample_count = metrics["sample_count"]
+        response.translation_spread_m = metrics["translation_spread_m"]
+        response.rotation_spread_rad = metrics["rotation_spread_rad"]
+        response.mean_reprojection_error_px = metrics["mean_reprojection_error_px"]
+        response.max_reprojection_error_px = metrics["max_reprojection_error_px"]
+        response.passed = bool(passed)
+        response.result_file = str(result_path)
+        response.result_json = json.dumps(record, separators=(",", ":"), allow_nan=False)
+        response.message = (
+            f"{arm} verification {'passed' if passed else 'FAILED'} over {metrics['sample_count']} samples"
+        )
+        self.get_logger().info(response.message)
+        return response
+
+    def _baseline_tool_to_camera(self, baseline_id: str, arm: str) -> np.ndarray:
+        """Load and re-validate a solved session's hand-eye transform."""
+        baseline_dir = self._session_directory(baseline_id)
+        result_path = baseline_dir / "calibration_result.json"
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if result.get("session_id") != baseline_id or result.get("arm_id") != arm:
+            raise ValueError(f"baseline session does not contain a solved {arm} result")
+        baseline_manifest, _ = restore_session(baseline_dir, self._config, arm)
+        if result.get("identity") != baseline_manifest.get("identity"):
+            raise ValueError("baseline result identity differs from its session")
+        hashed = {key: value for key, value in result.items() if key != "calibration_id"}
+        if result.get("calibration_id") != content_hash(hashed):
+            raise ValueError("baseline result hash is invalid; solve it again")
+        if result.get("board") != self._config["board"]:
+            raise ValueError("baseline board configuration differs from current config")
+        hand_eye = result.get("hand_eye", {}).get(arm)
+        if not isinstance(hand_eye, dict) or "tool_to_camera" not in hand_eye:
+            raise ValueError(f"baseline {arm} result has no hand-eye transform")
+        tool_to_camera = np.asarray(hand_eye["tool_to_camera"], dtype=np.float64)
+        if tool_to_camera.shape != (4, 4) or not np.isfinite(tool_to_camera).all():
+            raise ValueError(f"invalid {arm} tool_to_camera matrix")
+        return tool_to_camera
+
+    def _start_session(self, arm: str, purpose: str = "") -> None:
         self._session_id = datetime.now(timezone.utc).strftime("session-%Y%m%dT%H%M%S.%fZ")
         manifest = {
             "schema_version": 1, "session_id": self._session_id,
             "identity": session_identity(self._config, arm),
         }
+        if purpose:
+            manifest["purpose"] = purpose
         write_manifest(self._session_directory(self._session_id), manifest)
         self._manifests[self._session_id] = manifest
         self._samples[self._session_id] = {arm: []}

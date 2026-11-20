@@ -30,6 +30,7 @@ description: realman_pi 开发者入口：按任务找到对应页面，了解�
 | 录制示教数据、导出 LeRobot、在网页回放与整理 episode | [独立数据录制平台](./recording-platform) | `config/ros/recording.yaml`、`config/python/recording-requirements.txt` |
 | 接入 VLA 策略服务 | [VLA 策略桥接节点](./policy-bridge) | `config/ros/policy_bridge.yaml` |
 | 接入独立算法、腕部观测与单臂抓取 | [独立抓取算法与规划桥](./grasping) | `config/grasp/`、`config/ros/grasp_profiles.yaml` |
+| 加 FoundationPose 单帧 6D 位姿与吸盘法向点动 | [单帧 6D Pose 与吸盘运动](./grasping#单帧-6d-位姿开发状态) | `config/ros/pose6d_bridge.yaml`、`camera_extrinsics.yaml` |
 | 相机配置、手眼标定 | [相机指南](../guide/cameras)、[单臂 ChArUco 手眼标定](./camera-calibration) | `config/ros/{cameras_ros2,camera_calibration}.yaml` |
 | 测量速度跟随（增益、滞后、串轴） | [笛卡尔速度跟随测试](./velocity-follow-test) | `config/ros/{keyboard_control,realman_motion}.yaml` |
 | 三臂布局、TF、RViz | [三臂配置驱动可视化](./three-arm-visualization)、[TF 树](../architecture/tf-tree) | `config/ros/three_robots.yaml` |

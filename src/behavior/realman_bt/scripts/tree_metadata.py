@@ -90,7 +90,7 @@ def runtime_metadata(path: Path, config_root: Path, profile_name: str = ""):
         return metadata
     from grasp_bridge.profiles import load_profile, read_yaml
 
-    settings = read_yaml(config_root / "ros/grasp_task.yaml")
+    settings = read_yaml(config_root / "ros/grasp_bridge.yaml")
     profile = load_profile(config_root, profile_name or settings["profile"])
     arm = profile["arm"]
     return (arm, arm, "execute_motion", *metadata[3:])

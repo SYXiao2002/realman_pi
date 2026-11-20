@@ -13,7 +13,8 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 
 | 文件 | 管什么 | 消费者 | 专题页 |
 | --- | --- | --- | --- |
-| `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂 | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
+| `realman_driver.yaml` | 已安装机械臂的控制器 IP / 端口 / SDK 线程模式 / 重连与回读周期；多臂 launch 只启动存在的完整节点 section，当前仅 `/l`、`/r`，省略 `/m` 即不启动中臂、SDK 接收等待 `sdk_timeout_ms`（正整数毫秒） | `realman_robot_driver` | [驱动与运动控制](../development/realman-driver-scaffold) |
+| `vacuum_sensors.yaml` | 各臂真空传感器启用、控制器输入 IO、吸附有效电平和发布频率；右臂 IO3 NPN 启用，左臂预留禁用；修改后重启驱动 | `realman_robot_driver` → ROS2/Web | [吸盘状态](../development/realman-web-control#吸盘真空传感器状态) |
 | `realman_driver_mock.yaml` | 离线 mock 驱动（TEST-NET 地址，永不连接真机） | `realman_driver_test` 服务 | [驱动与运动控制](../development/realman-driver-scaffold) |
 | `realman_coordinates.yaml` | 每臂工具/工作坐标的**期望状态**（`tcpgrip`、`cell`、`pikabase`），启动时校验并自动修复失配 | 驱动 `CoordinateManager`、BT、Web | [Action 开发与测试](../development/realman-action-development) |
 | `realman_motion.yaml` | 每臂运动限值：普通会话 `max_*`、Pika 专用 `hard_max_*`、控制周期、watchdog、`pose_max_joint_speed_dps` | 驱动、Web、键盘/Pika router | [驱动与运动控制](../development/realman-driver-scaffold#参数) |
@@ -25,15 +26,18 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `three_robots.yaml` | 通用三臂在 `world` 中的布局与型号（由用户选择左右已求解会话后更新右臂位姿）；保留中臂模型参考，不决定实际启用的驱动 | 描述包、RViz、网站 3D 预览、标定布局写回 | [三臂可视化](../development/three-arm-visualization) |
 | `end_effectors.yaml` | 左右末端显示模型（AG2F90-C 占位）与安装位姿，中臂无挂载；被文档站三维场景和 `:8765` Web 控制页读取（后者随夹爪位置反馈实时开合），RViz/驱动 TF 尚未包含 | `website/scripts/sync-three-robots.mjs`、`model_manifest.py` | [夹爪控制](../development/gripper-control#ag2f90-c-夹爪模型) |
 | `cameras_ros2.yaml` | 四台 Orbbec 的串号、launch 文件；`defaults` 共享彩色/深度宽高、fps、format，`cameras.<namespace>.parameters` 逐机覆盖，当前左右腕与后全局 `enable_depth=true`，两腕 `enable_frame_sync=true`；可由 `cameras_ros2.local.yaml` 或 `RM65_CAMERAS_LOCAL_CONFIG` 深合并覆盖；修改后停止相机再启动，重复 `up` 不热更新 | `host_cameras.py`、`rm65_camera_ros2` | [相机指南](../guide/cameras) |
-| `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
+| `camera_calibration.yaml` | 左右依次单臂 ChArUco 板参数、设备/安装身份、话题、帧、阈值、固定板精度检验阈值（`verification`）、服务名 | `realman_camera_calibration` | [手眼标定](../development/camera-calibration) |
 | `recording.yaml` | 录制根目录、订阅/预检清单、相机 topic、导出帧率与最大间隙、`auto_export_on_stop`、Web 端口 `8770`；当前只要求左右双臂和两只夹爪，使用独立双臂数据集标识 | `realman_recording` | [数据录制平台](../development/recording-platform) |
 | `gripper_overrides.yaml`（`config/ros/` 下，git 忽略） | 网页"行程设置"保存的开/闭位覆盖，运行时状态，优先于 `gripper.yaml` | `gripper_manager`、Web | [夹爪控制](../development/gripper-control) |
-| `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用、工作区及实测验收门槛 | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
+| `grasp_profiles.yaml` | 换臂映射、观察/返回位、TCP 引用、工作区（TCP 走廊 `workspace_m`）与可选碰撞检测区（`collision_workspace_m`，必须是工作区超集） | BT 启动器、`grasp_bridge` | [腕相机抓取](../development/grasping) |
 | `camera_extrinsics.yaml` | 独立腕相机手眼结果、设备身份和物理精度验收；本地覆盖为 `camera_extrinsics.local.yaml`，导入默认未验收 | `grasp_bridge` | [腕相机抓取](../development/grasping) |
-| `grasp_task.yaml` | 目标/后端、租约与各阶段超时、保持与人工确认等待时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
-| `grasp_bridge.yaml` | 纯规划 Action、WS 地址、模型身份、时序/停稳/漂移门槛；默认 dry-run | `grasp_bridge` | [腕相机抓取](../development/grasping) |
+| `grasp_task.yaml` | 目标、租约与各阶段超时、MoveL 结果等待余量、保持时间 | 抓取 BT launch | [抓取行为树](../development/behavior-tree-motion) |
+| `grasp_bridge.yaml` | 抓取页面与 XML 共用的 profile/backend，规划 Action、WS 地址、时序/停稳/漂移门槛、可选 `ik_precheck`、`geometry_center_offset_m` 及点云夹爪防碰阈值；当前 `collision.blocking_statuses` 仅阻断 collision，warning/unknown 仅提示，修改后重启 bridge | `grasp_bridge`、抓取 BT launch | [腕相机抓取](../development/grasping) |
+| `pose6d_bridge.yaml`、`pose6d_bridge.local.yaml` | 单帧 FoundationPose 服务、静态模型与吸盘标注；实体吸盘直径；运动 `enabled`、controller tool、`T_contact_tcp`、有符号行程、步长、速度、工作区、容差和吸盘包络。当前右臂运动已启用，使用前仍须现场核实吸盘坐标与运动环境 | `pose6d_bridge` | [单帧 6D Pose 与吸盘运动](../development/grasping#单帧-6d-位姿开发状态) |
 | `policy_bridge.yaml` | 策略服务地址、观测/动作 topic、滚动时域、看门狗 | `policy_bridge` | [策略桥接](../development/policy-bridge) |
 | `xbox_controller.yaml` | SDL 手柄去抖、按键名称、日志策略 | `game_controller_node`、`xbox_controller_driver` | [Xbox 手柄](../development/xbox-controller) |
+
+6D Pose 的冻结 observation 不按年龄自动过期，`motion.observation_validity_sec` 已移除；相机/关节新鲜度、页面心跳与租约超时继续使用各自参数。关节停稳区间由 `grasp_bridge.yaml` 的 `settle_sec` 决定，`maximum_joint_state_age_sec` 仅约束最新反馈及相邻反馈间隔。
 
 `pika_config.yaml` 和 `keyboard_control.yaml` 不能越过 `realman_motion.yaml` 的限值：router 在启动时校验，超限直接拒绝启动，而不是在第一次运动时才失败。
 
@@ -42,9 +46,9 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | 文件 | 说明 |
 | --- | --- |
 | `control.xml` | 持久输入路由树（`./rm65 bt control`）：模式目录、分支、`ReactiveSequence` 结构 |
-| `move.xml` / `three.xml` | 单臂 / 三臂分阶段 MoveJ（`./rm65 bt l|m|r|three`） |
+| `move.xml` / `three.xml` / `duo.xml` | 单臂 / 三臂 / L-R 双臂分阶段 MoveJ（`./rm65 bt l|m|r|three|duo`） |
 | `tool_x.xml` | 定时笛卡尔速度 |
-| `grasp.xml` | 单腕单次抓取任务；默认 dry-run，执行前要求实测 profile |
+| `grasp.xml` | 单腕抓取任务；由 `config/ros/grasp_task.yaml:cycles` 控制次数（`-1` 持续循环）；实机由 `REALMAN_BT_DRY_RUN=false` 显式启动，风险由操作者承担 |
 | `pick_task.xml` / `approach_and_grasp.xml` | 旧任务模板，含未注册节点，不能直接执行 |
 | `config/behavior-tree/frontend.ts` | 行为树只读监视器前端的共享设置 |
 
@@ -57,8 +61,9 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 | `docker/compose.yaml` | 全部 Compose 服务；根目录 `docker-compose.yml` 只是 discovery adapter |
 | `docker/ros2-humble-rviz.Dockerfile` | 多阶段镜像：Node 构建 BT 编辑器静态文件 → ROS 2 Humble 运行镜像 |
 | `docker/compose.grasp.yaml`、`docker/grasp-server.Dockerfile` | 显式启动的纯 Python/CUDA 算法服务；`GRASP_REFERENCE_REPO` 是原源码构建 context，`GRASP_MODELS_DIR` 是只读权重，`logs/` 挂载归档；无 ROS、机器人 SDK 或串口 |
+| `docker/compose.pose6d.yaml`、FoundationPose 的 `docker/pose6d-server.Dockerfile` | 显式启动的 FoundationPose CUDA 服务；`POSE6D_REFERENCE_REPO`、`POSE6D_WEIGHTS_DIR`、`POSE6D_MESH_DIR` 指定只读算法/模型资源，WS 8092、历史 HTTP 8095 默认仅绑定 loopback；`POSE6D_HISTORY_DIR` 持久化历史；无 ROS、机器人 SDK 或串口 |
 | `python/grasp-server-requirements.txt`、`python/grasp-reference-requirements.txt` | 固定算法模型和 WS 依赖；不进入机器人 ROS 镜像 |
-| `grasp/server.yaml`、`models.yaml`、`gripper_specs.yaml` | 原项目后端、种子/warmup/context、输入结果归档、权重与原始源码 SHA（含几何竖直对齐 `grasp_selection.py`）和实测夹爪几何，见[抓取契约](../development/grasping) |
+| `grasp/server.yaml`、`models.yaml`、`gripper_specs.yaml` | 原项目后端、种子/warmup/context、输入结果归档、权重与原始源码 SHA（含几何竖直对齐 `grasp_selection.py`）和实测夹爪几何；几何接触中心偏移由 `ros/grasp_bridge.yaml` 负责，见[抓取契约](../development/grasping) |
 | `python/realman-sdk-requirements.txt` | 固定 `Robotic_Arm==1.1.6`（只有官方 PyPI 提供，镜像源需回退） |
 | `python/ik-requirements.txt` | 自定义 IK 依赖 `casadi`；**刻意不含 pinocchio**（见驱动页） |
 | `python/ruff.toml` | 项目自有 Python 的 lint 规则（pyflakes、语法错误、几条会抓真 bug 的 bugbear 规则），CI 用同一份配置；vendor 目录已排除 | [测试与验证](../development/testing) |
@@ -90,3 +95,9 @@ description: 仓库根目录 config/ 下每个配置文件的职责、消费者�
 2. 限值有两层：普通会话上限（`max_*`）与 Pika 专用硬上限（`hard_max_*`）；调高前者会放宽键盘、Web 和行为树，调高后者只影响 Pika。
 3. 坐标配置是**期望状态**：驱动启动时若回读与配置不一致，会自动写入控制器并回读确认，写失败会关闭该臂的 motion gate。改质心、位姿前确认现场安全。
 4. 同一 ROS domain 内，`config/ros/` 中的话题名是契约；改名要同步更新[接口总表](./ros-interfaces)和消费者测试。
+
+
+`realman_motion.yaml` 的逐臂 `pose_goal_position_tolerance_m`（米）、
+`pose_goal_rotation_tolerance_rad`（弧度）、`pose_goal_settle_sec`（秒）均为正有限数，
+用于 BASE MoveL 在完成事件缺失时以稳定的当前 TCP 位姿确认到位；其它参考系沿用事件完成路径。
+`grasp_task.yaml.motion_result_grace_sec` 为正有限秒数，只延长 BT 等待驱动停止/结果的时间。

@@ -1,4 +1,4 @@
-"""ROS Action server: capture -> infer -> restricted IK plan, without execution."""
+"""ROS Action server: capture -> infer -> grasp geometry, without execution."""
 
 from collections import deque
 import json
@@ -27,12 +27,19 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 from grasp_protocol import PROTOCOL_VERSION, validate_request
 
-from .geometry import from_pose, pose_drift, transform, to_pose
+from .geometry import (adjust_geometry_response, discard_out_of_workspace, from_pose,
+                       pose_drift, transform, to_pose)
 from .evaluation import json_value, snapshot
-from .planner import choose_plan
+from .gripper_collision import annotate_candidates, validate_collision_config
+from .planner import NoReachableCandidate, attach_seed_joints, calculate_plan, choose_plan
 from .profiles import camera_identity, default_config_root, load_profile, read_yaml
-from .rgbd import CameraModel, image_array, rectify_color, register_depth, validate_timing
+from .rgbd import (CameraModel, crop_depth_to_workspace, image_array, rectify_color,
+                   register_depth, validate_timing)
 from .ws_client import PlanningCanceled, infer
+
+
+class WorkspaceCropUnavailable(ValueError):
+    """Capture cannot be used safely until workspace RGB-D can be cropped."""
 
 
 def stamp_ns(message):
@@ -51,21 +58,29 @@ class GraspBridge(Node):
         self.declare_parameter("config_root", str(default_config_root()))
         self.root = Path(self.get_parameter("config_root").value)
         self.settings = read_yaml(self.root / "ros/grasp_bridge.yaml")
-        self.declare_parameter("profile", self.settings["profile"])
+        self.collision_config = validate_collision_config(self.settings.get("collision"))
+        self.declare_parameter("profile", "")
         self.declare_parameter("dry_run", self.settings["dry_run"])
-        self.profile_name = self.get_parameter("profile").value
+        self.profile_name = self.get_parameter("profile").value or self.settings["profile"]
         self.profile = load_profile(self.root, self.profile_name)
         self.dry_run = self.get_parameter("dry_run").value
         if type(self.dry_run) is not bool:
             raise ValueError("dry_run must be a boolean")
         for key in ("capture_timeout_sec", "inference_timeout_sec", "connect_timeout_sec", "ik_timeout_sec",
                     "maximum_pair_skew_sec", "maximum_capture_age_sec", "settle_sec",
+                    "post_plan_settle_timeout_sec",
                     "maximum_joint_velocity_rad_sec", "maximum_joint_state_age_sec", "maximum_view_tilt_rad",
                     "maximum_translation_drift_m", "maximum_rotation_drift_rad", "plan_validity_sec",
                     "maximum_ik_step_degrees", "cartesian_sample_step_m", "lease_status_timeout_sec"):
             value = self.settings.get(key)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be finite positive")
+        if type(self.settings.get("ik_precheck", True)) is not bool:
+            raise ValueError("ik_precheck must be a boolean")
+        center_offset = self.settings.get("geometry_center_offset_m", 0.0)
+        if (type(center_offset) not in (int, float) or not math.isfinite(center_offset)
+                or not 0 <= center_offset <= 0.2):
+            raise ValueError("geometry_center_offset_m must be finite in [0, 0.2]")
         self.group = ReentrantCallbackGroup()
         self.lock = threading.Lock()
         self.busy = False
@@ -81,21 +96,22 @@ class GraspBridge(Node):
         self.review_status = self.create_publisher(String, "~/review_status", review_qos)
         self.review_status.publish(String(data=json.dumps({
             "type": "grasp_bridge_status", "dry_run": self.dry_run, "read_only": True,
-            "default_profile": self.profile_name, "profiles": [
+            "default_profile": self.profile_name, "default_backend": self.settings["backend"],
+            "default_target_label": self.settings["target_label"],
+            "default_cgn_context": self.settings["cgn_context"],
+            "geometry_center_offset_m": float(center_offset), "profiles": [
                 {"name": name, "arm": load_profile(self.root, name)["arm"]} for name in self.profile_names]})))
         self.candidates = self.create_publisher(PoseArray, "~/candidates", 10)
         self.overlay = self.create_publisher(Image, "~/overlay", 2)
         self.server = ActionServer(self, PlanGrasp, "~/plan_grasp", execute_callback=self.execute,
                                    goal_callback=self.goal, cancel_callback=lambda _: CancelResponse.ACCEPT,
                                    callback_group=self.group)
-        # Dry-run allows read-only capture and inference. IK and lease clients
-        # remain absent, so no motion planning/execution path is available.
+        # Geometry and optional IK precheck live here; motion stays in BT nodes.
         self.tf = Buffer(cache_time=Duration(seconds=60))
         self.tf_listener = TransformListener(self.tf, self)
+        self.planning_clients = {}
         if not self.dry_run:
-            self.ik = self.create_client(SolveIk, f"/{self.profile['arm']}/solve_ik", callback_group=self.group)
-            self.task_control = self.create_client(
-                TaskControl, f"/{self.profile['arm']}/task_control", callback_group=self.group)
+            self.select_planning_clients(self.profile["arm"])
         self.subscriptions_owned = []
         for name in self.profile_names:
             profile = load_profile(self.root, name)
@@ -109,6 +125,13 @@ class GraspBridge(Node):
                     qos_profile_sensor_data, callback_group=self.group))
         self.report("configuration", "; ".join(self.profile["readiness_problems"]) or "ready", warning=True)
         self.get_logger().info(f"Planning-only grasp bridge profile={self.profile_name} dry_run={self.dry_run}")
+
+    def select_planning_clients(self, arm):
+        if arm not in self.planning_clients:
+            self.planning_clients[arm] = (
+                self.create_client(SolveIk, f"/{arm}/solve_ik", callback_group=self.group),
+                self.create_client(TaskControl, f"/{arm}/task_control", callback_group=self.group))
+        self.ik, self.task_control = self.planning_clients[arm]
 
     def report(self, phase, detail, *, warning=False):
         message = DiagnosticArray()
@@ -127,7 +150,7 @@ class GraspBridge(Node):
 
     def goal(self, request):
         with self.lock:
-            allowed = self.profile_names if request.evaluation_only else [self.profile_name]
+            allowed = self.profile_names
             if self.busy or (request.profile_name and request.profile_name not in allowed) or not request.task_id:
                 return GoalResponse.REJECT
             self.busy = True
@@ -148,9 +171,14 @@ class GraspBridge(Node):
         if timestamp_ns == 0:
             now_ns = self.get_clock().now().nanoseconds
             stamp = stamp_ns(value)
-            if (stamp <= 0 or stamp > now_ns + 10_000_000
-                    or now_ns - stamp > self.settings["maximum_joint_state_age_sec"] * 1e9):
-                raise ValueError("latest flange TF is stale or future; pose drift cannot be verified")
+            age_ns = now_ns - stamp
+            max_age_ns = int(self.settings["maximum_joint_state_age_sec"] * 1e9)
+            if stamp <= 0 or stamp > now_ns + 10_000_000 or age_ns > max_age_ns:
+                raise ValueError(
+                    "latest flange TF is stale or future; pose drift cannot be verified "
+                    f"(parent={parent}, child={child}, stamp_ns={stamp}, now_ns={now_ns}, "
+                    f"age_ms={age_ns / 1e6:.1f}, max_age_ms={max_age_ns / 1e6:.1f})"
+                )
         p, q = value.transform.translation, value.transform.rotation
         return from_pose([p.x, p.y, p.z], [q.w, q.x, q.y, q.z])
 
@@ -206,6 +234,20 @@ class GraspBridge(Node):
         return bool(np.max(np.abs(np.diff(positions, axis=0)/dt[:, None])) <=
                     self.settings["maximum_joint_velocity_rad_sec"])
 
+    def wait_until_stopped(self, canceled):
+        deadline = time.monotonic() + self.settings["post_plan_settle_timeout_sec"]
+        while time.monotonic() < deadline:
+            if canceled():
+                raise PlanningCanceled("planning canceled while waiting for fresh, settled joint feedback")
+            with self.lock:
+                messages = list(self.inputs["joints"])
+            if self.stopped(messages, self.get_clock().now().nanoseconds):
+                return
+            time.sleep(0.02)
+        raise TimeoutError(
+            "arm did not settle with fresh joint feedback within "
+            f"{self.settings['post_plan_settle_timeout_sec']:.1f} s after planning")
+
     def capture(self, canceled, not_before_ns, *, evaluation_only=False):
         deadline = time.monotonic()+self.settings["capture_timeout_sec"]
         problem = "waiting for paired RGB-D and stopped arm"
@@ -234,21 +276,29 @@ class GraspBridge(Node):
                 if approved_intrinsics and camera_identity(cm) != approved_intrinsics:
                     raise ValueError("color intrinsics differ from approved hand-eye calibration")
                 bc, base_camera_transform = self.camera_at_capture(capture_ns)
-                if bc is None and not evaluation_only:
-                    raise ValueError(base_camera_transform["detail"])
+                if bc is None:
+                    message = ("workspace crop requires a valid capture-time base-camera transform: "
+                               + base_camera_transform["detail"])
+                    if base_camera_transform["status"] != "tf_unavailable":
+                        raise WorkspaceCropUnavailable(message)
+                    raise ValueError(message)
                 cd = self.lookup(cm.frame, dm.frame, stamp_ns(depth))
                 up = bc[:3, :3].T @ np.array([0., 0., 1.]) if bc is not None else None
                 if not evaluation_only and up is not None and -up[2] < math.cos(self.settings["maximum_view_tilt_rad"]):
                     raise ValueError("observation is outside verified near-topdown view range")
                 color_bgr = rectify_color(image_array(color), cm)
                 aligned = register_depth(image_array(depth, depth=True), dm, cm, cd)
-                if np.count_nonzero(aligned) < 64:
+                valid_before_crop = int(np.count_nonzero(aligned))
+                if valid_before_crop < 64:
                     raise ValueError("insufficient registered depth")
                 return {"color_bgr": color_bgr, "depth_m": aligned, "K": cm.K,
                         "up_camera": up, "capture_timestamp_ns": capture_ns,
                         "T_base_camera": bc, "base_camera_transform": base_camera_transform,
+                        "depth_valid_pixels_before_crop": valid_before_crop,
                         "seed": np.rad2deg(streams["joints"][-1].position).tolist(),
                         "source_header": color.header}
+            except WorkspaceCropUnavailable:
+                raise
             except (ValueError, LookupError) as exc:
                 problem = str(exc)
             except Exception as exc:
@@ -325,19 +375,36 @@ class GraspBridge(Node):
         self.overlay.publish(message)
         observation["overlay_bgr"] = overlay
 
+    def apply_backend_adjustments(self, response, request):
+        """Apply bridge-owned corrections before any consumer sees candidates."""
+        return adjust_geometry_response(
+            response, request, offset_m=float(self.settings.get("geometry_center_offset_m", 0.0)))
+
     def execute(self, handle):
         result = PlanGrasp.Result()
-        observation = request = response = None
+        observation = request = response = plan = None
         generation = self.generation
+        timings_ms = {}
+        planning_started = phase_started = time.perf_counter()
+        phase_name = "capture"
+
+        def mark_phase(name):
+            nonlocal phase_started
+            now = time.perf_counter()
+            timings_ms[name] = round((now - phase_started) * 1000.0, 1)
+            phase_started = now
+
         canceled = lambda: handle.is_cancel_requested or self.generation != generation
         try:
             if self.dry_run and not handle.request.evaluation_only:
                 raise ValueError("configuration dry-run; no hardware clients or observation: " +
                                  "; ".join(self.profile["readiness_problems"]))
-            selected_profile = (handle.request.profile_name or self.profile_name) if handle.request.evaluation_only else self.profile_name
+            selected_profile = handle.request.profile_name or self.profile_name
             self.profile = load_profile(self.root, selected_profile,
                                         require_ready=not handle.request.evaluation_only)
             self.inputs = self.profile_inputs[selected_profile]
+            if not handle.request.evaluation_only:
+                self.select_planning_clients(self.profile["arm"])
             backend = handle.request.backend or self.settings["backend"]
             if backend == "mock":
                 raise ValueError("mock candidates cannot produce live robot plans")
@@ -348,6 +415,39 @@ class GraspBridge(Node):
             self.feedback(handle, "capture", "waiting for new paired observation")
             observation = self.capture(canceled, self.get_clock().now().nanoseconds,
                                        evaluation_only=handle.request.evaluation_only)
+            mark_phase("capture")
+            phase_name = "workspace_crop"
+            depth = np.asarray(observation["depth_m"])
+            valid_before_crop = int(observation.get(
+                "depth_valid_pixels_before_crop",
+                np.count_nonzero(np.isfinite(depth) & (depth > 0))))
+            try:
+                cropped_depth = crop_depth_to_workspace(
+                    depth, observation["K"], observation["T_base_camera"], self.profile["workspace_m"])
+            except ValueError as exc:
+                raise ValueError(f"workspace depth crop failed: {exc}") from exc
+            valid_after_crop = int(np.count_nonzero(cropped_depth))
+            if valid_after_crop < 100:
+                raise ValueError("insufficient workspace depth after crop: "
+                                 f"{valid_after_crop} valid pixels, require at least 100")
+            # Inference and the TCP corridor use the tight workspace crop, but
+            # collision detection needs a wider region so obstacles just outside
+            # the corridor (e.g. bin walls the fingers could still hit) are kept.
+            collision_region = self.profile.get("collision_workspace_m")
+            if collision_region is None:
+                collision_depth = cropped_depth
+            else:
+                try:
+                    collision_depth = crop_depth_to_workspace(
+                        depth, observation["K"], observation["T_base_camera"], collision_region)
+                except ValueError as exc:
+                    raise ValueError(f"collision workspace depth crop failed: {exc}") from exc
+            observation = {**observation, "depth_m": cropped_depth, "collision_depth_m": collision_depth,
+                           "workspace_crop_status": "applied",
+                           "depth_valid_pixels_before_crop": valid_before_crop,
+                           "depth_valid_pixels_after_crop": valid_after_crop}
+            mark_phase("workspace_crop")
+            phase_name = "inference"
             request = {"type": "infer", "protocol_version": PROTOCOL_VERSION,
                        "task_id": handle.request.task_id, "request_id": uuid.uuid4().hex,
                        "observation_id": uuid.uuid4().hex, "generation": generation,
@@ -362,7 +462,7 @@ class GraspBridge(Node):
                        "T_base_camera": observation["T_base_camera"],
                        **{k: observation[k] for k in ("color_bgr", "depth_m", "K", "up_camera")}}
             if handle.request.evaluation_only:
-                self.publish_evaluation(observation, request, phase="captured")
+                self.publish_evaluation(observation, request, source="web_evaluation", phase="captured")
             validate_request(request)
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
@@ -370,14 +470,45 @@ class GraspBridge(Node):
             response = infer(self.settings["ws_uri"], request, expected_model_id=self.settings["expected_model_id"],
                              connect_timeout_sec=self.settings["connect_timeout_sec"],
                              inference_timeout_sec=self.settings["inference_timeout_sec"], canceled=canceled)
+            mark_phase("inference")
+            phase_name = "collision"
+            if canceled():
+                raise PlanningCanceled("planning canceled after inference")
             if not handle.request.evaluation_only:
                 self.validate_lease(handle.request.lease_token, canceled)
+            response = self.apply_backend_adjustments(response, request)
+            # Discard candidates whose grasp center is already outside workspace_m
+            # before collision and planning spend effort on unreachable poses.
+            response = discard_out_of_workspace(
+                response, observation["T_base_camera"], self.profile["workspace_m"])
+            workspace_filter = response["diagnostics"]["workspace_filter"]
+            if workspace_filter["discarded_candidates"]:
+                self.get_logger().warning(
+                    "workspace filter discarded {}/{} candidates: {}".format(
+                        workspace_filter["discarded_candidates"], workspace_filter["input_candidates"],
+                        "; ".join(f"{item['candidate_id']}: {item['reason']}"
+                                   for item in workspace_filter["discarded"])))
+            if not response["candidates"]:
+                raise ValueError(
+                    "all {} candidates discarded: every grasp center is outside workspace_m".format(
+                        workspace_filter["input_candidates"]))
+            # Collision geometry is generated only after backend alignment and the
+            # bridge-owned contact offset have been applied.
+            response = annotate_candidates(response, observation, self.profile, self.collision_config)
+            mark_phase("collision")
+            phase_name = "visualization"
+            if canceled():
+                raise PlanningCanceled("planning canceled after collision evaluation")
             self.visualize(response, observation)
+            mark_phase("visualization")
             if handle.request.evaluation_only:
+                phase_name = "review"
                 if canceled():
                     raise PlanningCanceled("evaluation canceled")
                 self.publish_evaluation(observation, request, response=response, phase="inferred",
-                                        detail="evaluation only; no IK or waypoints")
+                                        source="web_evaluation", detail="evaluation only; no IK or waypoints")
+                mark_phase("review")
+                timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
                 result.success = True
                 result.observation_id = request["observation_id"]
                 result.profile_id = self.profile["profile_id"]
@@ -387,19 +518,35 @@ class GraspBridge(Node):
                 result.message = "evaluation complete; no IK, waypoints, robot or gripper commands"
                 result.diagnostics_json = json.dumps({"observation_id": request["observation_id"],
                                                       "candidate_count": len(response["candidates"]),
-                                                      "read_only": True})
+                                                      "read_only": True, "timings_ms": timings_ms})
                 handle.succeed()
+                self.get_logger().info(f"Grasp evaluation timings_ms={timings_ms}")
                 self.report("evaluation", f"{request['observation_id']}: {len(response['candidates'])} candidates")
                 return result
-            self.feedback(handle, "filter", "checking restricted corridor and IK", len(response["candidates"]))
-            plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
-                               lambda T, seed: self.solve(T, seed, canceled),
-                               sample_step_m=self.settings["cartesian_sample_step_m"],
-                               max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled)
-            with self.lock:
-                current_joints = list(self.inputs["joints"])
-            if not self.stopped(current_joints, self.get_clock().now().nanoseconds):
-                raise ValueError("arm is moving or joint feedback is stale after planning")
+            phase_name = "waypoint_plan"
+            ik_precheck = self.settings.get("ik_precheck", True)
+            self.feedback(handle, "filter",
+                          "checking restricted corridor and IK" if ik_precheck
+                          else "calculating grasp waypoints; IK precheck disabled",
+                          len(response["candidates"]))
+            if ik_precheck:
+                plan = choose_plan(response["candidates"], self.profile, observation["T_base_camera"], observation["seed"],
+                                   lambda T, seed: self.solve(T, seed, canceled),
+                                   sample_step_m=self.settings["cartesian_sample_step_m"],
+                                   max_joint_step=self.settings["maximum_ik_step_degrees"], canceled=canceled,
+                                   collision_config=self.collision_config)
+            else:
+                plan = attach_seed_joints(
+                    calculate_plan(response["candidates"], self.profile, observation["T_base_camera"], canceled=canceled,
+                                   collision_config=self.collision_config),
+                    observation["seed"],
+                )
+            mark_phase("waypoint_plan")
+            phase_name = "settle"
+            self.feedback(handle, "settle", "waiting for fresh, settled joint feedback")
+            self.wait_until_stopped(canceled)
+            mark_phase("settle")
+            phase_name = "finalize"
             current = self.lookup(self.profile["base_frame"], self.profile["flange_frame"], 0) @ transform(
                 self.profile["calibration_data"]["T_flange_color"])
             translation, rotation = pose_drift(observation["T_base_camera"], current)
@@ -408,7 +555,7 @@ class GraspBridge(Node):
                     or rotation > self.settings["maximum_rotation_drift_rad"]
                     or self.get_clock().now().nanoseconds >= expires):
                 raise ValueError("captured scene/pose has expired; observe again")
-            if load_profile(self.root, self.profile_name)["profile_id"] != self.profile["profile_id"] or canceled():
+            if load_profile(self.root, selected_profile)["profile_id"] != self.profile["profile_id"] or canceled():
                 raise PlanningCanceled("profile changed or task canceled; plan invalidated")
             self.validate_lease(handle.request.lease_token, canceled)
             result.success = True
@@ -419,35 +566,54 @@ class GraspBridge(Node):
             for name, waypoint in plan["waypoints"].items():
                 for field in ("position_m", "quaternion_wxyz", "joint_degrees"):
                     setattr(result, name + "_" + field, waypoint[field])
-            result.message = "planned; restricted corridor only, physical grasp unverified"
+            result.message = ("planned; restricted corridor only, physical grasp unverified"
+                              if ik_precheck else
+                              "planned; IK precheck skipped, controller will validate MOVEL")
             # The lossless label PNG belongs to the binary archive/review image,
             # not the ROS plan JSON. Preserve its hash and archive identity.
             server_diagnostics = {key: value for key, value in response.get("diagnostics", {}).items()
                                   if key != "segmap_png"}
+            mark_phase("finalize")
+            phase_name = "review"
+            self.publish_evaluation(observation, request, response=response, plan=plan, phase="planned",
+                                    source="behavior_tree", detail=f"selected {plan['candidate_id']}")
+            mark_phase("review")
+            timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
             result.diagnostics_json = json.dumps(json_value({
                 "plan_id": result.plan_id, "observation_id": result.observation_id,
-                "profile_id": result.profile_id, **plan, "server": server_diagnostics}))
+                "profile_id": result.profile_id, "ik_precheck": ik_precheck,
+                "timings_ms": timings_ms, **plan, "server": server_diagnostics}))
             self.plans.publish(String(data=result.diagnostics_json))
             handle.succeed()
+            self.get_logger().info(f"Grasp planning timings_ms={timings_ms}")
             self.report("planned", result.plan_id)
         except Exception as exc:
-            if handle.request.evaluation_only and observation is not None and request is not None:
-                self.publish_evaluation(observation, request, response=response, phase="rejected", detail=str(exc))
+            mark_phase(phase_name)
+            rejections = exc.rejections if isinstance(exc, NoReachableCandidate) else []
+            if observation is not None and request is not None and response is not None:
+                self.publish_evaluation(observation, request, response=response, plan=plan,
+                                        rejections=rejections,
+                                        source="web_evaluation" if handle.request.evaluation_only else "behavior_tree",
+                                        phase="rejected", detail=str(exc))
+                mark_phase("rejection_review")
+            timings_ms["total"] = round((time.perf_counter() - planning_started) * 1000.0, 1)
             result.success, result.message = False, str(exc)
+            result.diagnostics_json = json.dumps({"timings_ms": timings_ms, "rejections": rejections})
             if handle.is_cancel_requested:
                 handle.canceled()
             else:
                 handle.abort()
-            self.get_logger().warning(f"Grasp planning rejected: {exc}")
+            self.get_logger().warning(f"Grasp planning rejected: {exc}; timings_ms={timings_ms}")
             self.report("rejected", str(exc), warning=True)
         finally:
             with self.lock:
                 self.busy = False
         return result
 
-    def publish_evaluation(self, observation, request, **values):
+    def publish_evaluation(self, observation, request, *, source="web_evaluation", **values):
         try:
-            evaluation = snapshot(observation, self.profile, request, **values)
+            evaluation = snapshot(observation, self.profile, request, source=source,
+                                  collision_config=self.collision_config, **values)
             self.evaluations.publish(String(data=json.dumps(evaluation, separators=(",", ":"))))
         except (TypeError, ValueError, KeyError) as exc:
             self.get_logger().warning(f"Unable to publish grasp evaluation snapshot: {exc}")

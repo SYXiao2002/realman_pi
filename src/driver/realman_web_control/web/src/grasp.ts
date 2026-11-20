@@ -1,7 +1,7 @@
 import "./theme.css";
 import "./grasp.css";
 import { Quaternion } from "three";
-import { GraspView, matrix, wirePoints, stageFrame, contactFrame, rankColor, type Stage } from "./grasp_view";
+import { GraspView, matrix, wirePoints, boxWirePoints, contactFrame, candidateColor, type Stage } from "./grasp_view";
 import { validSnapshot, newerSnapshot } from "./grasp_state";
 import { GraspMotion } from "./grasp_motion";
 
@@ -10,7 +10,7 @@ type Candidate = Record<string, any> & { candidate_id: string; T_camera_grasp: n
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
-  <header class="grasp-topbar"><div><span class="eyebrow">REALMAN / GRASP REVIEW</span><h1>Grasp 离线评估</h1></div><span class="spacer"></span><span id="connection" class="status-pill offline">OFFLINE</span><a class="button ghost" href="/">控制台</a><a class="button ghost" href="/calibration.html">标定</a></header>
+  <header class="grasp-topbar"><div><span class="eyebrow">REALMAN / GRASP REVIEW</span><h1>Grasp 离线评估</h1></div><span class="spacer"></span><span id="connection" class="status-pill offline">OFFLINE</span><a class="button ghost" href="/grasp_plan.html">规划可视化</a><a class="button ghost" href="/">控制台</a><a class="button ghost" href="/calibration.html">标定</a></header>
   <main class="grasp-workspace">
       <section class="panel grasp-panel grasp-wide"><h2>评估上下文</h2><div class="grasp-context">
         <label>机械臂<select id="profile"><option value="right_wrist">右腕 / r</option><option value="left_wrist">左腕 / l</option></select></label>
@@ -19,7 +19,7 @@ app.innerHTML = `
         <label>CGN 点云范围<select id="cgn-context"><option value="mask">mask</option><option value="box">box</option><option value="full">full</option></select></label>
         <button id="evaluate" class="button primary" type="button">采集并评估</button>
       </div><div class="grasp-actions"><span class="grasp-readonly">采集与选择候选不会运动；在基座系 MOVEL 面板点击发送后执行直线运动。</span><span id="state" class="grasp-state">等待 bridge 观测</span></div></section>
-      <section class="panel grasp-panel grasp-wide"><div class="grasp-layout-heading"><h2>采集时机械臂布局</h2><button id="fit-layout" class="button ghost" type="button">重置取景</button></div><canvas id="layout" class="layout-canvas" aria-label="采集时机械臂与对齐后抓取位姿"></canvas><p id="viewer-status" class="hint"></p>
+        <section class="panel grasp-panel grasp-wide"><div class="grasp-layout-heading"><div><h2>采集时机械臂布局</h2><p class="hint">彩色点云由采集 RGB 与注册深度逐像素反投影，点云在相机光学系并按拍照时外参放入基座系。</p></div><div class="layout-tools"><label for="layout-point-size">点大小 <input id="layout-point-size" type="range" min="1" max="8" value="3.5" step="0.5"><output id="layout-point-size-value">3.5 px</output></label><button id="fit-layout" class="button ghost" type="button">重置取景</button></div></div><canvas id="layout" class="layout-canvas" aria-label="采集时机械臂、RGB 反投影点云与抓取候选"></canvas><p id="viewer-status" class="hint"></p>
         <div class="grasp-pose-heading"><h3>所选候选 · 接触中心 Pose</h3><label>候选<select id="pose-candidate" disabled><option value="">选择候选</option></select></label></div><p id="pose-status" class="hint" role="status">等待评估结果</p>
         <div class="grasp-poses"><section class="grasp-pose"><h3>对齐前</h3><div id="pose-before">—</div></section><section class="grasp-pose"><h3>对齐后</h3><div id="pose-after">—</div></section></div>
       </section>
@@ -29,8 +29,8 @@ app.innerHTML = `
       <section class="panel grasp-panel"><h2>生成后竖直对齐 · 前后对照</h2><p id="alignment-status" class="hint" role="status">等待评估结果</p><div class="grasp-compare">
         <div><h3>对齐前 · 原始生成</h3><figure class="grasp-image"><canvas id="projection" aria-label="对齐前 RGB 线框投影"></canvas><figcaption>对齐前 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view" aria-label="对齐前 RGB-D 相机系点云"></canvas><figcaption>对齐前 / 点云</figcaption></figure></div>
         <div><h3>对齐后 · 基座 −Z</h3><figure class="grasp-image"><canvas id="projection-after" aria-label="对齐后 RGB 线框投影"></canvas><figcaption>对齐后 / RGB</figcaption></figure><figure class="grasp-image"><canvas id="cloud-view-after" aria-label="对齐后 RGB-D 相机系点云"></canvas><figcaption>对齐后 / 点云</figcaption></figure></div>
-        </div><p class="hint">同步旋转与缩放 · 默认 Top 5 · 两侧同编号同色。线框沿用原离线预览的算法示意尺寸，不代表实测夹爪。</p><div id="candidate-legend" class="candidate-legend" aria-label="候选显示开关"></div></section>
-      <section class="panel grasp-panel"><h2>Policy 候选</h2><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="6">等待评估结果</td></tr></tbody></table></div></section>
+        </div><div class="pose-visibility-controls"><label>Pose 显示范围<select id="pose-visibility-mode" disabled><option value="pose">单个 Pose</option><option value="instance">单个实例全部 Pose</option><option value="all">所有实例 Pose</option><option value="custom">手动选择</option></select></label><label>显示目标<select id="pose-visibility-target" disabled></select></label></div><p class="hint">两侧同编号同色。线框沿用原离线预览的算法示意尺寸，不代表实测夹爪。</p><div id="candidate-legend" class="candidate-legend" aria-label="候选显示开关"></div></section>
+      <section class="panel grasp-panel"><h2>Policy 候选</h2><p class="hint">几何候选 ID 格式为“分割实例 ID:该实例内序号”（从 0 开始），如 16:0 表示实例 16 的第 1 个候选。</p><div class="grasp-table-wrap"><table class="grasp-candidates"><thead><tr><th>候选</th><th>类别</th><th>分数</th><th>宽度</th><th>相机系 XYZ</th><th>基座系 XYZ</th><th>规划</th><th>拒绝原因</th></tr></thead><tbody id="candidate-rows"><tr><td colspan="8">等待评估结果</td></tr></table></div></section>
     </div>
     <aside class="grasp-side">
       <section class="panel grasp-panel"><h2>采集信息与 readiness</h2><dl id="details" class="grasp-details"><div><dt>Profile</dt><dd>—</dd></div></dl><div id="readiness" class="readiness-list" role="status">等待 readiness</div></section>
@@ -44,11 +44,16 @@ const profile = $<HTMLSelectElement>("#profile"), target = $<HTMLSelectElement>(
 const backend = $<HTMLSelectElement>("#backend"), reviewCandidate = $<HTMLSelectElement>("#review-candidate");
 const cgnContext = $<HTMLSelectElement>("#cgn-context");
 const poseCandidate = $<HTMLSelectElement>("#pose-candidate");
+const visibilityModeSelect = $<HTMLSelectElement>("#pose-visibility-mode");
+const visibilityTargetSelect = $<HTMLSelectElement>("#pose-visibility-target");
+const pointSize = $<HTMLInputElement>("#layout-point-size"), pointSizeValue = $<HTMLOutputElement>("#layout-point-size-value");
 const verdict = $<HTMLSelectElement>("#verdict"), notes = $<HTMLTextAreaElement>("#notes");
 const evaluate = $<HTMLButtonElement>("#evaluate"), rows = $("#candidate-rows");
 let socket: WebSocket | undefined, observation: EventMessage | undefined;
 let candidates: Candidate[] = [], selectedCandidate = "", pendingRequest = "", offline = false;
 let visibleCandidates = new Set<string>();
+type VisibilityMode = "pose" | "instance" | "all" | "custom";
+let visibilityMode: VisibilityMode = "pose", visibilityTarget = "";
 let profileArms: Record<string, string> = { right_wrist: "r", left_wrist: "l" };
 const graspMotion = new GraspMotion($<HTMLElement>("#grasp-movel"), () => socket);
 const viewer = new GraspView($<HTMLCanvasElement>("#cloud-view"), $<HTMLCanvasElement>("#cloud-view-after"), $<HTMLCanvasElement>("#layout"),
@@ -57,10 +62,39 @@ const phaseOrder: Record<string, number> = { captured: 0, inferred: 1, rejected:
 const storageKey = () => `grasp-review/v1:${observation?.profile_id}:${observation?.observation_id}`;
 function status(message: string, level = "") { $("#state").textContent = message; $("#state").dataset.level = level; }
 function setPending(id: string) { pendingRequest = id; evaluate.disabled = !!id; }
+function objectId(candidate: Candidate) { return String(candidate.object_id ?? candidate.candidate_id.split(":", 1)[0]); }
+function objectCandidates(id: string) { return candidates.filter((candidate) => objectId(candidate) === id); }
+function syncVisibilityControls() {
+  visibilityModeSelect.value = visibilityMode;
+  visibilityModeSelect.disabled = !candidates.length;
+  visibilityTargetSelect.replaceChildren();
+  if (visibilityMode === "pose") {
+    candidates.forEach((candidate, rank) => visibilityTargetSelect.add(new Option(`#${rank + 1} · ${candidate.candidate_id}`, candidate.candidate_id)));
+    if (!candidates.some((candidate) => candidate.candidate_id === visibilityTarget)) visibilityTarget = selectedCandidate || candidates[0]?.candidate_id || "";
+  } else if (visibilityMode === "instance") {
+    const groups = new Map<string, Candidate[]>();
+    candidates.forEach((candidate) => groups.set(objectId(candidate), [...(groups.get(objectId(candidate)) || []), candidate]));
+    groups.forEach((group, id) => visibilityTargetSelect.add(new Option(`实例 ${id} · ${group.length} 个 Pose`, id)));
+    if (!groups.has(visibilityTarget)) visibilityTarget = groups.keys().next().value || "";
+  } else if (visibilityMode === "all") {
+    visibilityTargetSelect.add(new Option("所有实例", "all")); visibilityTarget = "all";
+  } else {
+    visibilityTargetSelect.add(new Option("使用下方手动开关", "custom")); visibilityTarget = "custom";
+  }
+  visibilityTargetSelect.disabled = visibilityMode === "all" || visibilityMode === "custom" || !candidates.length;
+  visibilityTargetSelect.value = visibilityTarget;
+}
+function applyVisibilityScope() {
+  if (visibilityMode === "pose") visibleCandidates = visibilityTarget ? new Set([visibilityTarget]) : new Set();
+  else if (visibilityMode === "instance") visibleCandidates = new Set(objectCandidates(visibilityTarget).map((candidate) => candidate.candidate_id));
+  else if (visibilityMode === "all") visibleCandidates = new Set(candidates.map((candidate) => candidate.candidate_id));
+  renderVisibility();
+}
 
 function clearObservation() {
   observation = undefined; candidates = []; selectedCandidate = ""; viewer.update(undefined, "");
   visibleCandidates.clear(); $("#candidate-legend").replaceChildren();
+  visibilityMode = "pose"; visibilityTarget = ""; syncVisibilityControls();
   $("#alignment-status").textContent = "等待评估结果";
   $("#readiness").textContent = "等待 readiness";
   for (const kind of ["rgb", "depth", "overlay", "instances"]) { const image = $<HTMLImageElement>(`#${kind}`);
@@ -87,13 +121,14 @@ function drawProjection() {
     const K = observation.K;
     const rendered: string[] = [];
     for (const [rank, item] of candidates.entries()) {
-      const frame = stageFrame(item, stage);
+      const frame = contactFrame(item, stage);
       if (!frame || !visibleCandidates.has(item.candidate_id)) continue;
-      const T = matrix(frame), points = wirePoints(item, observation.gripper).map((p) => p.applyMatrix4(T));
+      const T = matrix(frame), points = (item.collision?.geometry ? boxWirePoints(item.collision.geometry) : wirePoints(item, observation.gripper))
+        .map((p) => p.applyMatrix4(T));
       const origin = { x: frame[0][3], y: frame[1][3], z: frame[2][3] };
       const project = (p: typeof origin) => [dx + (K[0][0] * p.x / p.z + K[0][2]) * scale,
         dy + (K[1][1] * p.y / p.z + K[1][2]) * scale];
-      ctx.strokeStyle = rankColor(rank); ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = item.candidate_id === selectedCandidate ? 3 : 2;
+      ctx.strokeStyle = candidateColor(item, rank); ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = item.candidate_id === selectedCandidate ? 3 : 2;
       if (points.length && points.every((p) => p.z > 0)) { ctx.beginPath(); points.forEach((p, i) => { const [x, y] = project(p); if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke(); }
       if (origin.z > 0) { const [x, y] = project(origin); ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.stroke(); ctx.font = "bold 12px sans-serif"; ctx.fillText(`#${rank + 1}`, x + 6, y - 6); }
       rendered.push(item.candidate_id);
@@ -107,11 +142,16 @@ function renderVisibility() {
 }
 function selectCandidate(id: string) {
   selectedCandidate = candidates.some((item) => item.candidate_id === id) ? id : "";
+  if (visibilityMode === "pose") {
+    visibilityTarget = selectedCandidate;
+    visibleCandidates = selectedCandidate ? new Set([selectedCandidate]) : new Set();
+  }
   reviewCandidate.value = selectedCandidate;
   poseCandidate.value = selectedCandidate;
   rows.querySelectorAll("tr[data-id]").forEach((row) => row.setAttribute("data-selected", String(row.getAttribute("data-id") === selectedCandidate)));
   $("#save-review").toggleAttribute("disabled", !observation);
-  if (selectedCandidate) visibleCandidates.add(selectedCandidate);
+  if (visibilityMode === "custom" && selectedCandidate) visibleCandidates.add(selectedCandidate);
+  syncVisibilityControls();
   renderVisibility(); renderPoses(); renderDiagnostics(); renderMotionTarget();
 }
 function baseContactPose(candidate: Candidate, stage: Stage) {
@@ -175,7 +215,11 @@ function renderDiagnostics() {
     seed_joint_degrees: observation.seed_joint_degrees,
     depth_stats: observation.depth_stats, server: observation.server_diagnostics,
     gripper: observation.gripper, readiness_problems: observation.readiness_problems,
-    evaluation_only: true, ik_checked: false, collision_checked: false }, null, 2);
+    evaluation_only: observation.source !== "behavior_tree", ik_checked: observation.phase === "planned" || observation.phase === "rejected",
+    collision_checked: Boolean(candidate?.collision), collision: candidate?.collision,
+    workspace_m: observation.workspace_m, candidate_planning_status: candidate?.planning_status,
+    candidate_planning_reason: candidate?.planning_reason, planning_rejections: observation.planning_rejections,
+    plan: observation.plan }, null, 2);
 }
 function reviewRecord() { return { schema: "grasp-review/v1", observation_id: observation?.observation_id,
   profile_id: observation?.profile_id, stage: $<HTMLSelectElement>("#review-stage").value, candidate_id: selectedCandidate, verdict: verdict.value,
@@ -189,7 +233,7 @@ function applyReview(record: any) {
 function renderSnapshot(message: EventMessage) {
   const previousId = observation?.observation_id, previousSelection = selectedCandidate;
   observation = message; candidates = message.candidates;
-  if (previousId !== message.observation_id || !visibleCandidates.size) visibleCandidates = new Set(candidates.slice(0, 5).map((c) => c.candidate_id));
+  if (previousId !== message.observation_id) { visibilityMode = "pose"; visibilityTarget = candidates[0]?.candidate_id || ""; }
   const alignment = message.server_diagnostics?.vertical_alignment_status;
   $("#alignment-status").textContent = alignment === "applied" ? "已复用原项目竖直对齐：接近轴对齐基座 −Z，接触中心保持不变。"
     : alignment === "backend_not_applicable" ? "Contact-GraspNet 沿用原项目规则，不执行几何竖直对齐；右侧显示原始结果。"
@@ -199,15 +243,15 @@ function renderSnapshot(message: EventMessage) {
     const label = document.createElement("label"), input = document.createElement("input"), swatch = document.createElement("span");
     input.type = "checkbox"; input.value = item.candidate_id; input.checked = visibleCandidates.has(item.candidate_id);
     input.setAttribute("aria-label", `显示 #${rank + 1} ${item.candidate_id}`);
-    swatch.className = "rank-swatch"; swatch.style.backgroundColor = rankColor(rank);
-    input.addEventListener("change", () => { if (input.checked) visibleCandidates.add(item.candidate_id); else visibleCandidates.delete(item.candidate_id); renderVisibility(); });
+    swatch.className = "rank-swatch"; swatch.style.backgroundColor = candidateColor(item, rank);
+    input.addEventListener("change", () => { visibilityMode = "custom"; if (input.checked) visibleCandidates.add(item.candidate_id); else visibleCandidates.delete(item.candidate_id); syncVisibilityControls(); renderVisibility(); });
     label.append(input, swatch, document.createTextNode(`#${rank + 1} · ${item.candidate_id} · object ${item.object_id || '—'} · ${Number(item.score).toFixed(3)} · ${(item.width_m * 1000).toFixed(1)} mm`));
     return label;
   }));
   const values = [["Profile", `${message.profile_name} / ${message.arm}`], ["Target / backend", `${message.target_label} / ${message.backend}`],
     ["Observation", message.observation_id], ["采样时间", new Date(Number(message.capture_timestamp_ns) / 1e6).toLocaleString()],
     ["Camera → base", `${message.camera_frame} → ${message.base_frame}`], ["标定 / model", `${message.calibration_id || "未批准"} / ${message.model_id || "未推理"}`],
-    ["Tool / gripper", `${message.tool_name} / ${message.gripper?.id}`], ["状态", "只读 · 未验证 IK / 碰撞"]];
+    ["Tool / gripper", `${message.tool_name} / ${message.gripper?.id}`], ["状态", "只读 · 已执行点云碰撞评估"]];
   const skipped = message.server_diagnostics?.skipped_instances;
   if (Array.isArray(skipped) && skipped.length) values.push(["跳过的深度不足实例", skipped.map((item: any) =>
     `#${item.object_id}：${item.valid_points}/${item.minimum_points} 点`).join("；")]);
@@ -221,7 +265,7 @@ function renderSnapshot(message: EventMessage) {
     for (const problem of message.readiness_problems) { const item = document.createElement("li"); item.textContent = problem; list.append(item); }
     readiness.append(list);
   } else {
-    const note = document.createElement("p"); note.textContent = "配置项已就绪；候选未验证 IK / 碰撞，手动 MOVEL 需另外点击发送。"; readiness.append(note);
+    const note = document.createElement("p"); note.textContent = "配置项已就绪；候选碰撞结果基于当前可见点云，手动 MOVEL 仍需另外点击发送。"; readiness.append(note);
   }
   for (const kind of ["rgb", "depth", "overlay", "instances"]) {
     const image = $<HTMLImageElement>(`#${kind}`), id = message.observation_id;
@@ -233,20 +277,27 @@ function renderSnapshot(message: EventMessage) {
   rows.replaceChildren(); reviewCandidate.replaceChildren(new Option("选择候选", "")); poseCandidate.replaceChildren(new Option("选择候选", ""));
   for (const item of candidates) {
     const tr = document.createElement("tr"); tr.dataset.id = item.candidate_id;
+    const collision = item.collision;
+    const collisionText = collision ? `${collision.status} · 间隙 ${collision.min_clearance_m == null ? "—" : (collision.min_clearance_m * 1000).toFixed(1)} mm · 穿透 ${collision.max_penetration_m == null ? "—" : (collision.max_penetration_m * 1000).toFixed(1)} mm · ${collision.collision_points ?? 0}/${collision.near_points ?? 0} 点 · ${collision.worst_stage || "—"}` : "未执行碰撞评估";
+    tr.dataset.collisionStatus = collision?.status || "unknown";
     const xyz = (T?: number[][] | null) => T?.slice(0, 3).map((row) => row[3].toFixed(3)).join(", ") || "未标定";
-    [item.candidate_id, item.class_name, Number(item.score).toFixed(3), `${(item.width_m * 1000).toFixed(1)} mm`, xyz(item.T_camera_grasp), xyz(item.T_base_grasp)].forEach((value, i) => {
+    [item.candidate_id, item.class_name, Number(item.score).toFixed(3), `${(item.width_m * 1000).toFixed(1)} mm`, xyz(item.T_camera_grasp), xyz(item.T_base_grasp),
+      `${collisionText} · ${item.planning_status === "selected" ? "通过 / 选中" : item.planning_status === "rejected" ? "拒绝" : item.planning_status === "not_checked" ? "未检查" : "只读候选"}`,
+      item.planning_reason || "—"].forEach((value, i) => {
       const td = document.createElement("td"); if (!i) { const button = document.createElement("button"); button.textContent = String(value); button.addEventListener("click", () => selectCandidate(item.candidate_id)); td.append(button); }
       else td.textContent = String(value); tr.append(td);
     }); rows.append(tr); reviewCandidate.add(new Option(item.candidate_id, item.candidate_id)); poseCandidate.add(new Option(item.candidate_id, item.candidate_id));
   }
-  if (!candidates.length) { const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = 6; td.textContent = "该 observation 没有 policy 候选"; tr.append(td); rows.append(tr); }
+  if (!candidates.length) { const tr = document.createElement("tr"), td = document.createElement("td"); td.colSpan = 8; td.textContent = "该 observation 没有 policy 候选"; tr.append(td); rows.append(tr); }
   reviewCandidate.disabled = !candidates.length; $("#export-review").toggleAttribute("disabled", false);
   poseCandidate.disabled = !candidates.length;
+  syncVisibilityControls();
   if (previousId === message.observation_id) selectCandidate(previousSelection || candidates[0]?.candidate_id || "");
   else { let saved = {}; try { saved = JSON.parse(localStorage.getItem(storageKey()) || "{}"); } catch { /* local annotation is optional */ }
     applyReview(saved); $("#review-status").textContent = ""; }
   status(`${offline ? "离线文件" : "只读观测"} · ${message.phase}${message.detail ? `：${message.detail}` : ""}`, message.phase === "rejected" ? "bad" : "");
 }
+let sharedDefaultsLoaded = false;
 function handle(message: EventMessage) {
   graspMotion.handle(message);
   if (message.type === "hello") { $("#connection").textContent = "CONNECTED"; $("#connection").className = "status-pill ready"; }
@@ -254,17 +305,25 @@ function handle(message: EventMessage) {
     const profiles = Array.isArray(message.profiles) ? message.profiles.filter((p: any) => typeof p.name === "string" && ["r", "l"].includes(p.arm)) : [];
     if (profiles.length && !offline) { const selected = profile.value; profileArms = Object.fromEntries(profiles.map((p: any) => [p.name, p.arm]));
       profile.replaceChildren(...profiles.map((p: any) => new Option(`${p.name} / ${p.arm.toUpperCase()}`, p.name)));
-      profile.value = profileArms[selected] ? selected : message.default_profile || profiles[0].name;
+      profile.value = sharedDefaultsLoaded && profileArms[selected] ? selected : message.default_profile || profiles[0].name;
+      if (!sharedDefaultsLoaded) {
+        for (const [select, value] of [[backend, message.default_backend], [target, message.default_target_label],
+          [cgnContext, message.default_cgn_context]] as const) {
+          if (Array.from(select.options).some((option) => option.value === value)) select.value = value;
+        }
+        sharedDefaultsLoaded = true;
+      }
     }
   } else if (message.type === "grasp_evaluation") {
-    if (offline || !validSnapshot(message) || message.profile_name !== profile.value || message.arm !== profileArms[profile.value]
+    if (offline || message.source === "behavior_tree" || !validSnapshot(message)
+      || message.profile_name !== profile.value || message.arm !== profileArms[profile.value]
       || message.target_label !== target.value || message.backend !== backend.value
       || (message.cgn_context && message.cgn_context !== cgnContext.value)
       || (pendingRequest && message.review_request_id !== pendingRequest) || !newerSnapshot(message, observation)) return;
     renderSnapshot(message);
   } else if (["grasp_plan_result", "grasp_plan_feedback", "error"].includes(message.type) && message.request_id === pendingRequest) {
     if (message.type === "grasp_plan_feedback") status(`${message.feedback?.phase}：${message.feedback?.detail}`);
-    else if (message.state !== "submitted") { setPending(""); status(message.success ? "评估完成 · 只读 · 未做 IK / 碰撞检查" : `评估拒绝：${message.message}`, message.success ? "good" : "bad"); }
+    else if (message.state !== "submitted") { setPending(""); status(message.success ? "评估完成 · 只读 · 未做 IK；已执行碰撞评估" : `评估拒绝：${message.message}`, message.success ? "good" : "bad"); }
   }
 }
 function connect() {
@@ -282,7 +341,10 @@ evaluate.addEventListener("click", () => {
 for (const select of [profile, target, backend, cgnContext]) select.addEventListener("change", () => { setPending(""); offline = false; clearObservation(); status("上下文已切换，等待新评估"); });
 reviewCandidate.addEventListener("change", () => selectCandidate(reviewCandidate.value));
 poseCandidate.addEventListener("change", () => selectCandidate(poseCandidate.value));
+visibilityModeSelect.addEventListener("change", () => { visibilityMode = visibilityModeSelect.value as VisibilityMode; syncVisibilityControls(); applyVisibilityScope(); });
+visibilityTargetSelect.addEventListener("change", () => { visibilityTarget = visibilityTargetSelect.value; if (visibilityMode === "pose") selectCandidate(visibilityTarget); else applyVisibilityScope(); });
 $("#fit-layout").addEventListener("click", () => viewer.resetLayoutView());
+pointSize.addEventListener("input", () => { pointSizeValue.value = `${pointSize.value} px`; viewer.setPointSize(Number(pointSize.value)); });
 $("#save-review").addEventListener("click", () => { if (!observation) return; try { localStorage.setItem(storageKey(), JSON.stringify(reviewRecord())); $("#review-status").textContent = "已保存在此浏览器"; } catch { $("#review-status").textContent = "本地存储不可用，请导出 JSON"; } });
 $("#export-review").addEventListener("click", () => {
   if (!observation) return; const payload = { schema: "grasp-review/v1", observation, review: reviewRecord() };

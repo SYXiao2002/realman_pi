@@ -14,6 +14,7 @@ app.innerHTML = `
     <section class="panel health-panel"><div class="panel-title"><div><span class="eyebrow">CAMERA INPUT HEALTH</span><h2>当前腕相机输入状态</h2></div><span id="health-state" class="status">WAITING</span></div><div id="camera-health" class="camera-health"><p class="hint">等待标定节点上报图像与 CameraInfo 状态…</p></div></section>
     <section class="panel capture-panel"><div class="panel-title"><div><span class="eyebrow">CAPTURE SESSION</span><h2>保存样本</h2></div><span id="session-state" class="status">NO SESSION</span></div><label>标定机械臂<select id="calibration-arm"><option value="r">RIGHT / r / camera_right</option><option value="l">LEFT / l / camera_left</option></select></label><label>Session ID<input id="session" placeholder="留空则自动新建" /></label><label>历史会话<select id="session-history" disabled><option value="">读取历史会话…</option></select></label><label class="check"><input id="delete-empty-sessions" type="checkbox" checked /> 刷新时清理空会话</label><div class="session-actions"><button id="refresh-sessions" class="button ghost" type="button">刷新历史会话</button><button id="load-session" class="button ghost" type="button" disabled>加载所选会话</button><button id="delete-session" class="button danger" type="button" disabled>删除所选会话</button></div><label class="check"><input id="new-session" type="checkbox" checked /> 新建会话</label><button id="capture" class="button primary" disabled>检测并保存当前臂样本</button><p class="hint">刷新仅清理没有已接受样本的空会话；“删除所选会话”会删除其全部图片、JSON 和求解结果，需确认后执行。</p></section>
     <section class="panel solve-panel"><div class="panel-title"><div><span class="eyebrow">SOLVE</span><h2>执行标定</h2></div><span id="solve-state" class="status">WAITING</span></div><button id="solve" class="button secondary" disabled>执行当前臂手眼标定</button><p class="hint">每臂使用自己的会话，达到样本数和残差阈值后独立求解；采样期间标定板保持不动。另一臂离线不影响当前流程。</p><pre id="result">等待结果…</pre><h2>更新双臂布局</h2><label>左臂已求解 session<select id="layout-left"><option value="">选择左臂会话</option></select></label><label>右臂已求解 session<select id="layout-right"><option value="">选择右臂会话</option></select></label><p class="hint">由你负责选择标定板位置相同的两次会话。写回 three_robots.yaml 并保留 .bak；重新 bringup 后基座 TF 生效。</p><button id="update-layout" class="button secondary" disabled>使用所选会话更新布局</button><p id="layout-result" class="hint">等待选择左右臂会话。</p></section>
+    <section class="panel verify-panel"><div class="panel-title"><div><span class="eyebrow">VERIFY</span><h2>标定精度检验</h2></div><span id="verify-state" class="status">IDLE</span></div><label>基准已求解会话<select id="verify-baseline"><option value="">选择当前臂已求解会话</option></select></label><p class="hint">保持标定板不动，手动把当前臂挪到不同姿态后点击“采集检验样本”，采满 <span id="verify-target">10</span> 个再计算。检验样本独立成会话，不进入求解/布局列表。</p><div class="verify-progress"><span id="verify-count" class="status">已采 0</span><button id="verify-reset" class="button ghost" type="button" disabled>重开检验会话</button></div><button id="verify-capture" class="button primary" disabled>采集检验样本</button><button id="verify-run" class="button secondary" disabled>计算标定精度</button><div id="verify-metrics" class="verify-metrics"><p class="hint">等待检验结果…</p></div></section>
     <section class="panel preview-panel"><div class="panel-title"><div><span class="eyebrow">DETECTION PREVIEW</span><h2>最近一次检测画面</h2></div><span id="preview-state" class="status">WAITING</span></div><div id="previews" class="preview-grid"><p class="hint">点击检测后显示当前腕相机画面与 ChArUco 检测结果。</p></div></section>
     <section class="panel log-panel"><div class="panel-title"><div><span class="eyebrow">SERVICE LOG</span><h2>实时反馈</h2></div></div><pre id="log"></pre></section>
   </main>
@@ -42,10 +43,23 @@ const previews = document.querySelector<HTMLElement>("#previews")!;
 const previewState = document.querySelector<HTMLElement>("#preview-state")!;
 const cameraHealth = document.querySelector<HTMLElement>("#camera-health")!;
 const healthState = document.querySelector<HTMLElement>("#health-state")!;
+const verifyBaseline = document.querySelector<HTMLSelectElement>("#verify-baseline")!;
+const verifyState = document.querySelector<HTMLElement>("#verify-state")!;
+const verifyCountEl = document.querySelector<HTMLElement>("#verify-count")!;
+const verifyTargetEl = document.querySelector<HTMLElement>("#verify-target")!;
+const verifyCaptureButton = document.querySelector<HTMLButtonElement>("#verify-capture")!;
+const verifyRunButton = document.querySelector<HTMLButtonElement>("#verify-run")!;
+const verifyResetButton = document.querySelector<HTMLButtonElement>("#verify-reset")!;
+const verifyMetrics = document.querySelector<HTMLElement>("#verify-metrics")!;
 let socket: WebSocket | undefined;
 let captureRequest = "";
 let solveRequest = "";
 let layoutRequest = "";
+let verifyCaptureRequest = "";
+let verifyRequest = "";
+let verifySessionId = "";
+let verifyCount = 0;
+let verifyTarget = 10;
 let sessionId = "";
 let minimumSamplesPerArm = 0;
 let configLoaded = false;
@@ -53,6 +67,7 @@ type CalibrationSession = {
   session_id: string;
   created_at: string;
   arm_id: string;
+  purpose?: string;
   sample_count: number;
   recoverable: boolean;
   solved: boolean;
@@ -65,7 +80,7 @@ function requestId(prefix: string) { return `${prefix}-${Date.now()}-${Math.rand
 function writeLog(message: string) { log.textContent = `${new Date().toLocaleTimeString()} ${message}\n${log.textContent}`.slice(0, 12000); }
 function canWrite() { return socket?.readyState === WebSocket.OPEN; }
 function updateButtons() {
-  const busy = Boolean(captureRequest || solveRequest || layoutRequest);
+  const busy = Boolean(captureRequest || solveRequest || layoutRequest || verifyCaptureRequest || verifyRequest);
   captureButton.disabled = !canWrite() || !configLoaded || busy;
   solveButton.disabled = !canWrite() || !configLoaded || busy || !sessionId || newSession.checked;
   armSelect.disabled = busy || !configLoaded;
@@ -78,6 +93,54 @@ function updateButtons() {
   refreshSessionsButton.disabled = busy;
   deleteSessionButton.disabled = busy || !sessionHistory.value;
   loadSessionButton.disabled = busy || !calibrationSessions.find((item) => item.session_id === sessionHistory.value)?.recoverable;
+  verifyBaseline.disabled = busy;
+  verifyCaptureButton.disabled = !canWrite() || !configLoaded || busy;
+  verifyRunButton.disabled = !canWrite() || !configLoaded || busy || !verifySessionId || verifyCount < verifyTarget || !verifyBaseline.value;
+  verifyResetButton.disabled = busy || !verifySessionId;
+}
+
+function renderVerifyMetrics(message: any) {
+  const rows: [string, string][] = [
+    ["样本数", `${message.sample_count}`],
+    ["平移离散度", `${(Number(message.translation_spread_m) * 1000).toFixed(2)} mm`],
+    ["旋转离散度", `${((Number(message.rotation_spread_rad) * 180) / Math.PI).toFixed(3)} °`],
+    ["平均重投影误差", `${Number(message.mean_reprojection_error_px).toFixed(3)} px`],
+    ["最大重投影误差", `${Number(message.max_reprojection_error_px).toFixed(3)} px`],
+  ];
+  verifyMetrics.innerHTML = `<dl class="verify-result">${rows
+    .map(([key, value]) => `<div><dt>${key}</dt><dd>${value}</dd></div>`)
+    .join("")}</dl><p class="hint ${message.passed ? "ok" : "bad"}">${
+    message.passed ? "离散度与重投影误差均在阈值内，标定精度合格。" : "指标超出阈值，建议重新标定或检查采样姿态多样性。"
+  }</p>`;
+}
+
+function resetVerifyState() {
+  verifySessionId = "";
+  verifyCount = 0;
+  verifyState.textContent = "IDLE";
+  verifyState.className = "status";
+  verifyCountEl.textContent = "已采 0";
+  verifyMetrics.innerHTML = `<p class="hint">等待检验结果…</p>`;
+}
+
+function handleVerifyCapture(message: any) {
+  const arm = message.arm_id || armSelect.value;
+  if (message.success) {
+    verifySessionId = message.session_id;
+    verifyCount = Number(message.sample_count) || verifyCount + 1;
+    verifyState.textContent = verifyCount >= verifyTarget ? "READY" : "SAMPLING";
+    verifyState.className = `status ${verifyCount >= verifyTarget ? "ready" : ""}`;
+    verifyCountEl.textContent = `已采 ${verifyCount}/${verifyTarget}`;
+    showPreviews([arm], [message.preview_image_path || ""], [message.detection_status || ""], [message.detection_message || ""]);
+    writeLog(`检验样本 ${verifyCount}/${verifyTarget}：${message.message}`);
+  } else {
+    if (message.session_id && !verifySessionId) verifySessionId = message.session_id;
+    verifyState.textContent = "REJECTED";
+    verifyState.className = "status offline";
+    showPreviews([arm], [message.latest_image_path || ""], [message.detection_status || ""], [message.detection_message || ""]);
+    writeLog(`检验样本被拒绝（可重试）：${message.message}`);
+  }
+  updateButtons();
 }
 function send(message: Record<string, any>) { socket?.send(JSON.stringify(message)); }
 
@@ -92,7 +155,7 @@ function renderSessionHistory() {
   placeholder.value = "";
   placeholder.textContent = calibrationSessions.length ? "选择一个历史会话" : "没有历史会话";
   sessionHistory.append(placeholder);
-  const visible = calibrationSessions.filter((item) => !item.arm_id || item.arm_id === armSelect.value);
+  const visible = calibrationSessions.filter((item) => item.purpose !== "verify" && (!item.arm_id || item.arm_id === armSelect.value));
   visible.forEach((item) => {
     const option = document.createElement("option");
     option.value = item.session_id;
@@ -106,11 +169,19 @@ function renderSessionHistory() {
   for (const [select, arm] of [[layoutLeft, "l"], [layoutRight, "r"]] as const) {
     const previous = select.value;
     select.replaceChildren(new Option(`选择${arm === "l" ? "左" : "右"}臂已求解会话`, ""));
-    calibrationSessions.filter((item) => item.arm_id === arm && item.solved).forEach((item) => {
+    calibrationSessions.filter((item) => item.arm_id === arm && item.solved && item.purpose !== "verify").forEach((item) => {
       select.add(new Option(`${item.session_id} · ${item.sample_count} 张`, item.session_id));
     });
     select.value = previous;
   }
+  const previousBaseline = verifyBaseline.value;
+  verifyBaseline.replaceChildren(new Option(`选择${armSelect.value === "l" ? "左" : "右"}臂已求解会话`, ""));
+  calibrationSessions
+    .filter((item) => item.arm_id === armSelect.value && item.solved && item.purpose !== "verify")
+    .forEach((item) => {
+      verifyBaseline.add(new Option(`${item.session_id} · ${item.sample_count} 张`, item.session_id));
+    });
+  verifyBaseline.value = previousBaseline;
   updateButtons();
 }
 
@@ -225,6 +296,9 @@ async function loadConfig() {
     const config = await fetch("/api/calibration").then((response) => response.json());
     const board = config.board;
     minimumSamplesPerArm = Number(config.sampling.minimum_samples_per_arm);
+    const verification = config.verification || {};
+    verifyTarget = Number(verification.sample_count) > 0 ? Number(verification.sample_count) : 10;
+    verifyTargetEl.textContent = String(verifyTarget);
     const arms: string[] = config.sampling.arm_order.filter((arm: string) =>
       (arm === "l" || arm === "r") && config.robots[arm],
     );
@@ -241,6 +315,7 @@ async function loadConfig() {
     renderCameraHealth(healthInputs);
     document.querySelector("#config")!.innerHTML = `<div><strong>${board.type.toUpperCase()}</strong> / ${board.dictionary}</div><div>网格：${board.squares_x} × ${board.squares_y}</div><div>方格：${board.square_length_m} m / Marker：${board.marker_length_m} m</div><div>最少角点：${board.minimum_corners}</div><div>每臂最少样本：${config.sampling.minimum_samples_per_arm}</div><div>手眼算法：${config.solver.hand_eye_method}</div>`;
     document.querySelector("#config")!.innerHTML += `<div>外形：${(Number(board.outer_width_m) * 1000).toFixed(0)} × ${(Number(board.outer_height_m) * 1000).toFixed(0)} mm</div><div>图案：${(Number(board.pattern_width_m) * 1000).toFixed(0)} × ${(Number(board.pattern_height_m) * 1000).toFixed(0)} mm</div>`;
+    document.querySelector("#config")!.innerHTML += `<div>检验样本：${verifyTarget} / 平移≤${(Number(verification.maximum_translation_spread_m ?? 0) * 1000).toFixed(1)}mm / 旋转≤${((Number(verification.maximum_rotation_spread_rad ?? 0) * 180) / Math.PI).toFixed(2)}° / 重投影≤${Number(verification.maximum_reprojection_error_px ?? 0).toFixed(2)}px</div>`;
     document.querySelector("#config-state")!.textContent = "CONFIG LOADED";
   } catch (error) { writeLog(`读取标定配置失败：${String(error)}`); }
   updateButtons();
@@ -253,6 +328,11 @@ function handle(message: EventMessage) {
     healthInputs = Array.isArray(message.inputs) ? message.inputs : [];
     renderCameraHealth(healthInputs);
   } else if (message.type === "calibration_capture_result") {
+    if (verifyCaptureRequest && message.request_id === verifyCaptureRequest) {
+      verifyCaptureRequest = "";
+      handleVerifyCapture(message);
+      return;
+    }
     if (!captureRequest || message.request_id !== captureRequest) return;
     captureRequest = "";
     if (message.success) {
@@ -274,6 +354,21 @@ function handle(message: EventMessage) {
     writeLog(message.success ? `标定完成：${message.message}` : `标定失败：${message.message}`);
     if (message.success) void refreshSessionHistory();
     updateButtons();
+  } else if (message.type === "calibration_verify_result") {
+    if (!verifyRequest || message.request_id !== verifyRequest) return;
+    verifyRequest = "";
+    if (message.success) {
+      verifyState.textContent = message.passed ? "PASSED" : "FAILED";
+      verifyState.className = `status ${message.passed ? "ready" : "offline"}`;
+      renderVerifyMetrics(message);
+      writeLog(message.passed ? `检验通过：${message.message}` : `检验未通过：${message.message}`);
+    } else {
+      verifyState.textContent = "ERROR";
+      verifyState.className = "status offline";
+      verifyMetrics.innerHTML = `<p class="hint bad">检验失败：${message.message}</p>`;
+      writeLog(`检验失败：${message.message}`);
+    }
+    updateButtons();
   } else if (message.type === "calibration_layout_result") {
     if (!layoutRequest || message.request_id !== layoutRequest) return;
     layoutRequest = "";
@@ -285,6 +380,8 @@ function handle(message: EventMessage) {
   } else if (message.type === "error") {
     if (message.request_id === captureRequest) captureRequest = "";
     if (message.request_id === solveRequest) solveRequest = "";
+    if (message.request_id === verifyCaptureRequest) verifyCaptureRequest = "";
+    if (message.request_id === verifyRequest) { verifyRequest = ""; verifyState.textContent = "ERROR"; verifyState.className = "status offline"; }
     if (message.request_id === layoutRequest) { layoutRequest = ""; layoutResult.textContent = message.message; }
     writeLog(`${message.code}: ${message.message}`); updateButtons();
   }
@@ -295,7 +392,7 @@ function connect() {
   socket = new WebSocket(`${protocol}://${location.host}/ws`);
   socket.addEventListener("open", () => { connection.textContent = "CONNECTED"; connection.className = "status ready"; updateButtons(); });
   socket.addEventListener("close", () => {
-    captureRequest = ""; solveRequest = ""; layoutRequest = "";
+    captureRequest = ""; solveRequest = ""; layoutRequest = ""; verifyCaptureRequest = ""; verifyRequest = "";
     connection.textContent = "OFFLINE"; connection.className = "status offline";
     updateButtons(); window.setTimeout(connect, 2000);
   });
@@ -324,8 +421,30 @@ armSelect.addEventListener("change", () => {
   sessionId = ""; sessionInput.value = ""; newSession.checked = true;
   sessionState.textContent = "NO SESSION"; solveState.textContent = "WAITING";
   result.textContent = "等待结果…"; previews.replaceChildren(); previewState.textContent = "WAITING";
+  resetVerifyState();
   renderSessionHistory(); renderCameraHealth(healthInputs); updateButtons();
 });
+verifyCaptureButton.addEventListener("click", () => {
+  verifyCaptureRequest = requestId("verify-capture");
+  const startNew = !verifySessionId;
+  send({ type: "capture_calibration_sample", request_id: verifyCaptureRequest, session_id: startNew ? "" : verifySessionId, start_new_session: startNew, arm_id: armSelect.value, purpose: "verify" });
+  verifyState.textContent = "CAPTURING"; verifyState.className = "status";
+  writeLog(`正在采集检验样本（${armSelect.value.toUpperCase()} 腕相机，标定板保持不动）…`);
+  updateButtons();
+});
+verifyRunButton.addEventListener("click", () => {
+  verifyRequest = requestId("verify");
+  send({ type: "verify_calibration", request_id: verifyRequest, arm_id: armSelect.value, baseline_session_id: verifyBaseline.value, verify_session_id: verifySessionId });
+  verifyState.textContent = "VERIFYING"; verifyState.className = "status";
+  writeLog(`正在用 ${verifyBaseline.value} 检验 ${verifyCount} 个固定标定板样本…`);
+  updateButtons();
+});
+verifyResetButton.addEventListener("click", () => {
+  resetVerifyState();
+  writeLog("已重开检验会话；下一次采集将新建 verify 会话。");
+  updateButtons();
+});
+verifyBaseline.addEventListener("change", updateButtons);
 newSession.addEventListener("change", updateButtons);
 sessionInput.addEventListener("input", () => { sessionId = sessionInput.value.trim(); updateButtons(); });
 sessionHistory.addEventListener("change", () => {

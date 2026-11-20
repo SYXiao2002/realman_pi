@@ -1,5 +1,5 @@
 # Arm selection is robot-side only; the algorithm receives camera/gripper geometry.
-# Null fields need physical measurement. No supplied profile authorizes motion.
+# Null fields need real configuration values before planning can use that profile.
 version: 1
 default_profile: right_wrist
 profiles:
@@ -21,15 +21,14 @@ profiles:
     gripper: gripper_right
     gripper_spec: binary_42d_right
     calibration: right_wrist
-    # Approve only after measuring TCP/geometry, observing other arms parked,
-    # and validating the complete robot corridor, including the loaded return
-    # route and release pose (IK is not collision checking).
-    execution_verified: false
-    tool_geometry_verified: false
-    corridor_verified: false
-    observation_joint_degrees: [-0.225,34.016,86.185,-0.774,41.991,-2.407]
-    return_joint_degrees: [-0.225,34.016,86.185,-0.774,41.991,-2.407]
-    workspace_m: [[-0.555,-0.314,-0.142],[-0.205,0.095,0.381]]  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
+    observation_joint_degrees: [-97.755,22.534,120.274,4.67,22.949,17.38]
+    return_joint_degrees: [-104.82,31.853,99.488,-4.104,39.215,-11.043]
+    workspace_m: [[-0.1369,  0.203625, -0.205391],[ 0.285233, 0.480325,  0.01 ]]  # [[minimum x,y,z], [maximum x,y,z]] in selected base.
+    # Collision-only region: a superset of workspace_m that also encloses nearby
+    # obstacles the gripper fingers can reach outside the TCP corridor (e.g. bin
+    # walls). The current measured workspace is the available collision envelope;
+    # widen this box only after measuring the nearby walls on-site.
+    collision_workspace_m: [[-0.1369,  0.203625, -0.205391],[ 0.285233, 0.480325,  0.01 ]]
     # TCP origin and axes are aligned with the common closing-center grasp frame.
     # Identity adds no translation (metres) or rotation; tool offset stays in realman_coordinates.yaml.
     T_grasp_tcp:
@@ -39,7 +38,7 @@ profiles:
       - [0.0, 0.0, 0.0, 1.0]
     approach_m: 0.1
     lift_m: 0.1
-    velocity_percent: 5
+    velocity_percent: 100
   left_wrist:
     arm: l
     base_frame: l/base_link
@@ -58,12 +57,10 @@ profiles:
     gripper: gripper_left
     gripper_spec: binary_42d_left
     calibration: left_wrist
-    execution_verified: false
-    tool_geometry_verified: false
-    corridor_verified: false
     observation_joint_degrees: null
     return_joint_degrees: null
     workspace_m: null
+    collision_workspace_m: null
     T_grasp_tcp: null
     approach_m: null
     lift_m: null

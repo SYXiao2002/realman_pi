@@ -98,8 +98,16 @@ def test_archived_frame_full_pipeline_matches_original(reference_service, serial
             selection = importlib.util.module_from_spec(spec); spec.loader.exec_module(selection)
             aligned = selection.align_grasp_to_base_vertical(expected["matrix"], request["T_base_camera"], wrist_offset_m=.09)
             np.testing.assert_allclose(candidate["T_camera_native_grasp_aligned"], aligned, atol=1e-6, rtol=0)
-            np.testing.assert_allclose(candidate["T_camera_grasp_before_alignment"][:3, 3], candidate["T_camera_grasp_after_alignment"][:3, 3], atol=1e-8)
+            expected_contact = np.asarray(aligned, dtype=np.float64).copy()
+            expected_contact[:3, 3] += aligned[:3, 2] * .09
+            np.testing.assert_allclose(candidate["T_camera_grasp_before_alignment"][:3, 3], expected_contact[:3, 3], atol=1e-6, rtol=0)
+            np.testing.assert_allclose(candidate["T_camera_grasp_after_alignment"][:3, 3], expected_contact[:3, 3], atol=1e-6, rtol=0)
             np.testing.assert_allclose(request["T_base_camera"][:3, :3] @ candidate["T_camera_grasp"][:3, 2], [0, 0, -1], atol=1e-8)
+        else:
+            expected_contact = np.asarray(expected["matrix"], dtype=np.float64).copy()
+            native_depth = .09 if backend == "geometry" else .1034
+            expected_contact[:3, 3] += expected_contact[:3, 2] * native_depth
+            np.testing.assert_allclose(candidate["T_camera_grasp"][:3, 3], expected_contact[:3, 3], atol=1e-6, rtol=0)
         assert candidate["score"] == pytest.approx(expected["score"], abs=1e-6)
         assert candidate["width_m"] == pytest.approx(expected["width_m"], abs=1e-6)
     print(f"{serial} {backend}/{context} aligned={calibrated}: {len(original)} poses; segmentation, raw matrices, widths and scores match")

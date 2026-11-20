@@ -240,6 +240,21 @@ def test_motion_action_contracts_are_exact():
     )
 
     _assert_interface_contract(
+        ROOT / "srv/SetToolPower.srv",
+        [
+            [
+                "bool enabled",
+                "string task_token",
+            ],
+            [
+                "bool success",
+                "string message",
+            ],
+        ],
+    )
+    assert '"srv/SetToolPower.srv"' in (ROOT / "CMakeLists.txt").read_text()
+
+    _assert_interface_contract(
         ROOT / "msg/CartesianVelocityState.msg",
         [
             [
@@ -270,7 +285,7 @@ def test_coordinate_service_contracts_are_exact():
     _assert_interface_contract(
         ROOT / "srv/CaptureCalibrationSample.srv",
         [
-            ["string session_id", "bool start_new_session", "string arm_id"],
+            ["string session_id", "bool start_new_session", "string arm_id", "string purpose"],
             [
                 "bool success",
                 "string session_id",
@@ -283,6 +298,27 @@ def test_coordinate_service_contracts_are_exact():
                 "string latest_image_path",
                 "string detection_status",
                 "string detection_message",
+                "string message",
+            ],
+        ],
+    )
+
+    _assert_interface_contract(
+        ROOT / "srv/VerifyCalibration.srv",
+        [
+            ["string arm_id", "string baseline_session_id", "string verify_session_id"],
+            [
+                "bool success",
+                "string arm_id",
+                "string verify_session_id",
+                "uint32 sample_count",
+                "float64 translation_spread_m",
+                "float64 rotation_spread_rad",
+                "float64 mean_reprojection_error_px",
+                "float64 max_reprojection_error_px",
+                "bool passed",
+                "string result_file",
+                "string result_json",
                 "string message",
             ],
         ],
@@ -450,3 +486,15 @@ def test_grasp_confirmation_contract_requires_explicit_observation_and_return():
          ["bool success", "string message"]],
     )
     assert '"srv/ConfirmGrasp.srv"' in (ROOT / "CMakeLists.txt").read_text()
+
+
+def test_save_camera_images_contract_is_exact_and_registered():
+    _assert_interface_contract(
+        ROOT / "srv/SaveCameraImages.srv",
+        [
+            ["string[] image_topics", "string directory", "float64 timeout_sec",
+             "string session_id"],
+            ["bool success", "string message", "string[] saved_paths"],
+        ],
+    )
+    assert '"srv/SaveCameraImages.srv"' in (ROOT / "CMakeLists.txt").read_text()

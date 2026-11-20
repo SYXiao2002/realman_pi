@@ -53,7 +53,7 @@ robots:
         controller_name: tcpgrip
         ros_frame_id: m/tool/tcpgrip
         pose:
-          xyz_m: [0.0, 0.0, 0.165]
+          xyz_m: [0.0, 0.0, 0.180]
           quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
         payload_kg: 0.80
         center_of_mass_m: [0.0, 0.0, 0.060]
@@ -66,17 +66,28 @@ robots:
           quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
 
   r:
-    default_tool: tcpgrip
+    default_tool: tcpsuck
     default_work: cell
     tools:
       tcpgrip:
         controller_name: tcpgrip
         ros_frame_id: r/tool/tcpgrip
         pose:
-          xyz_m: [0.0, 0.0, 0.160]
+          xyz_m: [0.0, 0.0, 0.170]
           # quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
           quaternion_wxyz: [0.70710678, 0.0, 0.0, 0.70710678]
         payload_kg: 0.80
+        center_of_mass_m: [0.0, 0.0, 0.060]
+      tcpsuck:
+        controller_name: tcpsuck
+        ros_frame_id: r/tool/tcpsuck
+        pose:
+          # Original tcpgrip is 170 mm from flange; suction contact is 200 mm
+          # farther along its local +Z, which is also flange +Z for this pose.
+          xyz_m: [0.0, 0.0, 0.210]
+          # quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
+          quaternion_wxyz: [0.70710678, 0.0, 0.0, 0.70710678]
+        payload_kg: 0.10
         center_of_mass_m: [0.0, 0.0, 0.060]
     work_frames:
       cell:

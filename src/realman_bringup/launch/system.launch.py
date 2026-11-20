@@ -69,6 +69,7 @@ def generate_launch_description():
     driver_config_file = LaunchConfiguration("driver_config_file")
     coordinates_config_file = LaunchConfiguration("coordinates_config_file")
     motion_config_file = LaunchConfiguration("motion_config_file")
+    vacuum_config_file = LaunchConfiguration("vacuum_config_file")
     start_web_control = LaunchConfiguration("start_web_control")
     start_bt_launcher = LaunchConfiguration("start_bt_launcher")
     start_camera_calibration = LaunchConfiguration("start_camera_calibration")
@@ -175,6 +176,11 @@ def generate_launch_description():
                 description="RealMan motion safety limits under root config/ros.",
             ),
             DeclareLaunchArgument(
+                "vacuum_config_file",
+                default_value=str(config_root / "ros" / "vacuum_sensors.yaml"),
+                description="Suction sensor controller inputs under root config/ros.",
+            ),
+            DeclareLaunchArgument(
                 "start_gripper",
                 default_value="false",
                 description="Start the multi-bus Changingtek gripper manager.",
@@ -209,12 +215,12 @@ def generate_launch_description():
                 description="Opt in to planning-only wrist RGB-D grasp bridge.",
             ),
             DeclareLaunchArgument(
-                "grasp_profile", default_value="right_wrist",
-                description="Selected arm/camera/gripper identity in grasp_profiles.yaml.",
+                "grasp_profile", default_value=os.environ.get("REALMAN_GRASP_PROFILE", ""),
+                description="Optional profile override; empty uses grasp_bridge.yaml shared default.",
             ),
             DeclareLaunchArgument(
-                "grasp_dry_run", default_value="true",
-                description="Validate grasp configuration without sensor/IK clients.",
+                "grasp_dry_run", default_value="false",
+                description="Allow restricted IK planning for grasp.xml; bridge never sends robot commands.",
             ),
             DeclareLaunchArgument(
                 "web_control_config_file",
@@ -258,6 +264,7 @@ def generate_launch_description():
                     "config_file": driver_config_file,
                     "coordinates_config_file": coordinates_config_file,
                     "motion_config_file": motion_config_file,
+                    "vacuum_config_file": vacuum_config_file,
                 }.items(),
             ),
             IncludeLaunchDescription(

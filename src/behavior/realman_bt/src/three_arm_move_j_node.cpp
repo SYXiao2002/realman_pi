@@ -30,6 +30,28 @@ std::array<double, 6> parseJoints(const std::string& text) {
   return result;
 }
 
+std::array<bool, 3> parseArms(const std::string& text) {
+  std::array<bool, 3> enabled{};
+  std::stringstream stream(text);
+  std::string item;
+  std::size_t count = 0;
+  while (std::getline(stream, item, ',')) {
+    if (item.empty()) {
+      throw std::invalid_argument("arms must be a comma-separated subset of l,m,r");
+    }
+    const std::size_t index = item == "l" ? 0 : item == "m" ? 1 : item == "r" ? 2 : 3;
+    if (index > 2 || enabled[index]) {
+      throw std::invalid_argument("arms must be a comma-separated subset of l,m,r without duplicates");
+    }
+    enabled[index] = true;
+    ++count;
+  }
+  if (count == 0) {
+    throw std::invalid_argument("arms must list at least one of l, m, or r");
+  }
+  return enabled;
+}
+
 std::uint64_t timestampMilliseconds() {
   const auto now = std::chrono::system_clock::now();
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -64,6 +86,7 @@ std::string resultCode(rclcpp_action::ResultCode code) {
 bt_core::PortsList ThreeArmMoveJNode::providedPorts() {
   return bt_core::makePorts(
       bt_core::InputPort<bool>("dry_run", "true", "Validate without sending motion goals"),
+      bt_core::InputPort<std::string>("arms", "l,m,r", "Comma-separated subset of l,m,r to move in the same tick"),
       bt_core::InputPort<std::string>("l_joint_degrees", "0,0,0,0,0,0", "L arm joint angles in degrees"),
       bt_core::InputPort<std::string>("m_joint_degrees", "0,0,0,0,0,0", "M arm joint angles in degrees"),
       bt_core::InputPort<std::string>("r_joint_degrees", "0,0,0,0,0,0", "R arm joint angles in degrees"),
@@ -74,6 +97,7 @@ bt_core::PortsList ThreeArmMoveJNode::providedPorts() {
 
 bool ThreeArmMoveJNode::readGoals() {
   const std::array<const char*, 3> ports{{"l_joint_degrees", "m_joint_degrees", "r_joint_degrees"}};
+  const std::array<bool, 3> enabled = parseArms(getInput<std::string>("arms").value_or("l,m,r"));
   const int velocity = getInput<int>("velocity_percent").value_or(10);
   const int blend = getInput<int>("blend_radius_percent").value_or(0);
   timeout_sec_ = getInput<double>("timeout_sec").value_or(120.0);
@@ -87,6 +111,9 @@ bool ThreeArmMoveJNode::readGoals() {
     throw std::invalid_argument("timeout_sec must be positive");
   }
   for (std::size_t index = 0; index < arms_.size(); ++index) {
+    arms_[index].enabled = enabled[index];
+    arms_[index].completed = !enabled[index];
+    if (!enabled[index]) continue;
     arms_[index].goal.command = Action::Goal::MOVEJ;
     arms_[index].goal.reference_type = Action::Goal::BASE;
     arms_[index].goal.reference_name = "base";
@@ -108,6 +135,7 @@ bool ThreeArmMoveJNode::initialize() {
   initialized_ = true;
   if (!dry_run_) {
     for (auto& arm : arms_) {
+      if (!arm.enabled) continue;
       arm.client = rclcpp_action::create_client<Action>(
           ros_node_->get_node_base_interface(), ros_node_->get_node_graph_interface(),
           ros_node_->get_node_logging_interface(), ros_node_->get_node_waitables_interface(),
@@ -128,6 +156,7 @@ void ThreeArmMoveJNode::recordEvent(const ArmState& arm, const std::string& phas
 
 bool ThreeArmMoveJNode::allActionServersReady() const {
   for (const auto& arm : arms_) {
+    if (!arm.enabled) continue;
     if (!arm.client || !arm.client->wait_for_action_server(std::chrono::milliseconds(0))) {
       return false;
     }
@@ -235,6 +264,7 @@ bt_core::NodeStatus ThreeArmMoveJNode::tick() {
   if (dry_run_) {
     if (!dry_run_logged_) {
       for (const auto& arm : arms_) {
+        if (!arm.enabled) continue;
         recordEvent(arm, "result", "dry-run validation completed; no goal sent");
       }
       dry_run_logged_ = true;
@@ -247,19 +277,23 @@ bt_core::NodeStatus ThreeArmMoveJNode::tick() {
     fail("ThreeArmMoveJ timed out after " + std::to_string(timeout_sec_) + " seconds");
     return bt_core::NodeStatus::FAILURE;
   }
-  if (!arms_[0].sent && !allActionServersReady()) {
-    for (const auto& arm : arms_) recordEvent(arm, "wait_server", "waiting for action server");
+  if (!goals_sent_ && !allActionServersReady()) {
+    for (const auto& arm : arms_) {
+      if (arm.enabled) recordEvent(arm, "wait_server", "waiting for action server");
+    }
     return bt_core::NodeStatus::RUNNING;
   }
-  if (!arms_[0].sent) {
+  if (!goals_sent_) {
     try {
       for (auto& arm : arms_) {
+        if (!arm.enabled) continue;
         arm.goal_future = arm.client->async_send_goal(arm.goal);
         arm.sent = true;
         recordEvent(arm, "send_goal", "MoveJ goal sent");
       }
+      goals_sent_ = true;
       RCLCPP_INFO(ros_node_->get_logger(),
-                  "[%s] sent synchronized MoveJ goals to l, m, and r",
+                  "[%s] sent synchronized MoveJ goals to configured arms",
                   name().c_str());
     } catch (const std::exception& error) {
       fail(error.what());
@@ -273,7 +307,7 @@ bt_core::NodeStatus ThreeArmMoveJNode::tick() {
     if (!arm.completed) return bt_core::NodeStatus::RUNNING;
   }
   completed_ = true;
-  RCLCPP_INFO(ros_node_->get_logger(), "[%s] all three MoveJ goals completed",
+  RCLCPP_INFO(ros_node_->get_logger(), "[%s] all configured MoveJ goals completed",
               name().c_str());
   return bt_core::NodeStatus::SUCCESS;
 }
@@ -320,6 +354,7 @@ void ThreeArmMoveJNode::reset() {
   dry_run_logged_ = false;
   failed_ = false;
   completed_ = false;
+  goals_sent_ = false;
   setFailureReason("");
 }
 

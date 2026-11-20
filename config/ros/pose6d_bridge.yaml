@@ -1,0 +1,59 @@
+# Read-only single-frame service. Camera/calibration identity comes from grasp_profiles.yaml.
+profile: right_wrist
+ws_uri: ws://127.0.0.1:8092
+connect_timeout_sec: 5.0
+inference_timeout_sec: 90.0
+# Local-only detector and promptable segmentation WebSocket services.
+yolo_ws_uri: ws://127.0.0.1:8093
+sam2_ws_uri: ws://127.0.0.1:8094
+vision_connect_timeout_sec: 5.0
+yolo_timeout_sec: 45.0
+sam2_timeout_sec: 90.0
+yolo_model_sha256: fcc66bc2fa3fb605948704f26535ed6b9fe15cb13286496209b39dd075eac9ef
+sam2_model_sha256: 7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69
+vision_confidence_threshold: 0.5
+vision_max_detections: 16
+vision_max_image_pixels: 1000000
+vision_max_mask_bytes: 16777216
+# Mounted read-only in the optional pose6d_bridge container.
+mesh_dir: /models/eu_plug
+object_id: eu_plug
+cloud_stride: 4
+
+# Operator supplied cup diameter; annotation contact-region radii stay separate.
+suction:
+  cup_diameter_m: 0.010
+  body_radius_m: 0.005       # 10 mm cylindrical envelope; enlarge for wider fittings
+  body_length_m: 0.010       # contact plane back to flange, along contact -Z
+
+# Low-speed, reviewed single-axis motion. The UI requires explicit review per pose.
+motion:
+  enabled: true
+  tool_name: tcpsuck
+  T_contact_tcp:
+    xyz_m: [0, 0, 0]         # controller TCP is the suction contact center
+    rpy_rad: [0, 0, 0]       # same axes; R = Rz(yaw) Ry(pitch) Rx(roll)
+  min_distance_m: -0.01    # allow only 5 mm past the estimated surface
+  max_distance_m: 0.1       # includes the configured preparation position
+  contact_offset_m: 0.005   # automatic suction advances 5 mm into the estimated surface
+  max_step_m: 0.001
+  velocity_percent: 10
+  prepare_distance_m: 0.04
+  second_prepare_distance_m: 0.01
+  lift_height_m: 0.1
+  prepare_velocity_percent: 20
+  approach_velocity_percent: 20
+  contact_velocity_percent: 5
+  lift_velocity_percent: 50
+  timeout_sec: 10
+  position_tolerance_m: 0.002
+  angular_tolerance_rad: 0.035
+  workspace_m:  [[-0.498187, -0.252385, -0.097571], [0.167103, 0.213348, 0.359098]]
+  cartesian_sample_step_m: 0.005
+  angular_sample_step_rad: 0.05
+  collision_margin_m: 0.003
+  # The workspace precheck samples a Cartesian line, not the controller's MOVEJ_P joint path.
+  # MOVEJ_P has no obstacle-path prediction here; review its full physical path before confirmation.
+  allow_partial_scene: true
+  lease_ttl_sec: 15.0
+  service_timeout_sec: 3.0

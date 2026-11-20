@@ -90,6 +90,16 @@ target_link_libraries(prepare_keyboard_work_node
 ament_target_dependencies(prepare_keyboard_work_node
   rclcpp realman_msgs)
 
+add_library(camera_snapshot_nodes src/save_camera_frames_node.cpp)
+target_include_directories(camera_snapshot_nodes PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(camera_snapshot_nodes PUBLIC cxx_std_17)
+# save_camera_frames_node.cpp reuses kRosNodeBlackboardKey (move_j_node.hpp) and the
+# RuntimeDiagnostics recorder, so it links the same two libraries the motion leaves do.
+target_link_libraries(camera_snapshot_nodes move_j_nodes runtime_snapshot bt::core)
+ament_target_dependencies(camera_snapshot_nodes rclcpp realman_msgs)
+
 install(TARGETS input_mode runtime_snapshot input_mode_nodes
   EXPORT export_${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
@@ -108,6 +118,7 @@ target_link_libraries(realman_bt_executor input_mode_nodes)
 target_link_libraries(realman_bt_executor prepare_keyboard_work_node)
 target_link_libraries(realman_bt_executor policy_task_nodes)
 target_link_libraries(realman_bt_executor motion_monitor_nodes)
+target_link_libraries(realman_bt_executor camera_snapshot_nodes)
 ament_target_dependencies(realman_bt_executor
   rclcpp rclcpp_action rcl_interfaces realman_msgs std_msgs std_srvs
   sensor_msgs diagnostic_msgs geometry_msgs)
@@ -124,11 +135,14 @@ install(PROGRAMS scripts/policy_control_router.py
 install(PROGRAMS scripts/bt_launcher.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME bt_launcher)
+install(PROGRAMS scripts/camera_snapshot_server.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME camera_snapshot_server)
 # Imported by the routers as `router_common`; it must sit next to them.
 install(PROGRAMS scripts/router_common.py
   DESTINATION lib/${PROJECT_NAME})
 install(TARGETS move_j_nodes prepare_keyboard_work_node policy_task_nodes policy_task_core
-  motion_monitor_nodes
+  motion_monitor_nodes camera_snapshot_nodes
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
@@ -137,8 +151,10 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/move.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/control.xml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/duo.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/three.xml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/tool_x.xml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/snapshot.xml"
   DESTINATION share/${PROJECT_NAME}/behavior-trees)
 install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/grasp_task.yaml"
@@ -146,6 +162,7 @@ install(FILES
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/realman_motion.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/pika_config.yaml"
   "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/keyboard_control.yaml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../config/ros/camera_snapshot.yaml"
   DESTINATION share/${PROJECT_NAME}/config/ros)
 
 if(BUILD_TESTING)
@@ -160,7 +177,7 @@ if(BUILD_TESTING)
     BT_TEST_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees")
   target_link_libraries(test_input_mode_executor
     move_j_nodes input_mode_nodes prepare_keyboard_work_node policy_task_nodes
-    motion_monitor_nodes)
+    motion_monitor_nodes camera_snapshot_nodes)
   ament_target_dependencies(test_input_mode_executor
     rclcpp rclcpp_action rcl_interfaces realman_msgs std_msgs std_srvs
     sensor_msgs diagnostic_msgs geometry_msgs)
@@ -189,8 +206,10 @@ if(BUILD_TESTING)
 
   add_executable(test_grasp_nodes test/test_grasp_nodes.cpp)
   target_include_directories(test_grasp_nodes PRIVATE "${BT_VENDOR_ROOT}" "${BT_VENDOR_ROOT}/bt_nodes")
-  target_link_libraries(test_grasp_nodes move_j_nodes)
-  target_compile_definitions(test_grasp_nodes PRIVATE GRASP_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml")
+  target_link_libraries(test_grasp_nodes move_j_nodes camera_snapshot_nodes)
+  target_compile_definitions(test_grasp_nodes PRIVATE
+    GRASP_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/../../../config/behavior-trees/grasp.xml"
+    CONFIRMATION_TEST_TREE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/test/data/grasp_confirmation_test.xml")
   ament_target_dependencies(test_grasp_nodes rclcpp rclcpp_action realman_msgs)
   add_test(NAME test_grasp_nodes COMMAND test_grasp_nodes)
   set_tests_properties(test_grasp_nodes PROPERTIES TIMEOUT 45 ENVIRONMENT "ROS_DOMAIN_ID=231;ROS_LOCALHOST_ONLY=1")
@@ -295,6 +314,17 @@ if(BUILD_TESTING)
   target_link_libraries(test_retry_unless_fault_node PRIVATE bt::core)
   add_test(NAME test_retry_unless_fault_node COMMAND test_retry_unless_fault_node)
 
+  add_executable(test_save_camera_frames_node test/test_save_camera_frames_node.cpp)
+  target_include_directories(test_save_camera_frames_node PRIVATE
+    "${BT_VENDOR_ROOT}" "${BT_VENDOR_ROOT}/bt_nodes")
+  target_link_libraries(test_save_camera_frames_node camera_snapshot_nodes)
+  ament_target_dependencies(test_save_camera_frames_node rclcpp realman_msgs)
+  add_test(NAME test_save_camera_frames_node COMMAND test_save_camera_frames_node)
+  set_tests_properties(test_save_camera_frames_node PROPERTIES
+    TIMEOUT 60 ENVIRONMENT "ROS_DOMAIN_ID=222;ROS_LOCALHOST_ONLY=1")
+
+  ament_add_pytest_test(test_camera_snapshot_server test/test_camera_snapshot_server.py)
+  ament_add_pytest_test(test_snapshot_tree test/test_snapshot_tree.py)
   ament_add_pytest_test(test_grasp_task_config test/test_grasp_task_config.py)
   ament_add_pytest_test(test_tree_contract test/test_tree_contract.py)
   ament_add_pytest_test(test_bt_launcher test/test_bt_launcher.py)
@@ -315,6 +345,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_tree_startup_metadata test/test_tree_startup_metadata.py)
   ament_add_pytest_test(test_arm_move_tree test/test_arm_move_tree.py)
   ament_add_pytest_test(test_three_arm_move_tree test/test_three_arm_move_tree.py)
+  ament_add_pytest_test(test_duo_tree test/test_duo_tree.py)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME})

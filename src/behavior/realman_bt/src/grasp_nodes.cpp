@@ -1,11 +1,13 @@
 #include "realman_bt/grasp_nodes.hpp"
 
 #include <cmath>
+#include <ctime>
 #include <future>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <utility>
+#include <type_traits>
 
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "realman_bt/move_j_node.hpp"
@@ -52,6 +54,19 @@ std::string arm(const std::string& value) {
   if (value != "l" && value != "r") throw std::invalid_argument("grasp arm_id must be l or r");
   return value;
 }
+// Wall-clock UTC tag (YYYYmmdd_HHMMSS) identifying one grasp cycle. gmtime_r
+// matches the snapshot server's datetime.now() inside the UTC container, so a
+// cycle's frames group and sort together. A cycle spans seconds of motion, so
+// second resolution is effectively unique per cycle.
+std::string graspSessionStamp() {
+  const std::time_t now =
+      std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+  std::tm tm{};
+  gmtime_r(&now, &tm);
+  char buffer[32];
+  std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", &tm);
+  return std::string(buffer);
+}
 void event(const bt_core::Blackboard::Ptr& bb, const std::string& interface_name,
            const std::string& phase, const std::string& detail, const std::string& level = "INFO") {
   const auto diagnostics = bb->get<RuntimeDiagnostics*>(kRuntimeDiagnosticsBlackboardKey).value_or(nullptr);
@@ -67,8 +82,10 @@ class ActionOperation : public GraspDrain {
   using Handle = typename Client::GoalHandle;
   using Wrapped = typename Client::WrappedResult;
   ActionOperation(rclcpp::Node* ros_node, std::string name, typename Action::Goal goal,
-                  std::function<void()> before_send = {})
-      : name_(std::move(name)), goal_(std::move(goal)), before_send_(std::move(before_send)) {
+                  std::function<void()> before_send = {},
+                  std::function<void(const std::string&, const std::string&)> observer = {})
+      : name_(std::move(name)), goal_(std::move(goal)), before_send_(std::move(before_send)),
+        observer_(std::move(observer)) {
     client_ = rclcpp_action::create_client<Action>(ros_node->get_node_base_interface(),
         ros_node->get_node_graph_interface(), ros_node->get_node_logging_interface(),
         ros_node->get_node_waitables_interface(), name_);
@@ -77,18 +94,29 @@ class ActionOperation : public GraspDrain {
     if (!sent_) {
       if (!client_->action_server_is_ready()) return false;
       if (before_send_) before_send_();
-      goal_future_ = client_->async_send_goal(goal_);
-      sent_ = true;
+      typename Client::SendGoalOptions options;
+      auto feedback = feedback_;
+      options.feedback_callback = [feedback](auto, const auto message) {
+        std::lock_guard<std::mutex> lock(feedback->mutex);
+        // PlanGrasp has a different feedback contract; this operation is also
+        // used by the planner, so keep the motion diagnostic opt-in by type.
+        if constexpr (std::is_same_v<Action, Motion>) feedback->detail = message->detail;
+      };
+      goal_future_ = client_->async_send_goal(goal_, options);
+      sent_ = true; sent_at_ = Clock::now();
+      if (observer_) observer_("send_goal", "goal sent");
     }
     if (!handle_) {
       if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
       handle_ = goal_future_.get();
       if (!handle_) { terminal_ = true; throw std::runtime_error(name_ + " goal rejected"); }
+      if (observer_) observer_("goal_accepted", "goal accepted");
     }
     if (!result_future_.valid()) result_future_ = client_->async_get_result(handle_);
     if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
     result_ = result_future_.get();
     terminal_ = true;
+    if (observer_) observer_("result", result_.result ? result_.result->message : "missing result");
     if (result_.code != rclcpp_action::ResultCode::SUCCEEDED || !result_.result || !result_.result->success) {
       throw std::runtime_error(result_.result && !result_.result->message.empty() ? result_.result->message : name_ + " did not succeed");
     }
@@ -118,7 +146,18 @@ class ActionOperation : public GraspDrain {
     return false;
   }
   std::shared_ptr<typename Action::Result> result() const { return result_.result; }
+  bool sent() const { return sent_; }
+  double elapsedSinceSend() const { return std::chrono::duration<double>(Clock::now() - sent_at_).count(); }
+  std::string diagnostic() const {
+    const std::string phase = !sent_ ? "waiting for Action server" : !handle_ ?
+        "waiting for goal response" : "waiting for Action result";
+    std::lock_guard<std::mutex> lock(feedback_->mutex);
+    return phase + (feedback_->detail.empty() ? "" : "; " + feedback_->detail);
+  }
  private:
+  struct FeedbackState { std::mutex mutex; std::string detail; };
+  std::shared_ptr<FeedbackState> feedback_{std::make_shared<FeedbackState>()};
+  std::function<void(const std::string&, const std::string&)> observer_;
   std::string name_;
   typename Action::Goal goal_;
   std::function<void()> before_send_;
@@ -127,6 +166,7 @@ class ActionOperation : public GraspDrain {
   std::shared_future<typename Handle::SharedPtr> goal_future_;
   std::shared_future<Wrapped> result_future_;
   Wrapped result_{};
+  Clock::time_point sent_at_{};
   bool sent_{false}, cancel_sent_{false}, terminal_{false};
 };
 
@@ -216,8 +256,6 @@ bt_core::PortsList TaskLeaseNode::providedPorts() {
   return bt_core::makePorts(
       bt_core::InputPort<std::string>("arm_id", "r", "Profile arm namespace l/r"),
       bt_core::InputPort<bool>("dry_run", "true", "Validate without acquiring control"),
-      bt_core::InputPort<bool>("execution_ready", "false", "Measured profile passed execution checks"),
-      bt_core::InputPort<std::string>("readiness_detail", "", "Missing physical acceptance inputs"),
       bt_core::InputPort<double>("ttl_sec", "5", "Task lease validity, seconds"),
       bt_core::InputPort<double>("timeout_sec", "10", "Acquire timeout, seconds"));
 }
@@ -239,7 +277,6 @@ Status TaskLeaseNode::tick() {
       dry_run_ = getInput<bool>("dry_run").value_or(true);
       if (!child()) throw std::invalid_argument("TaskLease requires a child");
       if (!dry_run_) {
-        if (!getInput<bool>("execution_ready").value_or(false)) throw std::invalid_argument("grasp execution profile not ready: " + getInput<std::string>("readiness_detail").value_or(""));
         validateSink(blackboard());
         session_ = std::make_shared<TaskLeaseSession>(node(blackboard()), arm_id, ttl, timeout);
       }
@@ -312,6 +349,7 @@ Status PlanGraspNode::tick() {
         if (getInput<std::string>(key).value_or("").empty()) throw std::invalid_argument(std::string(key) + " is required");
       }
       if (getInput<bool>("dry_run").value_or(true)) {
+        blackboard()->set<std::string>(kGraspSessionKey, graspSessionStamp());
         event(blackboard(), "/grasp_bridge/plan_grasp", "dry_run", "configuration validated; no observation or inference");
         completed_ = true; return Status::SUCCESS;
       }
@@ -329,6 +367,7 @@ Status PlanGraspNode::tick() {
     if (result->observation_id.empty() || result->plan_id.empty() || result->capture_timestamp_ns <= 0 ||
         result->expires_timestamp_ns <= node(blackboard())->now().nanoseconds()) throw std::runtime_error("grasp plan is missing identity or already expired");
     blackboard()->set<std::shared_ptr<Plan::Result>>(kGraspPlanKey, result);
+    blackboard()->set<std::string>(kGraspSessionKey, graspSessionStamp());
     event(blackboard(), "/grasp_bridge/plan_grasp", "result", "plan accepted: " + result->plan_id);
     completed_ = true; operation_.reset(); return Status::SUCCESS;
   } catch (const std::exception& error) {
@@ -350,7 +389,8 @@ bt_core::PortsList GraspWaypointNode::providedPorts() {
       bt_core::InputPort<std::string>("arm_id", "r", "Profile arm namespace l/r"),
       bt_core::InputPort<std::string>("waypoint", "pregrasp", "pregrasp/grasp/lift"),
       bt_core::InputPort<int>("velocity_percent", "5", "MoveL speed ratio [1,100]"),
-      bt_core::InputPort<double>("timeout_sec", "30", "Motion timeout, seconds"));
+      bt_core::InputPort<double>("timeout_sec", "30", "Motion timeout, seconds"),
+      bt_core::InputPort<double>("result_grace_sec", "5", "Additional stop/result transport time, seconds"));
 }
 Status GraspWaypointNode::tick() {
   if (completed_) return failureReason().empty() ? Status::SUCCESS : Status::FAILURE;
@@ -358,10 +398,13 @@ Status GraspWaypointNode::tick() {
     if (!operation_) {
       const auto arm_id = arm(getInput<std::string>("arm_id").value_or(""));
       const auto waypoint = getInput<std::string>("waypoint").value_or("");
+      waypoint_ = waypoint;
       if (waypoint != "pregrasp" && waypoint != "grasp" && waypoint != "lift") throw std::invalid_argument("unknown grasp waypoint");
       const int velocity = getInput<int>("velocity_percent").value_or(0);
       if (velocity < 1 || velocity > 100) throw std::invalid_argument("velocity_percent must be [1,100]");
       timeout_sec_ = getInput<double>("timeout_sec").value_or(0); positive(timeout_sec_, "timeout_sec");
+      result_grace_sec_ = getInput<double>("result_grace_sec").value_or(5.0);
+      positive(result_grace_sec_, "result_grace_sec");
       if (getInput<bool>("dry_run").value_or(true)) {
         event(blackboard(), "/" + arm_id + "/execute_motion", "dry_run", "validated " + waypoint + "; no motion client");
         completed_ = true; return Status::SUCCESS;
@@ -381,15 +424,29 @@ Status GraspWaypointNode::tick() {
       goal.connect = false; goal.timeout_sec = static_cast<float>(timeout_sec_);
       auto bb = blackboard(); auto* ros_node = node(bb);
       operation_ = std::make_shared<GraspMotionOperation>(ros_node, "/" + arm_id + "/execute_motion", goal,
-          [bb, ros_node]() { (void)plan(bb, ros_node); });
+          [bb, ros_node]() { (void)plan(bb, ros_node); },
+          [bb, arm_id, waypoint](const auto& phase, const auto& detail) {
+            event(bb, "/" + arm_id + "/execute_motion", phase, waypoint + ": " + detail);
+          });
       started_ = Clock::now();
     }
-    if (Clock::now() - started_ > std::chrono::duration<double>(timeout_sec_)) throw std::runtime_error("grasp waypoint timed out");
-    if (!operation_->step()) return Status::RUNNING;
+    // Consume an already-arrived terminal result before enforcing the client
+    // deadline. The driver owns the motion deadline and physical stop.
+    if (!operation_->sent() && Clock::now() - started_ > std::chrono::duration<double>(timeout_sec_)) {
+      throw std::runtime_error("grasp waypoint timed out; " + operation_->diagnostic());
+    }
+    if (!operation_->step()) {
+      if (operation_->sent() && operation_->elapsedSinceSend() > timeout_sec_ + result_grace_sec_) {
+        throw std::runtime_error("grasp waypoint timed out; " + operation_->diagnostic());
+      }
+      return Status::RUNNING;
+    }
     completed_ = true; operation_.reset(); return Status::SUCCESS;
   } catch (const std::exception& error) {
-    setFailureReason(error.what());
-    event(blackboard(), "grasp_waypoint", "failed", error.what(), "ERROR");
+    const auto reason = name() + " (" + waypoint_ + "): " + error.what();
+    setFailureReason(reason);
+    event(blackboard(), "grasp_waypoint", "failed", reason, "ERROR");
+    RCLCPP_ERROR(node(blackboard())->get_logger(), "%s", reason.c_str());
     if (operation_) { handoff(blackboard(), operation_); operation_.reset(); }
     completed_ = true; return Status::FAILURE;
   }
@@ -459,6 +516,7 @@ Status TaskGripperNode::tick() {
     }
     if (Clock::now() - started_ > std::chrono::duration<double>(timeout_sec_)) throw std::runtime_error("task gripper response timed out; command outcome may be unknown");
     if (!operation_->step()) return Status::RUNNING;
+    event(blackboard(), "task_gripper", "result", name() + ": " + getInput<std::string>("command").value_or(""));
     completed_ = true; operation_.reset(); return Status::SUCCESS;
   } catch (const std::exception& error) {
     setFailureReason(error.what());

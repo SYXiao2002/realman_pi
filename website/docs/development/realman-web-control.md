@@ -24,11 +24,15 @@ watchdog 或 lockout。网页保存的关节记录写入 `config/web-control/joi
 
 ## Grasp 离线评估页
 
+`/grasp_plan.html` 是行为树计划的只读观察页，复用抓取候选的三维渲染器，但没有采集/评估表单、人工复核或 MOVEL 控件。`PlanGrasp` BT 叶节点通过既有 Action 请求规划；bridge 将结果作为 `/grasp_bridge/evaluation` 快照发布，Web 节点缓存并转发。页面显示候选位姿、选中计划、逐候选拒绝原因、采集时机械臂姿态和 profile `workspace_m` 线框。它不启动或控制 BT，也不发送运动、夹爪命令。叶节点不负责打开浏览器，操作者可在任务前后单独打开页面。
+
 `/grasp.html` 的采集、候选评估和人工标注是只读的。它选择 grasp profile、目标类别、policy backend 和 CGN context（mask/box/full），向
 `/grasp_bridge/plan_grasp` 发送带 `evaluation_only=true` 的 `realman_msgs/PlanGrasp` 请求，并显示
 `/grasp_bridge/evaluation` 的原子 JSON 快照：RGB、注册深度、实例分割、候选投影、相机系和基座系 pose、深度反投影
 点云、关节快照、规划诊断以及标定和夹爪 readiness。浏览器只保存人工候选评价到 localStorage，支持导出
-带 `observation_id` 的 JSON。选中具有基座系接触中心 Pose 的候选后，页面将 XYZ（m）和 WXYZ 四元数填入基座系 MOVEL 面板；操作者显式点击发送才会通过同一 WebSocket `execute_motion` Action 通道运动。发送仅接受在线 observation、已连接机械臂、驱动 `motion_allowed=true` 且当前 TCP 与快照工具一致的情形。离线导入仅供审阅；该入口不会自动闭爪、提起或检查碰撞。
+带 `observation_id` 的 JSON。选中具有基座系接触中心 Pose 的候选后，页面将 XYZ（m）和 WXYZ 四元数填入基座系 MOVEL 面板；操作者显式点击发送才会通过同一 WebSocket `execute_motion` Action 通道运动。发送仅接受在线 observation、已连接机械臂、驱动 `motion_allowed=true` 且当前 TCP 与快照工具一致的情形。离线导入仅供审阅；该入口不会自动闭爪、提起或发送运动。
+
+快照中的 `candidate.collision` 是桥接生成的只读点云防碰结果。页面直接渲染其中的 `visual_finger_boxes/v1` 双指盒体；新快照不按候选宽度或浏览器夹爪配置重算。状态、最小间隙、最大穿透、四个阶段和点数会与候选表同步，选中候选的 near 点为黄色、collision 点为红色。没有有效实例分割、采集时 `T_base_camera`、足够局部环境点或有效盒体时显示 `unknown`；旧快照没有 `collision` 字段时显示“未执行碰撞评估”。这些结果只覆盖当前可见点云和两个手指盒体，不覆盖 palm、腕部、机械臂连杆或遮挡区。
 
 MOVEL 表单可手动编辑，默认速度为 5%、超时为 30 s，固定使用 `reference_type=0`、`reference_name="base"`、`command=1`。`web/src/motion_goal.ts` 供控制台和抓取页共用位姿校验及请求构造，`web/src/grasp_motion.ts` 负责抓取页的发送、反馈、取消和软件停止。在收到 Action 终态前禁止重复发送；软件停止服务的响应不会代替 Action 终态。切换 profile 清空目标，但在途取消和停止仍作用于原机械臂。
 
@@ -36,11 +40,11 @@ MOVEL 表单可手动编辑，默认速度为 5%、超时为 30 s，固定使用
 
 布局下方的“接触中心 Pose”通过候选选择器与候选表、人工复核同步，直接展示对齐前后在 color optical 和所选臂 `base_link` 中的 XYZ（m）及单位四元数 WXYZ。基座值优先读取快照对应阶段矩阵，否则仅使用冻结的 `T_base_camera` 与该阶段接触中心矩阵组合，不叠加三臂展示布局偏移。三维布局突出显示所选候选的对齐后接触中心坐标轴（X 闭合、Z 接近）。MOVEL 使用此基座系 XYZ/WXYZ 作为 TCP 目标，因此右臂 `T_grasp_tcp` 必须保持单位矩阵，即 TCP 原点与抓取接触中心、TCP 轴与抓取轴重合；页面不会额外转换工具偏移。缺少基座 Pose 时不能发送；CGN 标注沿用原始 Pose。
 
-`grasp_bridge` 的 `dry_run` 禁止 IK/waypoint 规划，但允许只读 RGB-D、TF 和 policy 请求，便于人在机械臂
-保持静止时审阅当前场景。页面参考原项目 `tools/offline_grasp/preview.py`，并排展示两个阶段的 RGB 线框投影和同一份相机系点云；旋转、平移和缩放同步，候选默认 Top 5，同编号同色，可逐项切换显示。结果点云采用原 worker 返回的 `z_range_m`，仅对展示点云裁剪、抽样；完整推理深度与深度统计保持原样。新观测自动按场景范围取景，之后人工选择候选保持观察视角。两个阶段指竖直对齐前后：原生矩阵用于绘图，接触中心矩阵用于规划。线框沿用原离线工具的示意尺寸，不代表实测机器人夹爪。几何对齐复用原项目函数，保持接触中心并将接近轴对齐基座 −Z；CGN 明确提示按原在线规则不执行几何对齐，右侧显示原始结果。
+`grasp.html` 的请求始终为 `evaluation_only=true`，只允许只读 RGB-D、TF 与候选评估，不调用 IK/waypoint；bridge 可同时为 `grasp.xml` 提供受限 IK 规划，便于人在机械臂
+保持静止时审阅当前场景。页面参考原项目 `tools/offline_grasp/preview.py`，并排展示两个阶段的 RGB 线框投影和同一份相机系点云；旋转、平移和缩放同步。Pose 默认只显示当前所选的一个；“Pose 显示范围”可切换为所选实例全部 Pose 或所有实例 Pose，也可用下方 checkbox 手动组合显示项。实例分组按候选 `object_id`，同一 Pose 选择器与候选表、人工复核保持同步。相同候选在两阶段同编号同色。注册深度在算法推理前按冻结 `T_base_camera` 裁切到 profile 的 `workspace_m`，RGB 保持原图；页面点云从同一份裁切深度生成，再最多均匀抽样到 35,000 点。输出仍是相机系坐标，默认点径为固定 3.5 px，和当前 Web 渲染器一致。缺少采集外参、workspace 无效或裁切后少于 100 个有效像素时，本次推理失败，不回退到未裁切输入。`depth_stats.valid_pixels` 表示裁切后计数，并提供裁切前后的计数。页面滑块可调整像素点径。快照事件最大 8 MiB。新观测自动按场景范围取景，选择 Pose 后保持观察视角。`workspace_m` 是 TCP 规划范围，不是夹爪或整臂碰撞模型。两个阶段指竖直对齐前后：候选 pose、数值和线框都以接触中心矩阵为原点，隐藏原始腕部 pose 坐标轴；线框沿用原离线工具的示意尺寸，不代表实测机器人夹爪。几何对齐复用原项目函数，保持接触中心并将接近轴对齐基座 −Z；CGN 明确提示按原在线规则不执行几何对齐，右侧显示原始结果。
 
-未批准手眼标定时仍可查看图像和相机系点云，但不会生成基座系 pose；缺少冻结 `T_base_camera` 时对齐后候选不可用，页面明确显示原因。缺少夹爪尺寸仍直接调用原项目算法并保留相机系候选。诊断同时展示对齐前后原生矩阵、接触中心与基座矩阵、原点偏移和原始分数。人工复核可标注对齐前、对齐后或前后对照，导出与导入 JSON 保留两阶段数据。旧快照没有对齐字段时右侧显示不可用。改变 profile、目标、后端或 CGN context 会同时清空两侧旧观测。快照的
-`execution_ready` 恒为 `false`，页面列出 readiness 阻断原因。每个快照只接受同一个 `observation_id` 的图像、候选和评价，避免跨帧拼接。
+没有有效手眼外参时可以查看已有快照，但新的评估/规划请求不会推理，因为无法把像素点正确裁切到基座系 workspace。缺少夹爪尺寸仍可在配置允许时调用原项目算法。诊断同时展示对齐前后原生矩阵、接触中心与基座矩阵、原点偏移和原始分数。人工复核可标注对齐前、对齐后或前后对照，导出与导入 JSON 保留两阶段数据。旧快照没有对齐字段时右侧显示不可用。改变 profile、目标、后端或 CGN context 会同时清空两侧旧观测。快照的
+页面列出 profile 的配置完整性诊断，但不会要求人工填写执行验证标记。每个快照只接受同一个 `observation_id` 的图像、候选和评价，避免跨帧拼接。
 
 构建与浏览器 smoke test：
 
@@ -122,7 +126,7 @@ watchdog 和 lockout，不会直接调用 SDK。
 transient-local 订阅 `/realman_bt_executor/input_mode_state`。同一 YAML 的
 `web_override_timeout_sec: 5.0`（秒）是等待 Web override 激活的上限；服务监听配置为
 `server.bind_host: 0.0.0.0`、`port: 8765`、`allowed_origins: [same-origin]`、`max_clients: 8` 和
-`max_message_bytes: 65536`（bytes）。行为树自身的 `config/ros/behavior_tree.yaml` 使用 10.0 Hz tick、
+`max_message_bytes: 8388608`（8 MiB），用于承载最多 35,000 点的 RGB-D 评估快照。行为树自身的 `config/ros/behavior_tree.yaml` 使用 10.0 Hz tick、
 5000 ms 切换超时及 `safe_fallback_mode: none`。
 
 `list_input_modes`（`realman_msgs/srv/ListInputModes`）响应 `success`、`message` 和并行的
@@ -161,6 +165,7 @@ request ID 相同的 `ACTIVE/web` 状态作为确认立即转发，否则 web �
 `web_override_timeout_sec` 后以 `input_mode_timeout` 被丢弃。
 `software_stop` 绕过路由；夹爪、恢复、标定、运动学、位姿和记录操作均是 mode-neutral（包括
 `gripper_command`、`recover_motion`、`capture_calibration_sample`、`solve_calibration`、
+`update_calibration_layout`、`verify_calibration`、
 `get_current_pose`、`solve_ik`、`list_joint_records`、`save_joint_record`、`delete_joint_record` 与
 `apply_joint_record`）。Policy 输入叶目前只是 RUNNING 占位；Pika 和 keyboard 输入叶记录行为树控制权，
 实际 robot session 分别由 `pika_control_router` 和 `keyboard_control_router` 管理。
@@ -345,6 +350,7 @@ launcher 从不终止任何进程，停止仍走“终止行为树”。`realman
 | --- | --- | --- |
 | `joint_state` | `arm`, `positions_rad`, `stamp_ns` | 各 arm 的实体 URDF 姿态唯一来源，以及未编辑时的滑轨值 |
 | `connection` | `arm`, `connected` | 控制器在线状态 |
+| `vacuum_state` | `arm`, `enabled`, `available`, `holding`, `io`, `raw_input`, `stale_after_sec` | 两页共用的吸盘红绿灯；状态超时自动灰灯 |
 | `coordinate_state` | `arm`, `motion_allowed`, `preferred_reference`, `tool`, `work` | 各 arm 的激活坐标、可运动状态和默认参考系 |
 | `action_state` | `action`, `request_id`, `state` | submitting/accepted/canceling；`stopped` 表示 Action 结果通道在运动中断后不可用 |
 | `action_feedback` | `feedback` | 原 Action feedback 的 JSON 映射 |
@@ -627,6 +633,26 @@ Action cancel。浏览器刷新不会留下仍由网页拥有的速度命令。
 
 模型只反映反馈，**不会**发送任何夹爪命令；开合操作仍使用页面的夹爪按钮、键盘或 Pika 路径。
 
+## 吸盘真空传感器状态
+
+`:8765/` 主界面与 `/6d_pose.html` 的吸盘区域始终显示左、右臂吸盘指示灯：绿灯“已吸附”，红灯“未吸附”；未启用、机械臂离线、IO 读取失败、必要的工具端电源关闭或状态超时均为灰灯，并显示原因。指示灯与当前选中的运动机械臂无关，刷新或重新连接后自动接收最新状态。悬停可查看机械臂、IO 端口和有效读数。
+
+配置统一放在 `config/ros/vacuum_sensors.yaml`，由每臂 `realman_driver` 读取 `arms.<l|m|r>`。`enabled` 控制监测开关，`io` 是该臂控制器端口号（1–4），`active_level` 是吸住物体时的输入电平（0 或 1），`requires_tool_power` 可要求控制器回读为 24 V 后才接受输入状态，`publish_rate_hz` 控制读取和发布频率。当前右臂 IO1 已启用并要求工具端 24 V；NPN 低电平有效。实测 0 V 时 IO1 可能为低电平，因此该状态显示未知，不误报“已吸附”；24 V 空载为高电平，吸附后为低电平。未来左臂安装后设置 `arms.l.enabled: true` 并核对 IO、电源依赖和有效电平即可，页面无需改动。驱动只读输入和工具电源设置，不设置 IO 模式或真空阀输出；输入端口须提前配置正确。
+
+驱动按默认 5 Hz 发布 `/<arm>/vacuum/state`，类型为 `std_msgs/msg/String`，内容为 JSON（与坐标状态话题方式一致），QoS 为 reliable、transient-local、depth=1：
+
+```json
+{"type":"vacuum_state","arm":"r","enabled":true,"io":1,"active_level":0,"requires_tool_power":true,"tool_power_available":true,"tool_power_voltage_v":24,"available":true,"holding":false,"raw_input":1,"api2_status":0,"stamp_ns":1790000000000000000,"stale_after_sec":2.0,"message":"未吸附"}
+```
+
+ROS 消费者须同时检查 `enabled && available` 才能使用 `holding`，并在超过 `stale_after_sec` 未收到新消息后视为未知。未启用或无有效读数时，`holding` 为 `null`；工具电源关闭时仍保留 `raw_input` 供诊断，但不据此判断吸附。订阅后需持续接收新消息，不能把 transient-local 保留的旧消息当成持续有效证据。Web 新连接只补发尚未超时的缓存，浏览器在断开连接或反馈超时后清除红/绿灯。
+
+```bash
+ros2 topic echo /r/vacuum/state
+```
+
+修改 YAML 后重启驱动生效；驱动 launch 参数 `vacuum_config_file` 可覆盖路径（默认跟随 `REALMAN_CONFIG_ROOT/ros/vacuum_sensors.yaml`）。`end_effectors.yaml` 继续负责三维显示模型。该传感器只提供吸附状态监测；6D Pose 的工具电源开关及自动开关时序见[吸盘运动接线](./grasping#吸盘运动接线与当前门禁)。
+
 ## URDF 与影子模型
 
 后端启动时读取：
@@ -657,7 +683,7 @@ PYTHONPATH=src/driver/realman_web_control \
 
 前端源代码在 `src/driver/realman_web_control/web/src/`，控制页面和
 `calibration.html` 标定页面共用一个 WebSocket 服务。标定页先选择左臂或右臂，展示当前单臂输入健康、
-样本/会话、保存样本与求解操作、检测预览和结果；切臂后独立管理会话，见[单臂手眼标定](./camera-calibration)。前端构建配置在
+样本/会话、保存样本与求解操作、检测预览和结果，并提供固定板“标定精度检验”面板（`capture_calibration_sample` 携 `purpose: "verify"` 采集、`verify_calibration` 计算）；切臂后独立管理会话，见[单臂手眼标定](./camera-calibration)。前端构建配置在
 `config/web-control/vite.config.mjs`。普通 ROS 镜像不依赖 Node，提交的 `static/` 是可复现
 构建产物；源码变更后在仓库 `website/` 目录执行：
 

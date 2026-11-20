@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!--
+  snapshot.xml: saves the current frame of one or more cameras into a folder.
+
+  SaveCameraFrames is a thin service client: the lean C++ executor has no
+  OpenCV/cv_bridge, so the leaf asks the camera_snapshot_server (started by
+  arm_move.launch.py) to subscribe to the requested topics, JPEG-encode one fresh
+  frame each, and write them into `directory`. image_topics is a comma-separated
+  list of full camera topics (see config/ros/cameras_ros2.yaml for namespaces);
+  this demo captures both wrist cameras.
+
+  The executor defaults to dry_run=true, which validates the ports and records the
+  intent without capturing anything. Set dry_run=false (REALMAN_BT_DRY_RUN=false)
+  to actually write the JPEGs.
+
+  Launcher note: arm_move is the only launcher that starts the snapshot server, and
+  the startup metadata schema requires a non-empty arm and action list, so this
+  camera-only tree still declares arm "r" and waits for /r/execute_motion at
+  preflight even though it commands no motion.
+-->
+<root main_tree_to_execute="MainTree"
+      realman_arm_id="r"
+      realman_required_arms="r"
+      realman_launch="arm_move"
+      realman_stop_on_terminal="true"
+      realman_exit_on_terminal="true">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="camera_snapshot_demo">
+      <SaveCameraFrames name="save_wrist_frames"
+                        image_topics="/camera_left/color/image_raw,/camera_right/color/image_raw"
+                        directory="/opt/rm65_ws/logs/snapshots"
+                        service_name="/camera_snapshot/save"
+                        timeout_sec="8.0"
+                        dry_run="{dry_run}"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

@@ -12,12 +12,12 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | 命令 | 作用 |
 | --- | --- |
 | `./rm65 build [service ...]` | 默认重建 `realman_bringup_remote` 与 `realman_web_control`，可指定如 `rm65_rviz`；使用 Bake 显式授权 `network.host` 并载入本机镜像，不改变容器状态 |
-| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 左右真实驱动和两只 42D + Web control + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
+| `./rm65 up` | 生产默认：四路宿主机 Orbbec RGB + 配置启用的右腕、后全局原始 depth（所有启用流首帧确认后启动 Docker）+ 左右真实驱动和两只 42D + Web control + `pose6d_bridge` + 数据录制 recorder 与回放网页（`:8770`）+ 标定健康诊断；无 RViz，不需要 `DISPLAY`。相机首帧失败会清理相机；之后 Compose 启动失败会保留相机流并返回失败 |
 | `./rm65 up desktop` | 同上，并启动 RViz-only 的远程查看服务 `realman_remote_rviz` |
 | `./rm65 up policy` | 生产图 + VLA 策略桥容器 `policy_bridge`（等待模式路由选中 `policy` 并调用 `/policy/activate`） |
 | `./rm65 up model` | 离线三臂模型 + RViz，不连接真机 |
 | `./rm65 rviz2` | 设置 `DISPLAY=:1`、`XAUTHORITY=/run/user/1000/gdm/Xauthority`，加载仓库 `functions.zsh` 并调用 `rm65_docker_camera_rviz`，前台显示四路相机 RGB |
-| `./rm65 down` / `status` / `logs` | 停止服务并等待受管相机 launch 退出、释放 USB；或查看状态、最近日志（含相机日志） |
+| `./rm65 down` / `status` / `logs` | `down` 先停止 `pose6d_bridge`，再停止其他服务并等待受管相机 launch 退出、释放 USB；状态和最近日志均包含 bridge 与相机 |
 | `./rm65 bt <l\|m\|r\|three\|control\|name>` | 在**已运行**的 `realman_bringup_remote` 容器内执行行为树；默认 dry-run |
 | `./rm65 bt-test build\|mock\|web\|all` | 构建、运行或校验隔离的行为树 mock 场景 |
 | `./rm65 sync` | 校验 `main` 与 clean worktree 后 push，并 rsync 已跟踪文件到生产端 |
@@ -35,6 +35,7 @@ description: ./rm65 统一入口、行为树启动器、.env 与 Compose 环境�
 | --- | --- |
 | `l` / `m` / `r` | `move.xml`，对单臂 `l`/`m`/`r` 执行 MoveJ |
 | `three` | `three.xml`，三臂分阶段 |
+| `duo` | `duo.xml`，L-R 双臂分阶段 |
 | `control` | `control.xml`，**持久**输入路由器，Ctrl-C 前一直运行 |
 | `<name>` 或 `<name>.xml` | `config/behavior-trees/<name>.xml` |
 
@@ -59,7 +60,7 @@ docker compose --project-directory . -f config/docker/compose.grasp.yaml up -d
 ros2 launch grasp_bridge grasp_bridge.launch.py profile:=right_wrist
 ```
 
-统一 launch 的 `start_grasp_bridge:=true grasp_profile:=right_wrist grasp_dry_run:=true` 也可启动规划节点；`grasp_dry_run:=false` 仅允许真实观测与 IK，执行仍由 BT 负责。实机执行门槛、模型挂载和标定导入命令见[腕相机抓取](../development/grasping)。
+统一 launch 的 `start_grasp_bridge:=true` 启动抓取规划节点，profile/backend 默认读取 `grasp_bridge.yaml`，也可用 `grasp_profile` 覆盖 profile。bridge 允许真实观测与 IK，但只返回计划；机器人执行由 BT 负责。实机运行命令见[腕相机抓取](../development/grasping)。
 
 ## `.env`
 
@@ -96,7 +97,7 @@ Web control 不做任何身份校验：`:8765` 能被访问的浏览器就能发
 | --- | --- | --- |
 | `8765` | `realman_web_control` | 控制页 `/`、标定页 `/calibration.html`、WebSocket |
 | `8770` | `realman_recording` | 录制实时页与 LeRobot 回放页，默认只绑定回环地址；无认证，不要直接暴露 |
-| `8080` | 行为树只读监视器 | 仅在 `./rm65 bt …` 运行期间；所有 `/api/` 写请求返回 `405` |
+| `8080` | 行为树只读监视器 | 行为树运行期间；`grasp.xml` 到达终态后仍常驻，直到停止行为树；所有 `/api/` 写请求返回 `405` |
 | `8091` | 独立 `grasp_server` | 显式启动 `config/docker/compose.grasp.yaml`；默认只绑定回环，ROS bridge 为 WS 客户端 |
 | `18000` | 外部 VLA 策略服务 | `policy_bridge` 作为客户端连接，不由本仓库启动 |
 | `8554`、`8100–8103` | 旧 RTSP/TCP 相机推流 | 已弃用 |

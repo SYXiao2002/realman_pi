@@ -54,6 +54,9 @@ class RealManSdkAdapter:
         "rm_get_joint_en_state",
         "rm_get_joint_err_flag",
         "rm_get_arm_all_state",
+        "rm_get_current_arm_state",
+        "rm_get_arm_current_trajectory",
+        "rm_get_controller_state",
     )
 
     def __init__(
@@ -66,7 +69,11 @@ class RealManSdkAdapter:
         mock_mode: bool,
         arm_id: str = "",
         soft_reconnect_attempts: int = 3,
+        sdk_timeout_ms: int = 500,
     ) -> None:
+        if type(sdk_timeout_ms) is not int or sdk_timeout_ms <= 0:
+            raise ValueError("sdk_timeout_ms must be a positive integer in milliseconds")
+        self.sdk_timeout_ms = sdk_timeout_ms
         self.ip = ip
         self.port = port
         self.thread_mode = thread_mode
@@ -104,6 +111,7 @@ class RealManSdkAdapter:
         self._mock_work_frame: ControllerFrame | None = None
         self._mock_trajectory_active = False
         self._mock_trajectory_reads_remaining = 0
+        self._mock_tool_voltage = 0
 
     @property
     def connected(self) -> bool:
@@ -174,6 +182,8 @@ class RealManSdkAdapter:
             try:
                 mode = getattr(rm_thread_mode_e, self.thread_mode)
                 robot = RoboticArm(mode)
+                if self.sdk_timeout_ms != 500:
+                    robot.rm_set_timeout(self.sdk_timeout_ms)
                 handle = robot.rm_create_robot_arm(self.ip, self.port)
                 connected = _is_valid_handle(handle)
                 if not connected:
@@ -557,6 +567,41 @@ class RealManSdkAdapter:
             "rm_get_arm_current_trajectory", "SDK trajectory query failed", mock_success={}
         )
 
+    def controller_io_inputs(self) -> Any:
+        """Read controller IO1..IO4; -1 marks a port that is not an input."""
+        return self._query(
+            "rm_get_io_input", "SDK controller input read failed",
+            mock_success=(0, [-1, -1, -1, -1]),
+        )
+
+    def set_tool_voltage(self, voltage_type: int) -> int:
+        """Select 0V, 5V, 12V, or 24V on the tool power output."""
+        if type(voltage_type) is not int or voltage_type not in (0, 1, 2, 3):
+            return -1
+        return self._command("rm_set_tool_voltage", "SDK tool voltage setting failed", voltage_type)
+
+    def tool_voltage(self) -> tuple[int, int | None]:
+        """Read the selected tool power output voltage type."""
+        with self._lock:
+            if self.mock_mode:
+                status = self._ready_status_locked()
+                if status is not None:
+                    return status, None
+                return 0, self._mock_tool_voltage
+        result = self._query("rm_get_tool_voltage", "SDK tool voltage query failed")
+        try:
+            status, voltage_type = _unpack_result(result)
+            voltage_type = int(voltage_type)
+        except (TypeError, ValueError):
+            return -1, None
+        if status != 0:
+            return status, None
+        if voltage_type not in (0, 1, 2, 3):
+            with self._lock:
+                self._set_failure_locked(-3, "SDK returned an invalid tool voltage type")
+            return -3, None
+        return 0, voltage_type
+
     def current_arm_state(self) -> Any:
         return self._query("rm_get_current_arm_state", "SDK arm state query failed")
 
@@ -920,6 +965,8 @@ class RealManSdkAdapter:
                     if method_name in {"rm_movej", "rm_movel", "rm_movej_p"}:
                         self._mock_trajectory_active = True
                         self._mock_trajectory_reads_remaining = 1
+                    elif method_name == "rm_set_tool_voltage":
+                        self._mock_tool_voltage = int(args[0])
                     elif method_name in {
                         "rm_set_arm_stop",
                         "rm_set_arm_slow_stop",
@@ -1020,7 +1067,7 @@ class RealManSdkAdapter:
                 if not allow_disconnect or self._destroying:
                     self._set_failure_locked(-1, "robot is not connected")
                     return None, None, -1
-            elif not self._connected:
+            elif not self._connected and not allow_disconnect:
                 self._set_failure_locked(-1, "robot is not connected")
                 return None, None, -1
             if self._robot is None:

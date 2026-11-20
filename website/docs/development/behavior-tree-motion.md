@@ -1,6 +1,6 @@
 ---
 title: 行为树机械臂移动 Demo
-description: 使用 vendored BehaviorTree.CPP-X 执行单臂或三臂同步分阶段 RealMan MoveJ。
+description: 使用 vendored BehaviorTree.CPP-X 执行单臂、双臂或三臂同步分阶段 RealMan MoveJ。
 ---
 
 # 行为树机械臂移动 Demo
@@ -26,7 +26,7 @@ PrepareKeyboardWork 等节点，不替换生产 ./rm65 up 编排，也不会
            -> /l|m|r/cartesian_velocity (realman_msgs/action/CartesianVelocity)
               + /l|m|r/cartesian_velocity/command (geometry_msgs/msg/TwistStamped)
 
-`./rm65 bt` 使用 one-shot 生命周期。执行器到达 `SUCCESS` 或 `FAILURE` 后停止 tick、halt 树，并等待
+普通任务树（如 `move.xml`、`three.xml`）使用 one-shot 生命周期。执行器到达 `SUCCESS` 或 `FAILURE` 后停止 tick、halt 树，并等待
 所有 cancellation drain 成功提交取消请求；快照中的 `pending_cancellations` 归零后，随后写出最终快照、退出 executor，`ros2 launch` 和只读
 监视器也随之退出。三臂 driver 及其 RealMan SDK 连接不退出，下一棵行为树继续复用原有 Action Server。
 
@@ -36,40 +36,53 @@ velocity_percent 和 blend_radius_percent 的范围分别为 1..100 和 0..100�
 确认该目标是否安全。
 
 单臂权威树文件为 config/behavior-trees/move.xml，其中 arm_id 和 dry_run 通过黑板重映射，能被
-launch 参数覆盖。三臂权威树文件为 config/behavior-trees/three.xml；每个
-ThreeArmMoveJ 叶节点先确认三路 Action Server 都可用，在同一行为树 tick 中依次提交 l/m/r 三个异步
-goal，并在三路都成功后返回 SUCCESS。任一路失败或超时会使叶节点失败，并取消或移交仍未完成的 goal。
+launch 参数覆盖。三臂权威树文件为 config/behavior-trees/three.xml；双臂 l/r 版本为
+config/behavior-trees/duo.xml。`ThreeArmMoveJ` 的 `arms` 端口可选指定 `l`、`m`、`r` 的非空子集，默认
+`l,m,r`。节点只验证、创建 client、等待 Action Server 并提交被选中的手臂，其余手臂完全跳过。被选中的
+Action Server 都可用后，节点在同一行为树 tick 中提交异步 goal，并等所有选中手臂都成功才返回 SUCCESS。
+任一路失败或超时会使叶节点失败，并取消或移交仍未完成的 goal。
 
-三臂树由有状态 Sequence 编排两个阶段：
+`three.xml` 和 `duo.xml` 都由有状态 Sequence 编排两个阶段。下表是三臂 `three.xml` 的目标；`duo.xml`
+使用相同的全零起始阶段，并在第二阶段使用当前双臂部署的 L/R 目标：
 
 | 阶段 | L（度） | M（度） | R（度） |
 | --- | --- | --- | --- |
 | `all_zero` | `0,0,0,0,0,0` | `0,0,0,0,0,0` | `0,0,0,0,0,0` |
 | `requested_pose` | `24,20,66,24,84,14.5` | `0,18,70,0,90,9` | `15,22,65,23,82,-7.5` |
 
-只有 `all_zero` 的三台机械臂全部完成后，Sequence 才开始 `requested_pose`。两个阶段均使用 10% 速度、
-0% 交融半径和 120 秒 Action 超时。“同时”表示三个 goal 在同一次 tick 中提交并共同等待，不保证三台
-机械臂在物理上完全同一时刻到达。
+双臂 `duo.xml` 的 `requested_pose` 为 L=`0.229,30.124,82.19,-2.241,70.44,174.223`、
+R=`2.583,30.02,93.644,2.532,56.142,-0.285`，不会解析或连接 M 臂。
 
-`ThreeArmMoveJ` 的三个目标端口是 `l_joint_degrees`、`m_joint_degrees`、`r_joint_degrees`，每个
-端口接收六个逗号分隔的有限角度值，默认均为零；该节点固定控制三臂，没有 `arm_id` 端口。公共参数
+只有 `all_zero` 阶段的所有已选机械臂都完成后，Sequence 才开始 `requested_pose`。两个阶段均使用 10% 速度、
+0% 交融半径和 120 秒 Action 超时。“同时”表示选中的 goal 在同一次 tick 中提交并共同等待，不保证机械臂
+在物理上完全同一时刻到达。
+
+`ThreeArmMoveJ` 的目标端口是 `l_joint_degrees`、`m_joint_degrees`、`r_joint_degrees`，每个
+端口接收六个逗号分隔的有限角度值，默认均为零。未选中的目标不会被解析，也不会要求对应 Action Server。公共参数
 `dry_run`、`velocity_percent`、`blend_radius_percent`、`timeout_sec` 默认分别为 `true`、`10`、`0`、
-`120`。成功要求三路 Action 均返回 `SUCCEEDED`，且每个结果消息的 `success=true`。超时从节点初始化
+`120`。成功要求所有已选 Action 均返回 `SUCCEEDED`，且每个结果消息的 `success=true`。超时从节点初始化
 开始计算，包含等待服务器就绪的时间。
+
+没有 M 臂的部署可运行 `./rm65 bt duo`；根元数据只要求 `l,r` 的 `execute_motion` Action。`control.xml`
+输入路由树同样已按双臂部署收敛：根元数据 `realman_required_arms="l,r"`，其 Pika/Policy 准备动作
+`ThreeArmMoveJ` 显式设置 `arms="l,r"`，只解析并连接 l/r，不等待 `/m/execute_motion`。`m_joint_degrees`
+端口仍保留但不被选中解析，因此没有 M 臂时也能正常进入各输入模式的 `ACTIVE`。
 
 ## 腕相机单臂抓取
 
-`config/behavior-trees/grasp.xml` 是单次腕相机抓取树；默认选择右臂，换臂由
+`config/behavior-trees/grasp.xml` 是腕相机抓取树；默认选择右臂，换臂由
 `config/ros/grasp_profiles.yaml` 的完整 profile 决定，不在 XML 中复制臂、相机、TCP 或夹爪身份。
 算法服务使用独立的非 ROS Docker，通过 WebSocket 向 `grasp_bridge` 返回相机坐标候选；
 桥只生成计划，机械臂动作仍由 BT 和 driver 执行。完整观测与坐标链见[腕相机抓取](./grasping)。
 
 ```text
 TaskLease（获取并持续续租）
-  -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
-  -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
-  -> GraspHold -> GraspConfirm（记录观察结果、显式决定是否返回）
-  -> MoveJ 已验收返回位 -> TaskGripper open -> 空闲后释放 lease
+  -> Repeat（按 grasp_task.yaml 的 cycles）
+     -> Retry（最多 3 次完整尝试）
+        -> TaskGripper open -> MoveJ 观察位 -> PlanGrasp
+        -> GraspWaypoint pregrasp -> grasp -> TaskGripper close -> lift
+        -> GraspHold -> MoveJ 返回位 -> TaskGripper open
+  -> 空闲后释放 lease
 ```
 
 所有节点的端口来自 `providedPorts()`，在[节点参考](./behavior-tree-nodes)列出。`PlanGrasp` 使用
@@ -78,45 +91,51 @@ TaskLease（获取并持续续租）
 BASE 下的 MoveL；它与闭爪步骤都会拒绝过期计划。观察与返回继续使用 `MoveJ`，并传递同一任务 token。
 操作员等待期间计划可能过期；返回使用启动前已验收的关节位，不再次依赖旧观测。
 
-运行参数在 `config/ros/grasp_task.yaml`，几何和物理验收留在 profile 中：
+运行参数在 `config/ros/grasp_task.yaml`，机器人、相机、标定、TCP 和夹爪来自网页评估共用的 profile 配置：
 
 | 配置 | 单位与约束 | 含义 |
 | --- | --- | --- |
 | `profile`、`target_label`、`backend` | 显式身份；后端为 `geometry/contact_graspnet/mock` | `mock` 不允许进入真机执行；目标不能留空 |
 | `lease_ttl_sec`、`acquire_timeout_sec` | 正有限秒数 | lease 有效期和获取上限；整个子树持续续租 |
+| `cycles` | `-1` 或正整数 | 完整抓取轮数；`-1` 持续循环，每轮最多进行 3 次完整尝试 |
 | `motion_timeout_sec`、`plan_timeout_sec`、`gripper_timeout_sec` | 正有限秒数 | 各阶段超时；夹爪上限须覆盖 manager 的到位等待 |
-| `hold_sec`、`confirmation_timeout_sec` | 正有限秒数 | 抬起后短暂停留、等待观察/返回决定的上限 |
+| `motion_result_grace_sec` | 正有限秒数 | MoveL 提交后额外等待驱动停止和 Action 结果的时间；不延长驱动的运动期限 |
+| `hold_sec` | 正有限秒数 | 抬起后的短暂停留 |
 
-默认配置的观察位、返回位、工作区、TCP 补偿和手眼结果仍未实测，因此会明确拒绝真机执行，
-不会代入零位或伪造可用姿态。`corridor_verified` 必须覆盖载物返回路径和释放位，
-`execution_verified` 也须在现场验收后才可置位；IK 通过不等于路径无碰撞。
+BT 不检查人工 `verified`、实测误差或走廊审批字段。结构有效的配置由 `grasp.html` 和 BT 共用，
+现场值是否正确、路径是否安全由操作者负责。BT 仍拒绝缺失/无效矩阵、关节位姿、工作区、工具或夹爪尺寸；
+受限 IK 不是碰撞检测。实机启动先运行 `REALMAN_GRASP_DRY_RUN=false ./rm65 up`，再运行
+`REALMAN_BT_DRY_RUN=false ./rm65 bt grasp`。
 
-### 观察确认与返回
+抓取树默认按 `config/ros/grasp_task.yaml` 的 `cycles` 循环完整抓取流程；`-1` 表示持续运行直到手动停止，
+正整数表示完成指定次数。一次尝试失败后会释放该次任务 lease，再从开夹和观察位重新开始，最多尝试 3 次；
+三次均失败时树进入 FAILURE 并释放 lease。此策略可恢复瞬时 TF/感知故障，不会绕过 `PlanGrasp` 的新鲜度、工作区或 IK 校验。
+当前 `grasp.xml` 设置 `realman_stop_on_terminal=false`、`realman_exit_on_terminal=false`，
+因此终态后保留 executor 和诊断页面，等待显式终止；循环运行期间 executor、监视器和 `8765` 的运行状态保持可查看。
+需要结束本次循环会话时，在 `8765` 点击“终止行为树”，
+或调用 `/realman_bt_executor/shutdown`；这不会停止长期运行的 driver。
 
-抬起和夹爪闭合只证明命令执行，不证明夹住物体。`GraspHold` 记录 `held_unverified`；
-随后 `GraspConfirm` 在当前 executor 私有命名空间创建 `~/confirm_grasp`，标准名称为
-`/realman_bt_executor/confirm_grasp`（`realman_msgs/srv/ConfirmGrasp`），并在日志和快照中显示
-`awaiting_confirmation` 及非秘密的 `task_id`。此时仍持有、续租同一 lease，禁止竞争输入。
+`PlanGrasp` 返回 `FAILURE` 时，后续 pregrasp、闭爪和抬升步骤不会执行。请先在 `8080` 的
+`/api/runtime` 快照或 `logs/behavior-trees/<run-id>/runtime.json` 的 `events` 中查看具体原因，常见原因是候选
+超出已验证 TCP/工作区走廊，或受限 IK 拒绝该候选。
 
-请求必须精确匹配当前 `task_id`，且 `observed_outcome` 必须显式为 `VERIFIED_GRASP=1`、
-`FAILED_GRASP=2` 或 `UNVERIFIED=3`。只有 `return_object=true` 才允许沿已验收路径返回并在
-返回 Action 成功后开爪；失败或未确认的观察也可由操作员明确授权返回，诊断仍保留原观察结果。
-服务 `success=true` 表示决定已记录，不表示物理抓取成功；整棵树 `SUCCESS` 表示授权的命令序列完成。
+`GraspWaypoint` 记录带 `pregrasp/grasp/lift` 名称的发送、接收和结果事件；失败原因经
+`Sequence`、`Repeat` 传到根节点，不再只显示泛化的 sequence failure。BT 先读取已就绪的结果，
+再检查从发送时刻计算的 `motion_timeout_sec + motion_result_grace_sec` 等待上限；等待服务端
+本身仍只使用 `motion_timeout_sec`。超时文本包含节点、waypoint、等待阶段和最后一条驱动反馈。
 
-以下是人工验收时的接口格式，运行前应将 `task_id` 替换为当前等待任务；该调用会授权后续真实返回与释放：
+BASE MoveL 的完成事件漏报或短动作的 active 窗口漏采样时，驱动还可用当前关节的 TCP 正解，
+证明末端已持续到达目标且轨迹 inactive。误差和稳定时间由 `realman_motion.yaml` 的
+`pose_goal_position_tolerance_m`、`pose_goal_rotation_tolerance_rad`、`pose_goal_settle_sec` 控制。
+缺少位姿证据、位姿不符、坐标门禁或取消/停止都不会被视为成功；备用完成路径会触发事件通道恢复，
+避免旧回调被下一条动作复用。恢复时沿用下一条动作的有效 task token 获取命令所有权，
+仍拒绝其他任务或过期 lease。详见[普通运动完成契约](./realman-action-development#executemotion-生命周期)。
 
-```bash
-ros2 service call /realman_bt_executor/confirm_grasp realman_msgs/srv/ConfirmGrasp \
-  "{task_id: '当前任务 ID', observed_outcome: 1, return_object: true}"
-```
+### 抓取后返回
 
-`return_object=false` 记录观察后终止任务；确认超时、旧任务 ID、无效观察值、重复确认、取消和任一
-阶段失败均不会自动返回或开爪。halt 会撤销确认服务，已排队回调也不能让旧树继续。错误后的物体
-处置需要重新评估现场状态，不能把重新运行整棵树当作持物恢复，因为树首步会开爪。
+抬起和夹爪闭合只证明命令执行，不证明夹住物体。行为树会保持夹爪状态并沿配置的返回位继续运行，操作者自行承担现场判断和释放风险。
 
-`dry_run=true` 只验证参数，不获取 lease、不创建规划/运动/夹爪 client，也不创建确认 service；
-测试使用隔离 mock 服务覆盖完整序列、续租等待、旧确认、超时、取消及每个阶段失败。
-未实测 profile 的缺失参数仍会显示校验失败，这是预期的配置门槛。
+`dry_run=true` 只验证参数，不获取 lease、不创建规划/运动/夹爪 client；测试使用隔离 mock 服务覆盖完整序列、续租等待、超时、取消及每个阶段失败。
 
 抓取专用 drain 保留迟到的 lease 授予、规划/MoveL 的非终态 Action 和在途夹爪响应；
 它等待 Action 终态或服务完成后再结束，并通过 driver 的 busy 检查释放 lease。
@@ -193,6 +212,119 @@ ROS clock 的新时间戳以及映射后的 `frame_id`。时长到达后节点�
 树被 `/stop`、分支切换或 Ctrl-C halt 时，节点先停止周期 timer 并发布一次零速度，再把 pending goal
 response 或 accepted goal 移交给 executor 的 cancellation drain。`pending_cancellations` 同时统计 MoveJ
 和笛卡尔速度 session；one-shot executor 要等两类 drain 都完成取消提交后才退出。
+
+## 相机画面快照
+
+`SaveCameraFrames` 把一个或多个相机的当前画面保存到指定文件夹。行为树执行器是精简的 C++ 进程，
+没有 OpenCV/cv_bridge，因此叶节点本身不碰图像数据：它作为服务客户端调用
+`camera_snapshot_server`（`realman_msgs/SaveCameraImages`），由这个 Python 节点订阅请求的话题、
+每个话题取一帧最新画面、经 `realman_recording` 已测试的 `image_to_jpeg` 编码为 `.jpg`，再写入目标
+文件夹。服务按需订阅、拿到帧或超时后立即销毁订阅，因此服务端不再维护一份相机配置，也不会与树里
+写的话题发生漂移。
+
+`snapshot.xml` 演示同时保存两个腕部相机：
+
+```xml
+<SaveCameraFrames
+    image_topics="/camera_left/color/image_raw,/camera_right/color/image_raw"
+    directory="/opt/rm65_ws/logs/snapshots"
+    service_name="/camera_snapshot/save"
+    timeout_sec="8.0"
+    dry_run="{dry_run}"/>
+```
+
+用文件名直接启动：
+
+```bash
+./rm65 bt snapshot
+```
+
+默认仍是 dry-run：只校验端口并记录意图，不创建服务客户端、不订阅、不写盘。真正保存画面：
+
+```bash
+REALMAN_BT_DRY_RUN=false ./rm65 bt snapshot
+```
+
+### 端口
+
+| 端口 | 默认 | 含义 |
+| --- | --- | --- |
+| `image_topics` | 无（必填） | 逗号分隔的完整相机话题；每项必须以 `/` 开头且不重复。命名空间见 `config/ros/cameras_ros2.yaml`。 |
+| `directory` | 无（必填） | 目标文件夹，必须是绝对路径；不存在时服务端会创建。 |
+| `service_name` | `/camera_snapshot/save` | 要调用的 `SaveCameraImages` 服务名，须与服务端 `save_service` 一致。 |
+| `timeout_sec` | `10.0` | 服务端为每个话题等待一帧新画面的预算；客户端截止时间再宽限 5 s。 |
+| `dry_run` | `true` | 只校验端口、记录意图，不拍照。 |
+| `allow_failure` | `false` | 为 `true` 时容忍运行时失败（服务缺失/拒绝/超时）：记一条 `ERROR` 诊断后仍返回 `SUCCESS`，让尽力而为的快照不中断周围任务。端口非法始终失败，不受此开关影响。 |
+| `session_id` | 空 | 可选会话标签，绑定到黑板键（如 `{grasp_session}`）后随请求发给服务端。服务端把每帧命名为 `<label>_<session_id>.jpg`，让同一轮抓取的 `after_plan`/`after_close`/`after_lift` 三张共用同一标签、可跨子目录配对。留空时回退到服务端自己的拍照时间戳命名。 |
+
+端口校验发生在创建任何服务客户端之前：话题为空/重复/不以 `/` 开头、目录为空或不是绝对路径、
+`timeout_sec` 非正都会立即 `FAILURE` 并保留 `failureReason()`。叶节点发出一次请求后进入 `RUNNING`，
+直到服务回应或客户端截止时间（`timeout_sec` 加 5 s 宽限）到达。成功要求服务为每个请求的话题都写入
+了一帧；只要有话题在预算内没取到帧、编码失败或服务不可用，就返回 `FAILURE`（服务端“先全部编码、
+再统一写盘”，因此失败不会留下半个请求的文件）。被 halt 时放弃在途请求并复位，下次进入重新校验、
+重新请求。叶节点以 `source=SERVICE` 记录 `send_request`/`result`/`timeout` 诊断事件。
+
+`allow_failure=true` 把上面这些**运行时**失败（服务缺失、拒绝、超时）改成“尽力而为”：节点记录同样的
+`ERROR` 事件、再补一条 `continuing` 事件，然后返回 `SUCCESS`，因此一次没抓到的快照不会让周围的
+`Sequence` 失败，也不会触发外层重试。端口非法属于配置错误，无论 `allow_failure` 都会 `FAILURE`，以便
+dry-run 阶段就暴露。
+
+### 服务端与启动接线
+
+`camera_snapshot_server` 由 `arm_move.launch.py` 与执行器一起启动；它是长驻节点，因此当 one-shot
+执行器退出时，launch 通过 `OnProcessExit → Shutdown` 把整个 launch 一并收尾，`bt-start` 的 `wait`
+才能返回并归档本次运行。服务端参数在 `config/ros/camera_snapshot.yaml`：
+
+| 参数 | 默认 | 含义 |
+| --- | --- | --- |
+| `save_service` | `/camera_snapshot/save` | 服务名，须与叶节点 `service_name` 一致。 |
+| `capture_timeout_sec` | `5.0` | 请求未带 `timeout_sec`（≤0）时使用的单帧捕获预算。 |
+| `jpeg_quality` | `90` | 传给 `image_to_jpeg` 的 JPEG 质量（1-100），与录制归档一致。 |
+| `default_directory` | 空 | 请求 `directory` 为空时的兜底目录；留空表示不兜底，直接拒绝。 |
+
+树里的 `SaveCameraFrames` 端口优先于这些默认值，只有服务名必须两边一致。
+
+::: warning 启动器约束
+快照树只保存画面、不命令任何运动，但 `arm_move` 是唯一会启动快照服务的启动器，且启动元数据要求
+`realman_required_arms`/`realman_required_actions` 非空，因此 `snapshot.xml` 仍声明 `arm "r"` 并在预检
+等待 `/r/execute_motion` 就绪（由 `./rm65 up` 的驱动提供），即使它并不发运动指令。
+:::
+
+### 抓取过程中的分阶段快照
+
+`grasp.xml` 在右腕抓取序列里插入了三个 `SaveCameraFrames`：分别在 `plan_grasp` 之后、`close_gripper`
+之后、`lift` 之后各存一张右腕相机（`/camera_right/color/image_raw`）画面，写入按阶段分的子目录
+`/opt/rm65_ws/logs/snapshots/{after_plan,after_close,after_lift}`（主机侧 `logs/snapshots/`），用于离线复核“规划时看到的场景、
+夹爪闭合后实际夹到什么、抬起后物体是否离开台面”。
+
+```xml
+<SaveCameraFrames name="save_after_lift"
+                  image_topics="/camera_right/color/image_raw"
+                  directory="/opt/rm65_ws/logs/snapshots/after_lift"
+                  service_name="/camera_snapshot/save"
+                  timeout_sec="8.0"
+                  allow_failure="true"
+                  session_id="{grasp_session}"
+                  dry_run="{dry_run}"/>
+```
+
+三个节点都设 `allow_failure="true"`，这是把它们放进抓取 `Sequence` 的前提：该序列外层包着
+`Retry(num_attempts=3)`，若快照失败会连累整个序列 `FAILURE` 并被重跑——重跑会从头执行
+`prepare_gripper`(open)，而此时机械臂可能正夹着物体，开爪会导致物体掉落。`allow_failure` 让快照退回
+“尽力而为”：没抓到就记诊断、继续任务，绝不影响抓取成败，也不触发重跑。它们同样跟随 `{dry_run}`，
+dry-run 时只校验端口、不落盘。
+
+三个节点还都绑定 `session_id="{grasp_session}"`。`grasp_session` 是黑板上的会话标签：`plan_grasp` 每成功
+规划一轮就把它覆写成本轮的 UTC 时间戳（`%Y%m%d_%H%M%S`），执行器启动时先播种空串兜底。服务端据此把每帧
+命名为 `<label>_<session>.jpg`，于是同一轮抓取的 `after_plan`/`after_close`/`after_lift` 三张文件名完全
+相同（如 `camera_right_20261029_143748.jpg`），跨三个子目录靠这个 session 时间戳即可配对成一组；`session_id`
+为空时（如 `snapshot.xml`）回退到服务端自己的拍照时间戳命名。
+
+::: warning 每轮循环都会各写一张
+`grasp.xml` 的 `Repeat` 默认 `cycles=-1`（无限循环直到停止），因此每完成一轮抓取都会往三个子目录各写
+一张 `.jpg`，文件名带本轮 `grasp_session` 时间戳。长时间运行时注意 `/opt/rm65_ws/logs`（主机 `logs/`）
+的磁盘占用。
+:::
 
 ## 键盘连续速度 session
 

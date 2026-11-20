@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 import yaml
 from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
 
-from realman_web_control.web_server import WebControlServer, WebServerConfig, load_server_config
+from realman_web_control.web_server import MAX_MESSAGE_BYTES, WebControlServer, WebServerConfig, load_server_config
 
 
 def test_input_mode_timing_is_loaded_from_root_config_without_runtime_defaults(tmp_path):
@@ -18,6 +19,7 @@ def test_input_mode_timing_is_loaded_from_root_config_without_runtime_defaults(t
     config = load_server_config(path)
     assert config.discovery_period_sec == 0.75
     assert config.web_override_timeout_sec == 2.5
+    assert config.max_message_bytes == MAX_MESSAGE_BYTES
 
 
 @pytest.mark.parametrize("field", ["discovery_period_sec", "web_override_timeout_sec"])
@@ -88,6 +90,29 @@ def test_web_control_is_open_without_browser_authentication(tmp_path):
     (static_root / "index.html").write_text("ok", encoding="utf-8")
 
     assert _server(static_root).read_only is False
+
+
+def test_connected_socket_snapshot_tracks_reload_independently_of_command_queue(tmp_path):
+    async def exercise():
+        server = _server(tmp_path)
+        disconnected = asyncio.Queue()
+        server.on_command = lambda client, message: disconnected.put_nowait(client)
+        app = web.Application()
+        app.router.add_get("/ws", server._websocket)
+        async with TestClient(TestServer(app)) as client:
+            first = await client.ws_connect("/ws")
+            first_id = (await first.receive_json())["client_id"]
+            second = await client.ws_connect("/ws")
+            second_id = (await second.receive_json())["client_id"]
+            assert server.connected_client_ids() == sorted([first_id, second_id])
+            await first.close()
+            assert await asyncio.wait_for(disconnected.get(), 2) == first_id
+            assert server.connected_client_ids() == [second_id]
+            await second.close()
+            assert await asyncio.wait_for(disconnected.get(), 2) == second_id
+            assert server.connected_client_ids() == []
+
+    asyncio.run(exercise())
 
 
 def test_static_root_rejects_parent_traversal(tmp_path):
@@ -224,3 +249,70 @@ def test_malformed_sample_records_are_preserved_during_empty_cleanup(tmp_path, m
     assert session.is_dir()
     assert summaries[0]["sample_count"] == 0
     assert summaries[0]["recoverable"] is False
+
+
+def test_session_summary_exposes_the_verify_purpose_marker(tmp_path):
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    root = static_root / "logs" / "camera_calibration"
+    identity = {"arm_id": "r", "serial": "right-camera", "mount_id": "right-wrist-v1"}
+    plain = root / "session-20260821T100001.000000Z"
+    verify = root / "session-20260821T100002.000000Z"
+    for directory, purpose in ((plain, None), (verify, "verify")):
+        batch = directory / "batches" / "batch-1"
+        batch.mkdir(parents=True)
+        manifest = {"schema_version": 1, "identity": identity, "intrinsics_sha256": "hash"}
+        if purpose:
+            manifest["purpose"] = purpose
+        (directory / "session.json").write_text(json.dumps(manifest))
+        sample = {"arm_id": "r", "identity": identity, "intrinsics_sha256": "hash", "base_to_tool": [[1.0]]}
+        (batch / "r-0000.json").write_text(json.dumps(sample))
+
+    summaries, _ = _server(static_root)._list_calibration_sessions()
+    by_id = {item["session_id"]: item for item in summaries}
+    assert by_id["session-20260821T100001.000000Z"]["purpose"] == ""
+    assert by_id["session-20260821T100002.000000Z"]["purpose"] == "verify"
+
+
+def test_pose_history_proxy_preserves_prefix_query_and_binary_payload(tmp_path):
+    from dataclasses import replace
+
+    async def exercise():
+        upstream = web.Application()
+        expected = bytes(range(256)) * 2000
+        async def asset(request):
+            assert request.query['stride'] == '2'
+            return web.Response(body=expected, content_type='application/octet-stream',
+                                headers={'Cache-Control': 'private, max-age=3600'})
+        upstream.router.add_get('/6d_pose_history/api/records/123/viewer/scene', asset)
+        async with TestServer(upstream) as target:
+            server = _server(tmp_path)
+            server.config = replace(server.config, pose6d_history_url=str(target.make_url('')).rstrip('/'))
+            app = web.Application()
+            app.router.add_get('/6d_pose_history/{path:.*}', server._pose6d_history)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.get('/6d_pose_history/api/records/123/viewer/scene?stride=2')
+                assert response.status == 200
+                assert await response.read() == expected
+                assert response.headers['Content-Type'] == 'application/octet-stream'
+            await server._history_session.close()
+    asyncio.run(exercise())
+
+
+def test_pose_history_proxy_reports_unreachable_backend(tmp_path):
+    from dataclasses import replace
+
+    async def exercise():
+        server = _server(tmp_path)
+        # Allocate an ephemeral address and close it before requesting.
+        async with TestServer(web.Application()) as target:
+            url = str(target.make_url('')).rstrip('/')
+        server.config = replace(server.config, pose6d_history_url=url)
+        app = web.Application()
+        app.router.add_get('/6d_pose_history/', server._pose6d_history)
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get('/6d_pose_history/')
+            assert response.status == 502
+            assert '历史服务不可达' in await response.text()
+        await server._history_session.close()
+    asyncio.run(exercise())

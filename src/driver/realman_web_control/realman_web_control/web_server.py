@@ -23,6 +23,11 @@ from .model_manifest import resolve_model_asset
 from .protocol import ProtocolError, parse_message
 
 
+# Grasp evaluation snapshots contain a bounded RGB-D review cloud. Keep the
+# WebSocket frame limit above that payload while retaining a hard upper bound.
+MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+
+
 @dataclass(frozen=True)
 class WebServerConfig:
     bind_host: str
@@ -39,6 +44,7 @@ class WebServerConfig:
     # bt_launcher in the bringup container starts trees; empty URL hides the start menu.
     bt_launcher_url: str = ""
     bt_launcher_timeout_sec: float = 2.0
+    pose6d_history_url: str = ""
     bt_tree_dir: Path | None = None
     bt_favorites_file: Path | None = None
 
@@ -101,12 +107,22 @@ def load_server_config(path: str | Path) -> WebServerConfig:
         isinstance(origin, str) and origin for origin in origins
     ):
         raise ValueError("server.allowed_origins must contain one or more strings")
+    history_settings = document.get("pose6d_history", {})
+    if not isinstance(history_settings, dict):
+        raise ValueError("pose6d_history must be a mapping")
+    history_url = history_settings.get("url", "")
+    if not isinstance(history_url, str) or (history_url and (
+        urlsplit(history_url).scheme not in ("http", "https") or not urlsplit(history_url).netloc
+        or urlsplit(history_url).path not in ("", "/") or urlsplit(history_url).query or urlsplit(history_url).fragment
+    )):
+        raise ValueError("pose6d_history.url must be an http(s) origin or empty")
     config = WebServerConfig(
         bind_host=bind_host,
         port=int(server.get("port", 8765)),
         allowed_origins=tuple(origins),
         max_clients=int(server.get("max_clients", 8)),
         max_message_bytes=int(server.get("max_message_bytes", 65536)),
+        pose6d_history_url=history_url.rstrip("/"),
         bt_monitor_url=bt_monitor_url.rstrip("/"),
         bt_launcher_url=launcher_url.rstrip("/"),
         bt_launcher_timeout_sec=float(launcher_timeout),
@@ -118,8 +134,8 @@ def load_server_config(path: str | Path) -> WebServerConfig:
         raise ValueError("server.port must be from 1 through 65535")
     if not 1 <= config.max_clients <= 128:
         raise ValueError("server.max_clients must be from 1 through 128")
-    if not 1024 <= config.max_message_bytes <= 1_048_576:
-        raise ValueError("server.max_message_bytes must be from 1024 through 1048576")
+    if not 1024 <= config.max_message_bytes <= MAX_MESSAGE_BYTES:
+        raise ValueError(f"server.max_message_bytes must be from 1024 through {MAX_MESSAGE_BYTES}")
     return config
 
 
@@ -153,12 +169,19 @@ class WebControlServer:
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._clients: dict[str, Any] = {}
+        self._clients_lock = threading.Lock()
         self._runner: Any = None
         self._bt_session: Any = None
+        self._history_session: Any = None
 
     @property
     def read_only(self) -> bool:
         return False
+
+    def connected_client_ids(self) -> list[str]:
+        """Snapshot actual sockets, including when a queued disconnect was lost."""
+        with self._clients_lock:
+            return sorted(self._clients)
 
     def start(self, timeout_sec: float = 5.0) -> None:
         if self._thread is not None:
@@ -230,6 +253,8 @@ class WebControlServer:
         app.router.add_get("/api/calibration/preview/{path:.*}", self._calibration_preview)
         app.router.add_get("/ws", self._websocket)
         app.router.add_get("/models/{path:.*}", self._model_asset)
+        app.router.add_get("/6d_pose_history", self._pose6d_history)
+        app.router.add_get("/6d_pose_history/{path:.*}", self._pose6d_history)
         app.router.add_get("/{path:.*}", self._static_asset)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -243,6 +268,9 @@ class WebControlServer:
                 *(client.close(code=1001, message=b"server shutdown") for client in clients),
                 return_exceptions=True,
             )
+        if self._history_session is not None:
+            await self._history_session.close()
+            self._history_session = None
         if self._bt_session is not None:
             await self._bt_session.close()
             self._bt_session = None
@@ -254,6 +282,37 @@ class WebControlServer:
         from aiohttp import web
 
         return web.json_response({"status": "ok", "read_only": self.read_only})
+
+    async def _pose6d_history(self, request: Any) -> Any:
+        """Stream history pages/assets from the fixed FoundationPose origin."""
+        import aiohttp
+        from aiohttp import web
+        if not self.config.pose6d_history_url:
+            return web.Response(status=503, text="6D 历史服务未配置", charset="utf-8")
+        if self._history_session is None:
+            self._history_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=60, connect=3), auto_decompress=False,
+                connector=aiohttp.TCPConnector(limit=8))
+        # Never forward a browser-supplied origin or a decoded traversal path.
+        if any(part in (".", "..") for part in request.path.split("/")) or "\\" in request.path:
+            raise web.HTTPBadRequest(text="invalid history path")
+        url = self.config.pose6d_history_url + request.rel_url.raw_path_qs
+        response = None
+        try:
+            async with self._history_session.get(url, allow_redirects=False) as upstream:
+                headers = {key: value for key, value in upstream.headers.items()
+                           if key.lower() in {"content-type", "content-length", "cache-control", "etag", "last-modified", "location", "content-encoding"}}
+                response = web.StreamResponse(status=upstream.status, headers=headers)
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_chunked(65536):
+                    await response.write(chunk)
+                await response.write_eof()
+                return response
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            if response is not None and response.prepared:
+                response.force_close()
+                return response
+            return web.Response(status=502, text=f"FoundationPose 历史服务不可达：{exc}", charset="utf-8")
 
     async def _layout(self, _request: Any) -> Any:
         from aiohttp import web
@@ -270,6 +329,14 @@ class WebControlServer:
         headers = {"Cache-Control": "no-store"}
         if not self.config.bt_monitor_url:
             return web.json_response(BT_RUNTIME_UNAVAILABLE, headers=headers)
+        # The monitor keeps the last snapshot briefly while bt-start archives a
+        # terminal run. The launcher is authoritative for whether a tree can
+        # still own the start lock; without this check a refreshed page can
+        # mistake that stale snapshot for a live tree and hide the start UI.
+        if self._bt_launcher_enabled():
+            launcher_status, launcher = await self._bt_launcher_call("GET", "/status")
+            if launcher_status != 200 or not launcher.get("running", False):
+                return web.json_response(BT_RUNTIME_UNAVAILABLE, headers=headers)
         if self._bt_session is None:
             self._bt_session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.config.bt_monitor_timeout_sec)
@@ -396,6 +463,7 @@ class WebControlServer:
             return None
         sample_count = 0
         arm_id = ""
+        purpose = ""
         recoverable = False
         try:
             try:
@@ -406,6 +474,7 @@ class WebControlServer:
                 if not isinstance(identity, dict):
                     raise ValueError("session identity must be an object")
                 arm_id = str(identity.get("arm_id", ""))
+                purpose = str(manifest.get("purpose", ""))
                 recoverable = manifest.get("schema_version") == 1 and arm_id in ("l", "r")
             except (OSError, ValueError, TypeError):
                 manifest = {}
@@ -433,6 +502,7 @@ class WebControlServer:
                     directory.stat().st_mtime, tz=timezone.utc
                 ).isoformat(),
                 "arm_id": arm_id,
+                "purpose": purpose,
                 "sample_count": sample_count,
                 "recoverable": recoverable,
                 "solved": (directory / "calibration_result.json").is_file(),
@@ -539,7 +609,8 @@ class WebControlServer:
         )
         await socket.prepare(request)
         client_id = uuid.uuid4().hex
-        self._clients[client_id] = socket
+        with self._clients_lock:
+            self._clients[client_id] = socket
         await socket.send_json(
             {
                 "type": "hello",
@@ -571,7 +642,8 @@ class WebControlServer:
                 except ProtocolError as error:
                     await socket.send_json(error.event())
         finally:
-            self._clients.pop(client_id, None)
+            with self._clients_lock:
+                self._clients.pop(client_id, None)
             self.on_command(client_id, {"type": "client_disconnected"})
         return socket
 

@@ -28,6 +28,7 @@ class SequenceNode : public bt_core::ControlNode {
   using bt_core::ControlNode::ControlNode;  // 继承构造 (std::string, NodeConfig)
 
   bt_core::NodeStatus tick() override {
+    setFailureReason("");
     // 空节点视为直接成功（无子节点的顺序 = 真）。
     if (childrenCount() == 0) {
       return bt_core::NodeStatus::SUCCESS;
@@ -45,6 +46,8 @@ class SequenceNode : public bt_core::ControlNode {
 
         case bt_core::NodeStatus::FAILURE:
           // 任一子节点失败 → 顺序失败。中止其余并复位。
+          setFailureReason(child->name() + ": " +
+              (child->failureReason().empty() ? "stage failed" : child->failureReason()));
           haltChildren();
           current_child_idx_ = 0;
           return bt_core::NodeStatus::FAILURE;

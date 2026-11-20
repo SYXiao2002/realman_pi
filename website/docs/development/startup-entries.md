@@ -24,7 +24,7 @@ rm65_project_help
 
 ```bash
 ./rm65 build              # 重建 realman_bringup_remote 与 realman_web_control；不改变容器状态
-./rm65 up                 # ROS 2 相机 + 左右真实驱动 + 两只 42D + Web control + 录制/回放 + 相机健康诊断，无 RViz
+./rm65 up                 # ROS 2 相机 + 左右真实驱动 + 两只 42D + Web control + 6D Pose bridge + 录制/回放 + 相机健康诊断，无 RViz
 ./rm65 up desktop         # 同上，并启动远程 ROS 图 RViz
 ./rm65 up model           # 离线三臂模型 + RViz，不连接真机
 ./rm65 rviz2              # 在 :1 桌面前台显示四路相机 RGB
@@ -48,6 +48,8 @@ rm65_project_help
 `./rm65 up` 同时启动录制平台（`realman_recording` 容器内的 `recording_recorder` + 只读回放网页），回放页在
 `http://127.0.0.1:8770/`（默认仅绑定 loopback，认证/反向代理完成前不要暴露到局域网）。录制/回放细节见
 [独立数据录制平台](./recording-platform)。
+
+`./rm65 up`、`up desktop`、`up policy` 同时启动 `pose6d_bridge`，`status` 和 `logs` 包含该服务；`down` 先停止 bridge，再停止 Web/驱动及相机，避免旧浏览器的观测归属跨重启残留。`up model` 只运行离线模型。FoundationPose GPU 算法服务仍由 `config/docker/compose.pose6d.yaml` 独立管理，详见[单帧 6D Pose](./grasping#单帧-6d-位姿开发状态)。
 
 ::: warning 驱动服务互斥
 `realman_bringup_remote` 是生产 ROS 图中唯一启动真实 `realman_driver` 的服务，实例由 `realman_driver.yaml` 中存在的节点参数段决定，当前只有 `l/r`。不要在它运行时启动

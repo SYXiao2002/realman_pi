@@ -1,4 +1,4 @@
-"""Stage one solved hand-eye artifact; physical approval remains explicit."""
+"""Import one solved hand-eye artifact into the shared grasp configuration."""
 
 import argparse
 import json
@@ -35,13 +35,13 @@ def stage(config_root, profile_name, result_file):
     if not isinstance(override, dict) or not isinstance(override.get("calibrations", {}), dict):
         raise ValueError("local calibration override must contain mappings")
     override.setdefault("calibrations", {})[profile["calibration"]] = {
-        "verified": False, "calibration_id": calibration_id, "camera_serial": profile["camera_serial"],
+        "calibration_id": calibration_id, "camera_serial": profile["camera_serial"],
         "mount_id": profile["mount_id"], "flange_frame": profile["flange_frame"], "color_frame": profile["color_frame"],
         "intrinsics_sha256": solved["intrinsics_sha256"], "result_file": str(source),
-        "T_flange_color": matrix.tolist(), "maximum_validation_error_m": None, "measured_validation_error_m": None,
+        "T_flange_color": matrix.tolist(),
     }
     temporary = path.with_suffix(".yaml.tmp")
-    temporary.write_text("# Staged results remain unverified until independent physical accuracy acceptance.\n" +
+    temporary.write_text("# Imported hand-eye result shared by Web evaluation and behavior-tree planning.\n" +
                          yaml.safe_dump(override, sort_keys=False), encoding="utf-8")
     temporary.replace(path)
     return path

@@ -28,7 +28,7 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/<arm>/connect` `disconnect` `stop` `status` | `std_srvs/Trigger` | 连接生命周期、软件受控停止、状态 |
 | `/<arm>/task_control` | `realman_msgs/TaskControl` | 按臂获取、续期、释放/撤销与查询任务租约；同一 token 覆盖机械臂和夹爪 |
 | `/<arm>/recover_motion` | `realman_msgs/RecoverMotion` | 取消后重建事件通道；不发送运动 |
-| `/<arm>/controller_info` | `std_srvs/Trigger` | 只读控制器信息（JSON），用于比对两台控制器 |
+| `/<arm>/controller_info` | `std_srvs/Trigger` | 只读控制器信息（JSON），含版本、关节/TCP、错误、当前轨迹及控制器状态 |
 | `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 关节 FK → 当前位姿（按已验证参考系） |
 | `/<arm>/forward_kinematics` | `realman_msgs/ForwardKinematics` | 任意关节角的 FK |
 | `/<arm>/solve_ik` | `realman_msgs/SolveIk` | 参考系目标 → 关节解（度） |
@@ -48,7 +48,6 @@ description: realman_pi 所有对外 ROS 2 节点、Action、Service 和 Topic �
 | `/realman_bt_executor/list_input_modes` | `realman_msgs/ListInputModes` | 按 XML 顺序发现输入模式目录 |
 | `/realman_bt_executor/select_input_mode` | `realman_msgs/SelectInputMode` | 请求模式（`mode_id` + 非空 `requester_id`） |
 | `/realman_bt_executor/input_mode_state` | `realman_msgs/InputModeState` | `ACTIVE` / `SWITCHING` / `FAILED` 及 epoch |
-| `/realman_bt_executor/confirm_grasp` | `realman_msgs/ConfirmGrasp` | 仅在等待人工确认时提供；匹配 task ID，记录观察结果和是否受控放回 |
 | `/realman_bt_executor/bt_status` | `std_msgs/String` | 执行器状态 |
 | `/realman_bt_executor/start` `stop` | `std_srvs/Trigger` | 执行器生命周期 |
 | `/keyboard/<l\|r>/cartesian_velocity` | `geometry_msgs/TwistStamped` | Web 键盘 ingress（由 `realman_web_control` 发布） |
@@ -88,8 +87,9 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/camera_left/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 左腕 Gemini 305（`CV2856D0008H`）原始深度；设备内帧同步开启 |
 | `/camera_right/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 右腕 Gemini 305（`CV2856D0002E`）原始深度；`depth_registration=false` |
 | `/camera_global/depth/image_raw`，及对应 `depth/camera_info` | `sensor_msgs/Image`、`CameraInfo` | 后全局 Gemini 335L（`CP28563000CK`）原始深度；`depth_registration=false` |
-| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF |
-| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 按 `arm_id/session_id` 求解独立手眼 |
+| `/camera_calibration/capture_sample` | `realman_msgs/CaptureCalibrationSample` | 选定 `arm_id`，单臂原子采样图像 + 图像时刻法兰 TF；`purpose: verify` 标记固定板检验样本，隔离出求解/布局候选 |
+| `/camera_calibration/solve` | `realman_msgs/SolveCalibration` | 按 `arm_id/session_id` 求解独立手眼；拒绝 `purpose: verify` 会话 |
+| `/camera_calibration/verify` | `realman_msgs/VerifyCalibration` | 用已求解 `baseline_session_id` 对固定板 `verify_session_id` 反算标定板位姿离散度，写 `verification_result.json` 并返回 `passed` |
 | `/camera_calibration/update_layout` | `realman_msgs/UpdateCalibrationLayout` | 用户选择 `left_session_id/right_session_id`，更新右臂布局并备份 YAML；重新 bringup 后基座 TF 生效 |
 | `/camera_calibration/camera_health` | `std_msgs/String`（JSON） | 每秒发布，供 Web 标定页面使用 |
 | `/camera_calibration/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 标定节点诊断 |
@@ -119,19 +119,37 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 
 ## 腕相机抓取 `grasp_bridge`
 
-`PlanGrasp.cgn_context` 为 `mask`、`box` 或 `full`，空字符串使用 bridge 配置；`evaluation_only=true` 不要求已测量夹爪尺寸、向上向量或固定模型身份，且不产生 waypoint。修改 Action 后需一起重建其所有 client/server。
+`PlanGrasp.cgn_context` 为 `mask`、`box` 或 `full`，空字符串使用 bridge 配置；`evaluation_only=true` 始终只读，不调用 IK 或产生 waypoint。实机 BT 规划沿用同一份 profile、标定、TCP 和夹爪配置，不要求人工 `verified` 标记或固定 model ID；配置结构和服务身份仍会校验。修改 Action 后需一起重建其所有 client/server。
 
 纯规划接口，执行由 BT 编排。契约：[腕相机抓取](../development/grasping)。
 
 | 名称 | 类型 | 说明 |
 | --- | --- | --- |
-| `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 坐标转换与受限 IK；可取消，不发送运动/夹爪命令 |
+| `/grasp_bridge/plan_grasp` | `realman_msgs/PlanGrasp`（Action） | 不可变观测 → WS 候选 → 抓取几何与 waypoint；按 `grasp_bridge.yaml:ik_precheck` 可选受限 IK；可取消，不发送运动/夹爪命令 |
 | `/grasp_bridge/diagnostics` | `diagnostic_msgs/DiagnosticArray` | 采集、推理、筛选、配置拒绝 |
-| `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 的规划结果 |
+| `/grasp_bridge/plan` | `std_msgs/String`（JSON） | 带 observation/profile/expiry 和 `timings_ms` 分阶段耗时的规划结果 |
 | `/grasp_bridge/candidates`、`overlay` | `geometry_msgs/PoseArray`、`sensor_msgs/Image` | 彩色光学坐标系候选与叠加图 |
-| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子评估快照：RGB、深度显示、点云、对齐前后矩阵、readiness；`base_camera_transform` 记录采集时 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录跳过的深度不足实例；按 `observation_id` 和采集时 `T_base_camera` 绑定 |
+| `/grasp_bridge/evaluation` | `std_msgs/String`（JSON） | 只读原子快照：离线评估含 RGB/深度显示、点云、对齐矩阵、readiness 与候选 `collision`（双指盒体、四阶段间隙/穿透和显示 mask）；行为树规划含候选结论/拒绝原因、waypoints 与 `workspace_m`（TCP 走廊）及可选 `collision_workspace_m`（更宽的碰撞检测区，省略图片）；按 `observation_id` 和采集时 `T_base_camera` 绑定，供 `/grasp_plan.html` 展示；`base_camera_transform` 记录 TF/外参来源与失败原因，`server_diagnostics.skipped_instances` 记录深度不足实例 |
 | `/grasp_bridge/review_status` | `std_msgs/String`（JSON） | 当前 bridge 的 dry-run、profile 和左右腕 profile 目录 |
 | `127.0.0.1:8091` WebSocket | MessagePack | 独立 `grasp_server`，输入对齐 BGR/RGB-D；返回原矩阵/分数/分割与溯源；无 ROS |
+
+## 单帧 6D Pose 与吸盘 `pose6d_bridge`
+
+页面为 `/6d_pose.html`；`./rm65 up` 默认启动 bridge，也可通过主 Compose 的 `pose6d` profile 独立管理。ROS 命令/事件通过 Web control 转发，基础配置和运动状态见[单帧 6D Pose 与吸盘](../development/grasping#单帧-6d-位姿开发状态)。
+
+| 名称 | 类型 | 说明 |
+| --- | --- | --- |
+| `/pose6d_bridge/command` | `std_msgs/String`（JSON） | 页面请求采集、推理、准备位、有符号步进、停止、会话关闭与心跳；运动命令只接受观测/会话 ID、吸取方式和 step mm，不接受任意目标 pose。Web control 每秒及转发请求前发送内部 `clients` 在线连接快照（`client_ids`），供 bridge 清理断线归属；该命令不能通过浏览器协议提交 |
+| `/pose6d_bridge/events` | `std_msgs/String`（JSON） | 请求关联的采集、位姿/告警/点云/OBJ/吸盘结果、运动状态和错误；结果包含切向参考及 +40 mm 接触/TCP 准备位。另以 5 Hz 广播 `pose6d_frames`（BASE 下实时 TCP/相机位姿及可用状态），供网页转换到冻结采集相机系。采集、推理和遥测均含 `base_frame`、运动配置的 `workspace_m`（BASE 系 `[[min x,y,z], [max x,y,z]]`，米），供可开关工作区线框使用；事件上限为 8 MiB |
+| `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 按当前配置工具读 BASE TCP，用于运动前/后的新鲜停稳读回 |
+| `/<arm>/solve_ik` | `realman_msgs/SolveIk` | BASE 系逐点 seeded IK 检查笛卡尔扫掠路径连续性，不执行运动 |
+| `/<arm>/task_control` | `realman_msgs/TaskControl` | 在准备位及点动会话期间持有同一 per-arm 任务租约 |
+| `/<arm>/tool_power`、`tool_power_status` | `std_srvs/SetBool`、`std_srvs/Trigger` | 手动设置 24 V / 0 V 和只读查询；设置后回读确认，持有任务租约时拒绝无令牌写入 |
+| `/<arm>/tool_power_control` | `realman_msgs/SetToolPower` | `enabled` 加 `task_token`；驱动验证当前任务租约并回读输出。6D 自动动作开始前开 24 V，确认提升完成后关 0 V |
+| `/<arm>/execute_motion` | Action `realman_msgs/ExecuteMotion` | 仅在配置启用后使用 BASE `MOVEL`；成功终态及实际 TCP 到位读回后才提交当前距离 |
+| `/<arm>/stop` | `std_srvs/Trigger` | 用户停止、浏览器断线/隐藏或 watchdog 触发的受控停止；未知 Action 结果保留任务租约 |
+| `/<arm>/coordinates/state`、`joint_states` | `std_msgs/String`、`sensor_msgs/JointState` | 校验活动 controller tool 与坐标状态，并验证新鲜、停稳的关节反馈 |
+| `127.0.0.1:8092` WebSocket | MessagePack | 独立 FoundationPose 单帧 `register()` 与几何筛查服务；容器无 ROS/机器人控制接口 |
 
 ## TF 与描述
 

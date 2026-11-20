@@ -24,6 +24,11 @@ inline constexpr char kGraspDrainSinkKey[] = "__realman_bt_grasp_drain_sink__";
 inline constexpr char kTaskTokenKey[] = "__realman_bt_task_token__";
 inline constexpr char kGraspTaskIdKey[] = "__realman_bt_grasp_task_id__";
 inline constexpr char kGraspPlanKey[] = "__realman_bt_grasp_plan__";
+// XML-visible session tag. PlanGrasp stamps it once per grasp cycle so the
+// per-phase SaveCameraFrames leaves can bind session_id="{grasp_session}" and
+// name every frame of that cycle with the same tag. Unlike the keys above, this
+// one is referenced directly from tree XML, so it stays human-readable.
+inline constexpr char kGraspSessionKey[] = "grasp_session";
 
 class TaskLeaseSession;
 class TaskLeaseNode final : public bt_core::DecoratorNode {
@@ -65,6 +70,8 @@ class GraspWaypointNode final : public bt_core::ActionNode {
   void onHalted() override;
  private:
   std::shared_ptr<GraspMotionOperation> operation_;
+  std::string waypoint_;
+  double result_grace_sec_{0};
   std::chrono::steady_clock::time_point started_{};
   double timeout_sec_{0};
   bool completed_{false};

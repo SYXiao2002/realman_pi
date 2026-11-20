@@ -1,0 +1,15 @@
+# Controller digital inputs for suction object detection (not tool-end IO).
+# Keys select the IO-owning arm /l, /m or /r. Each driver reads only its own arm.
+# Read-only monitoring: configure the controller port as a general digital input
+# before enabling. No IO mode/output or vacuum valve is changed by the driver.
+publish_rate_hz: 5.0
+arms:
+  l:
+    enabled: false       # Enable after the left sensor is installed.
+    io: 1                # Controller IO number, 1..4.
+    active_level: 0      # NPN: low = object held; high = no object.
+  r:
+    enabled: true
+    io: 1
+    requires_tool_power: true # Only trust IO1 when its 24 V supply is active.
+    active_level: 0

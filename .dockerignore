@@ -1,6 +1,7 @@
 build/
 install/
 log/
+logs/
 .git/
 .env
 src/.agents/

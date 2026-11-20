@@ -112,6 +112,32 @@ def _validate_solver(config: dict[str, Any]) -> None:
             raise ValueError(f"solver.{key} must be positive")
 
 
+def _validate_verification(config: dict[str, Any]) -> None:
+    """Normalize the fixed-board accuracy-check limits.
+
+    Missing keys fall back to conservative defaults so an older config still
+    loads; any supplied value must be positive and the sample count usable.
+    """
+
+    verification = config.get("verification", {})
+    if not isinstance(verification, dict):
+        raise ValueError("verification must be a mapping")
+    sample_count = int(verification.get("sample_count", 10))
+    if sample_count < 3:
+        raise ValueError("verification.sample_count must be at least 3")
+    normalized: dict[str, Any] = {"sample_count": sample_count}
+    for key, default in (
+        ("maximum_translation_spread_m", 0.010),
+        ("maximum_rotation_spread_rad", 0.020),
+        ("maximum_reprojection_error_px", 1.0),
+    ):
+        value = float(verification.get(key, default))
+        if value <= 0.0:
+            raise ValueError(f"verification.{key} must be positive")
+        normalized[key] = value
+    config["verification"] = normalized
+
+
 def load_config(path: str | Path) -> dict[str, Any]:
     """Load and validate the small, project-owned calibration YAML contract."""
 
@@ -126,4 +152,5 @@ def load_config(path: str | Path) -> dict[str, Any]:
     _validate_robots(config, cameras)
     _validate_sampling(config)
     _validate_solver(config)
+    _validate_verification(config)
     return config

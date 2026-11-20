@@ -1,4 +1,4 @@
-"""A solved artifact never silently enables execution or another arm."""
+"""Profile identity and physical input shape stay consistent across clients."""
 
 import json
 from pathlib import Path
@@ -21,6 +21,8 @@ def config(tmp_path):
     (tmp_path / "ros").mkdir()
     for name in ("grasp_profiles", "grasp_bridge", "camera_extrinsics", "cameras_ros2", "realman_coordinates", "gripper"):
         shutil.copy2(PROJECT / f"config/ros/{name}.yaml", tmp_path / f"ros/{name}.yaml")
+    (tmp_path / "ros/realman_coordinates.local.yaml").write_text(
+        "robots:\n  r:\n    default_tool: tcpgrip\n")
     shutil.copytree(PROJECT / "config/grasp", tmp_path / "grasp")
     return tmp_path
 
@@ -39,16 +41,32 @@ def artifact(profile):
     return value
 
 
-def test_unmeasured_profile_refuses_execution_and_freezes_local_changes(config):
+def test_unmeasured_flags_do_not_block_structural_profile_loading(config):
     first = load_profile(config, "right_wrist")
-    assert "verified calibration identity" in first["readiness_problems"]
-    assert "measured gripper geometry" in first["readiness_problems"]
-    with pytest.raises(ValueError, match="not ready"):
-        load_profile(config, "right_wrist", require_ready=True)
+    assert "verified calibration identity" not in first["readiness_problems"]
+    assert "measured gripper geometry" not in first["readiness_problems"]
+    assert "calibration identity" in first["readiness_problems"]
     (config / "ros/grasp_profiles.local.yaml").write_text(
         "profiles:\n  right_wrist:\n    velocity_percent: 3\n")
     assert first["profile_id"] != load_profile(config, "right_wrist")["profile_id"]
     assert load_profile(config, "left_wrist")["arm"] == "l"
+
+
+def test_camera_consumer_can_load_profile_with_an_independent_active_tool(config):
+    (config / "ros/realman_coordinates.local.yaml").write_text(
+        "robots:\n  r:\n    default_tool: tcpsuck\n")
+    with pytest.raises(ValueError, match="active configured default tool"):
+        load_profile(config, "right_wrist")
+    assert load_profile(config, "right_wrist", require_default_tool=False)["arm"] == "r"
+
+
+def test_collision_workspace_must_contain_workspace(config):
+    # The shipped right_wrist collision region is a superset of its workspace.
+    assert "collision_workspace_m" not in load_profile(config, "right_wrist")["readiness_problems"]
+    # Shrinking it below the workspace makes the profile not ready.
+    (config / "ros/grasp_profiles.local.yaml").write_text(
+        "profiles:\n  right_wrist:\n    collision_workspace_m: [[0, 0, 0], [0.01, 0.01, 0.01]]\n")
+    assert "collision_workspace_m" in load_profile(config, "right_wrist")["readiness_problems"]
 
 
 def test_cross_arm_gripper_mapping_is_rejected(config):
@@ -68,8 +86,8 @@ def test_stage_is_unverified_preserves_other_arm_and_checks_provenance(config):
     staged = stage(config, "right_wrist", path)
     data = yaml.safe_load(staged.read_text())["calibrations"]
     assert set(data) == {"left_wrist", "right_wrist"}
-    assert data["right_wrist"]["verified"] is False
-    assert data["right_wrist"]["maximum_validation_error_m"] is None
+    assert "verified" not in data["right_wrist"]
+    assert "maximum_validation_error_m" not in data["right_wrist"]
     with pytest.raises(ValueError, match="selected-arm"):
         stage(config, "left_wrist", path)
     right["hand_eye"]["r"]["tool_to_camera"][0][3] += 0.1
@@ -85,4 +103,4 @@ def test_comment_only_local_override_is_supported(config):
     result = config / "result.json"
     result.write_text(json.dumps(artifact(load_profile(config, "right_wrist"))))
     stage(config, "right_wrist", result)
-    assert read_yaml(config / "ros/camera_extrinsics.yaml")["calibrations"]["right_wrist"]["verified"] is False
+    assert "verified" not in read_yaml(config / "ros/camera_extrinsics.yaml")["calibrations"]["right_wrist"]

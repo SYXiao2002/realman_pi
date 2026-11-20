@@ -54,7 +54,7 @@ def camera_identity(model):
                    "distortion_model": model.distortion_model})
 
 
-def load_profile(config_root, name=None, *, require_ready=False):
+def load_profile(config_root, name=None, *, require_ready=False, require_default_tool=True):
     root = Path(config_root)
     table = read_yaml(root / "ros/grasp_profiles.yaml")
     name = name or table["default_profile"]
@@ -70,7 +70,9 @@ def load_profile(config_root, name=None, *, require_ready=False):
     if camera["serial"] != profile["camera_serial"] or not camera.get("enabled", True):
         raise ValueError("camera profile serial/enabled state disagrees with camera bringup")
     coordinates = read_yaml(root / "ros/realman_coordinates.yaml")["robots"][profile["arm"]]
-    if profile["tool_name"] != coordinates["default_tool"] or profile["tool_name"] not in coordinates["tools"]:
+    if profile["tool_name"] not in coordinates["tools"]:
+        raise ValueError("grasp profile tool is not configured for the selected arm")
+    if require_default_tool and profile["tool_name"] != coordinates["default_tool"]:
         raise ValueError("grasp tool must match the driver's active configured default tool")
     gripper_config = read_yaml(root / "ros/gripper.yaml")
     if gripper_config.get("task_control", {}).get("arms", {}).get(profile["gripper"]) != profile["arm"]:
@@ -90,9 +92,6 @@ def load_profile(config_root, name=None, *, require_ready=False):
 
 def readiness_problems(profile):
     problems = []
-    for key in ("tool_geometry_verified", "corridor_verified", "execution_verified"):
-        if profile.get(key) is not True:
-            problems.append(key)
     for key in ("observation_joint_degrees", "return_joint_degrees"):
         val = profile.get(key)
         if not isinstance(val, list) or len(val) != 6 or not np.isfinite(val).all():
@@ -105,8 +104,22 @@ def readiness_problems(profile):
     if type(velocity) is not int or not 1 <= velocity <= 100:
         problems.append("velocity_percent")
     bounds = np.asarray(profile.get("workspace_m"), dtype=float)
-    if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or np.any(bounds[0] >= bounds[1]):
+    workspace_ok = bounds.shape == (2, 3) and np.isfinite(bounds).all() and np.all(bounds[0] < bounds[1])
+    if not workspace_ok:
         problems.append("workspace_m")
+    # collision_workspace_m is optional; when set it must be a valid box that
+    # fully contains workspace_m, so every TCP-corridor point is also covered by
+    # the wider collision environment cloud.
+    collision = profile.get("collision_workspace_m")
+    if collision is not None:
+        region = np.asarray(collision, dtype=float)
+        region_ok = (region.shape == (2, 3) and np.isfinite(region).all()
+                     and np.all(region[0] < region[1]))
+        if region_ok and workspace_ok:
+            region_ok = bool(np.all(region[0] <= bounds[0] + 1e-9)
+                             and np.all(region[1] >= bounds[1] - 1e-9))
+        if not region_ok:
+            problems.append("collision_workspace_m")
     try:
         transform(profile.get("T_grasp_tcp"))
     except (ValueError, TypeError):
@@ -115,21 +128,16 @@ def readiness_problems(profile):
     for key in ("camera_serial", "mount_id", "flange_frame", "color_frame"):
         if cal.get(key) != profile[key]:
             problems.append("calibration " + key)
-    if cal.get("verified") is not True or not cal.get("calibration_id") or not cal.get("intrinsics_sha256"):
-        problems.append("verified calibration identity")
+    if not cal.get("calibration_id") or not cal.get("intrinsics_sha256"):
+        problems.append("calibration identity")
     try:
         transform(cal.get("T_flange_color"))
     except (ValueError, TypeError):
         problems.append("T_flange_color")
-    for key in ("maximum_validation_error_m", "measured_validation_error_m"):
-        if type(cal.get(key)) not in (float, int) or not np.isfinite(cal[key]) or cal[key] <= 0:
-            problems.append(key)
-    if not any(k in problems for k in ("maximum_validation_error_m", "measured_validation_error_m")):
-        if cal["measured_validation_error_m"] > cal["maximum_validation_error_m"]:
-            problems.append("calibration accuracy")
-    g = profile["gripper_geometry"]
-    if g.get("verified") is not True:
-        problems.append("measured gripper geometry")
+    g = profile.get("gripper_geometry")
+    if not isinstance(g, dict):
+        problems.append("gripper geometry")
+        return problems
     limits = {"min_opening_m": (0, 1), "max_opening_m": (0, 1),
               "finger_depth_m": (0.001, 1), "finger_thickness_m": (0.001, 1), "clearance_m": (0, 0.1)}
     for key, (lower, upper) in limits.items():

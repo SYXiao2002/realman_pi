@@ -29,13 +29,14 @@ from realman_msgs.srv import (
     GetCurrentPose,
     RecoverMotion,
     SelectFrame,
+    SetToolPower,
     SolveIk,
     TaskControl,
     VerifyCoordinates,
 )
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 from .coordinate_manager import CoordinateManager
 from .coordinate_services import (
@@ -56,6 +57,7 @@ from .pose_math import (
     quaternion_to_euler,
 )
 from .realman_sdk_adapter import RealManSdkAdapter, RobotState
+from .vacuum_sensor import VacuumSensorConfig
 
 
 _ARMS = frozenset({"l", "m", "r"})
@@ -98,6 +100,7 @@ class RealManDriverNode(Node):
         self.thread_mode = self.declare_parameter("thread_mode", "RM_TRIPLE_MODE_E").value
         self.mock_mode = bool(self.declare_parameter("mock_mode", False).value)
         self.auto_connect = bool(self.declare_parameter("auto_connect", True).value)
+        self.sdk_timeout_ms = self.declare_parameter("sdk_timeout_ms", 500).value
         self.reconnect_interval = float(
             self.declare_parameter("reconnect_interval", 5.0).value
         )
@@ -128,6 +131,14 @@ class RealManDriverNode(Node):
             self.declare_parameter(
                 "motion_config_file", _config_path("realman_motion.yaml")
             ).value
+        )
+        self.vacuum_config_file = str(
+            self.declare_parameter(
+                "vacuum_config_file", _config_path("vacuum_sensors.yaml")
+            ).value
+        )
+        self.vacuum_sensor = VacuumSensorConfig.from_yaml(
+            self.vacuum_config_file, self.arm_id
         )
         self.joint_names = list(
             self.declare_parameter(
@@ -182,6 +193,7 @@ class RealManDriverNode(Node):
             robot_model=self.robot_model,
             mock_mode=self.mock_mode,
             arm_id=self.arm_id,
+            sdk_timeout_ms=self.sdk_timeout_ms,
         )
         if self.mock_mode:
             self.adapter.configure_mock_coordinate_profile(profile)
@@ -205,9 +217,12 @@ class RealManDriverNode(Node):
             active_reference=lambda reference_type: self._active_references[reference_type],
             action_type=ExecuteMotion,
             trajectory_action_type=ExecuteTrajectory,
-            recover_event_channel=lambda: self._recover_event_channel(),
+            recover_event_channel=lambda token: self._recover_event_channel(token),
             stop_timeout_sec=self.motion_settings.stop_timeout_sec,
             joint_goal_tolerance_deg=self.motion_settings.joint_goal_tolerance_deg,
+            pose_goal_position_tolerance_m=self.motion_settings.pose_goal_position_tolerance_m,
+            pose_goal_rotation_tolerance_rad=self.motion_settings.pose_goal_rotation_tolerance_rad,
+            pose_goal_settle_sec=self.motion_settings.pose_goal_settle_sec,
             logger=self.get_logger(),
             before_motion=lambda: self.velocity_session.prepare_for_ordinary_motion(),
         )
@@ -373,6 +388,13 @@ class RealManDriverNode(Node):
             ),
         )
         self.connected_publisher = self.create_publisher(Bool, "connected", 10)
+        self.vacuum_state_publisher = self.create_publisher(
+            String, "vacuum/state",
+            QoSProfile(
+                depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
         # Renewal/watchdog cannot queue behind blocking SDK/IK service calls.
         # Serialize both together so a stale expiry cannot stop a replacement task.
         self.task_callback_group = MutuallyExclusiveCallbackGroup()
@@ -388,6 +410,9 @@ class RealManDriverNode(Node):
                 self._recover_motion,
             ),
             self.create_service(Trigger, "status", self._status),
+            self.create_service(SetBool, "tool_power", self._set_tool_power),
+            self.create_service(SetToolPower, "tool_power_control", self._set_tool_power_with_lease),
+            self.create_service(Trigger, "tool_power_status", self._tool_power_status),
             self.create_service(Trigger, "controller_info", self._controller_info),
             self.create_service(
                 VerifyCoordinates,
@@ -415,6 +440,9 @@ class RealManDriverNode(Node):
         ]
         period = 1.0 / self.state_publish_rate
         self.state_timer = self.create_timer(period, self._publish_state)
+        self.vacuum_state_timer = self.create_timer(
+            1.0 / self.vacuum_sensor.publish_rate_hz, self._publish_vacuum_state,
+        )
         self.coordinate_state_timer = self.create_timer(
             1.0 / self.coordinate_state_publish_rate,
             self._publish_coordinate_state,
@@ -608,6 +636,93 @@ class RealManDriverNode(Node):
         )
         if self.adapter.last_error_message:
             response.message += f" detail={self.adapter.last_error_message}"
+        return response
+
+    def _tool_power_state(self, voltage_type: int | None, *, available: bool, message: str = "") -> dict[str, Any]:
+        voltage_values = {0: 0, 1: 5, 2: 12, 3: 24}
+        voltage = voltage_values.get(voltage_type) if voltage_type is not None else None
+        state = {
+            "type": "tool_power_state",
+            "arm": self.arm_id,
+            "available": available,
+            "voltage_type": voltage_type,
+            "voltage_v": voltage,
+            "enabled": available and voltage_type == 3,
+        }
+        if message:
+            state["message"] = message
+        return state
+
+    def _tool_power_status(
+        self, _request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        status, voltage_type = self.adapter.tool_voltage()
+        available = status == 0 and voltage_type is not None
+        state = self._tool_power_state(
+            voltage_type,
+            available=available,
+            message="" if available else f"tool voltage query failed with API2 status {status}",
+        )
+        response.success = available
+        response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        return response
+
+    def _set_tool_power(
+        self, request: SetBool.Request, response: SetBool.Response
+    ) -> SetBool.Response:
+        return self._run_tool_power(request.data, "", response)
+
+    def _set_tool_power_with_lease(
+        self, request: SetToolPower.Request, response: SetToolPower.Response
+    ) -> SetToolPower.Response:
+        if not request.task_token:
+            state = self._tool_power_state(None, available=False, message="task_token is required")
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+            return response
+        return self._run_tool_power(request.enabled, request.task_token, response)
+
+    def _run_tool_power(self, enabled: bool, task_token: str, response: Any) -> Any:
+        voltage_type = 3 if enabled else 0
+        command_id = ""
+        try:
+            command_id = self.arm_ownership.acquire_external(self.arm_id, task_token)
+            status = self.adapter.set_tool_voltage(voltage_type)
+            if status != 0:
+                state = self._tool_power_state(
+                    None,
+                    available=False,
+                    message=f"tool voltage command failed with API2 status {status}",
+                )
+                response.success = False
+                response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                return response
+
+            read_status, actual_voltage_type = self.adapter.tool_voltage()
+            success = read_status == 0 and actual_voltage_type == voltage_type
+            message = "tool voltage verified" if success else (
+                f"tool voltage readback mismatch: requested {voltage_type}, "
+                f"status={read_status}, actual={actual_voltage_type}"
+            )
+            state = self._tool_power_state(
+                actual_voltage_type,
+                available=read_status == 0 and actual_voltage_type is not None,
+                message=message,
+            )
+            response.success = success
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        except ValueError as error:
+            state = self._tool_power_state(None, available=False, message=str(error))
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        except Exception as error:
+            self.get_logger().error(f"RealMan tool voltage service failed: {error}")
+            state = self._tool_power_state(None, available=False, message=str(error))
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        finally:
+            if command_id:
+                self.arm_ownership.release_external(self.arm_id, command_id)
         return response
 
     def _controller_info(
@@ -1182,7 +1297,7 @@ class RealManDriverNode(Node):
                 )
             return -1
 
-    def _recover_event_channel(self) -> bool:
+    def _recover_event_channel(self, task_token: str = "") -> bool:
         """Reset a stale callback channel after a confirmed inactive stop."""
         if not self.motion_coordinator.event_channel_recovery_required:
             return True
@@ -1196,13 +1311,13 @@ class RealManDriverNode(Node):
                 < self._event_recovery_retry_interval_sec
             ):
                 return False
-            self._last_event_recovery_attempt = now
-            owns_arm = self.arm_ownership.acquire(self.arm_id)
+            owns_arm = self.arm_ownership.acquire(self.arm_id, task_token)
             if not owns_arm:
                 self.get_logger().warn(
                     f"Motion event channel recovery refused: arm {self.arm_id} is busy"
                 )
                 return False
+            self._last_event_recovery_attempt = now
             if not self.motion_coordinator.event_channel_recovery_required:
                 return True
             self.get_logger().warn(
@@ -1235,6 +1350,11 @@ class RealManDriverNode(Node):
         now = time.monotonic()
         try:
             if self.motion_coordinator.event_channel_recovery_required:
+                # A task lease spans waypoints; its next goal supplies the
+                # token for recovery. A tokenless timer must not race it.
+                lease, _ = self.arm_ownership.task_state(self.arm_id)
+                if lease is not None:
+                    return
                 if (
                     now - self._last_event_recovery_attempt
                     >= self.reconnect_interval
@@ -1243,11 +1363,22 @@ class RealManDriverNode(Node):
                 return
             if (
                 not self.adapter.connected
+                # Keep the existing handle available for the active action's
+                # stop attempt. Reconnect may only replace it after terminal.
+                and self.motion_coordinator.active_generation is None
                 and now - self._last_connect_attempt >= self.reconnect_interval
             ):
                 self._connect_to_robot()
         except Exception as error:
             self.get_logger().error(f"Automatic RealMan reconnect failed: {error}")
+
+    def _publish_vacuum_state(self) -> None:
+        event = self.vacuum_sensor.sample(
+            self.adapter, self.arm_id, self.get_clock().now().nanoseconds,
+        )
+        self.vacuum_state_publisher.publish(
+            String(data=json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+        )
 
     def _publish_state(self) -> None:
         self._maybe_reconnect()

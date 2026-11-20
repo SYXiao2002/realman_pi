@@ -23,6 +23,7 @@
 #include "realman_bt/policy_task_params.hpp"
 #include "realman_bt/prepare_keyboard_work_node.hpp"
 #include "realman_bt/retry_unless_fault_node.hpp"
+#include "realman_bt/save_camera_frames_node.hpp"
 #include "realman_bt/three_arm_move_j_node.hpp"
 
 namespace realman_bt {
@@ -95,6 +96,10 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
     blackboard_->set<std::string>("pika_r_joint_degrees", pika_r_joint_degrees);
   }
   blackboard_->set<rclcpp::Node*>(kRosNodeBlackboardKey, this);
+  // Session tag for grasp snapshots. PlanGrasp overwrites it once per cycle; the
+  // empty seed keeps {grasp_session} resolvable before the first plan so a
+  // SaveCameraFrames leaf never reads an undefined blackboard key.
+  blackboard_->set<std::string>(kGraspSessionKey, std::string());
   // Thresholds and counts of the policy task (config/ros/policy_task.yaml). The counts are also
   // blackboard values so the XML can refer to them as {policy_cycles} / {policy_attempts} /
   // {policy_timeout_attempts} / {policy_timeout_backoff_sec}.
@@ -131,18 +136,20 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
       [this](std::shared_ptr<GraspDrain> drain) { enqueueGraspDrain(std::move(drain)); });
   for (const auto* key : {"grasp_profile_name", "grasp_profile_id", "grasp_base_frame",
        "grasp_tool_name", "grasp_gripper", "grasp_target_label", "grasp_backend",
-       "grasp_observation_joint_degrees", "grasp_return_joint_degrees", "grasp_readiness_detail"}) {
+       "grasp_observation_joint_degrees", "grasp_return_joint_degrees"}) {
     blackboard_->set<std::string>(key, declare_parameter<std::string>(key, ""));
   }
-  blackboard_->set<bool>("grasp_execution_ready", declare_parameter<bool>("grasp_execution_ready", false));
   blackboard_->set<int>("grasp_velocity_percent", static_cast<int>(declare_parameter<int64_t>("grasp_velocity_percent", 5)));
   for (const auto& entry : std::vector<std::pair<std::string, double>>{
       {"grasp_lease_ttl_sec", 5.0}, {"grasp_acquire_timeout_sec", 10.0},
-      {"grasp_motion_timeout_sec", 30.0}, {"grasp_plan_timeout_sec", 30.0},
+      {"grasp_motion_timeout_sec", 30.0}, {"grasp_motion_result_grace_sec", 5.0},
+      {"grasp_plan_timeout_sec", 30.0},
       {"grasp_gripper_timeout_sec", 25.0}, {"grasp_hold_sec", 1.0},
       {"grasp_confirmation_timeout_sec", 120.0}}) {
     blackboard_->set<double>(entry.first, declare_parameter<double>(entry.first, entry.second));
   }
+  blackboard_->set<int>("grasp_cycles",
+                        static_cast<int>(declare_parameter<int64_t>("grasp_cycles", 1)));
   factory_.registerNodeType<TaskLeaseNode>("TaskLease");
   factory_.registerNodeType<PlanGraspNode>("PlanGrasp");
   factory_.registerNodeType<GraspWaypointNode>("GraspWaypoint");
@@ -176,6 +183,7 @@ RealmanBtExecutorNode::RealmanBtExecutorNode(const rclcpp::NodeOptions& options)
   factory_.registerNodeType<ThreeArmMoveJNode>("ThreeArmMoveJ");
   factory_.registerNodeType<CartesianVelocityForDurationNode>(
       "CartesianVelocityForDuration");
+  factory_.registerNodeType<SaveCameraFramesNode>("SaveCameraFrames");
   bt_core::XmlParser parser(factory_);
   auto tree = parser.loadFromFile(tree_file, blackboard_);
   tree_ = std::make_unique<bt_core::Tree>(std::move(tree));

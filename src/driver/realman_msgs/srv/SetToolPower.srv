@@ -1,0 +1,6 @@
+bool enabled
+# Must own the current task lease; idle manual commands use tool_power (SetBool).
+string task_token
+---
+bool success
+string message

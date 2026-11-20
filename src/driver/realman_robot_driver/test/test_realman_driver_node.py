@@ -8,6 +8,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from realman_robot_driver.coordinate_manager import CoordinateManager, CoordinatePolicy
 from realman_robot_driver.coordinate_services import CoordinateOperationResult
@@ -98,12 +99,14 @@ class FakeCoordinateAdapter:
 
 def _controller_tool(name: str):
     if name == "tcpgrip":
+        # Follow the installed dimensions instead of an obsolete 120 mm TCP.
+        tool = yaml.safe_load(COORDINATES_CONFIG_PATH.read_text())["robots"]["l"]["tools"][name]
         return SimpleNamespace(
             controller_name=name,
-            xyz_m=(0.0, 0.0, 0.120),
-            quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
-            payload_kg=0.80,
-            center_of_mass_m=(0.0, 0.0, 0.060),
+            xyz_m=tuple(tool["pose"]["xyz_m"]),
+            quaternion_wxyz=tuple(tool["pose"]["quaternion_wxyz"]),
+            payload_kg=tool["payload_kg"],
+            center_of_mass_m=tuple(tool["center_of_mass_m"]),
         )
     return SimpleNamespace(
         controller_name=name,
@@ -540,7 +543,7 @@ def test_startup_rejects_busy_arm_without_adapter_calls():
 
 
 def test_launches_declare_coordinate_and_motion_config_paths():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert expected <= _declared_launch_arguments(SINGLE_LAUNCH_PATH)
     assert expected <= _declared_launch_arguments(THREE_LAUNCH_PATH)
@@ -548,7 +551,7 @@ def test_launches_declare_coordinate_and_motion_config_paths():
 
 
 def test_driver_launches_pass_coordinate_and_motion_parameters_to_nodes():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert any(
         expected <= keys
@@ -561,7 +564,7 @@ def test_driver_launches_pass_coordinate_and_motion_parameters_to_nodes():
 
 
 def test_system_launch_forwards_coordinate_and_motion_config_paths():
-    expected = {"coordinates_config_file", "motion_config_file"}
+    expected = {"coordinates_config_file", "motion_config_file", "vacuum_config_file"}
 
     assert any(
         expected <= keys
@@ -1091,7 +1094,7 @@ def test_connect_reconciles_physical_lockout_with_read_only_trajectory_state():
 
     assert "was_connected = self.adapter.connected" in source
     assert "connection_reset=event_recovery or not was_connected" in source
-    assert "recover_event_channel=lambda: self._recover_event_channel()" in source
+    assert "recover_event_channel=lambda token: self._recover_event_channel(token)" in source
     assert "self.motion_coordinator.event_channel_recovery_required" in source
     assert "self.adapter.disconnect()" in source
     publish_state = source[source.index("    def _publish_state"):]
@@ -1110,6 +1113,8 @@ def test_publish_state_retries_quarantined_event_channel_without_direct_connect(
             get_state=lambda: state,
         ),
         motion_coordinator=SimpleNamespace(event_channel_recovery_required=True),
+        arm_id="l",
+        arm_ownership=SimpleNamespace(task_state=lambda arm: (None, False)),
         auto_connect=True,
         reconnect_interval=5.0,
         _last_connect_attempt=0.0,
@@ -1153,7 +1158,7 @@ def test_event_channel_recovery_serializes_disconnect_delay_and_reconnect():
     class Ownership:
         busy = False
 
-        def acquire(self, arm):
+        def acquire(self, arm, task_token=""):
             assert arm == "l"
             if self.busy:
                 return False
@@ -1243,7 +1248,7 @@ def test_event_channel_recovery_refuses_busy_arm_before_disconnect():
     events = []
     coordinator = SimpleNamespace(event_channel_recovery_required=True)
     ownership = SimpleNamespace(
-        acquire=lambda arm: False,
+        acquire=lambda arm, task_token="": False,
         release=lambda arm: events.append(("release", arm)),
     )
     node = SimpleNamespace(
@@ -1327,6 +1332,65 @@ def test_node_source_passes_motion_completion_and_stop_safety_limits():
 
 
 @requires_ros_action_runtime
+def test_vacuum_topic_replays_then_tracks_input_and_read_failure(tmp_path):
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile
+    from std_msgs.msg import String
+
+    config = tmp_path / "vacuum.yaml"
+    config.write_text("publish_rate_hz: 5.0\narms:\n  r: {enabled: true, io: 3, active_level: 0}\n")
+    rclpy.init()
+    driver = peer = None
+    executor = SingleThreadedExecutor()
+    received = []
+    try:
+        driver = RealManDriverNode(namespace="r", parameter_overrides=[
+            rclpy.parameter.Parameter("robot_ip", value="192.0.2.124"),
+            rclpy.parameter.Parameter("mock_mode", value=True),
+            rclpy.parameter.Parameter("auto_connect", value=False),
+            rclpy.parameter.Parameter("vacuum_config_file", value=str(config)),
+        ])
+        driver.state_timer.cancel()
+        driver.coordinate_state_timer.cancel()
+        driver.vacuum_state_timer.cancel()
+        assert driver.adapter.connect() == 0
+        driver.adapter.controller_io_inputs = lambda: (0, [0, 0, 1, 0])
+        driver._publish_vacuum_state()
+        # Late subscribers must receive the unloaded state without another read.
+        peer = Node("late_vacuum_subscriber")
+        peer.create_subscription(String, "/r/vacuum/state", received.append,
+                                 QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL))
+        executor.add_node(driver)
+        executor.add_node(peer)
+
+        def wait_for(count):
+            deadline = time.monotonic() + 3
+            while len(received) < count and time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.05)
+            assert len(received) >= count
+            return json.loads(received[-1].data)
+
+        state = wait_for(1)
+        assert state["enabled"] and state["available"] and state["holding"] is False
+        driver.adapter.controller_io_inputs = lambda: (0, [1, 1, 0, 1])
+        driver._publish_vacuum_state()
+        assert wait_for(2)["holding"] is True
+        driver.adapter.controller_io_inputs = lambda: (-2, None)
+        driver._publish_vacuum_state()
+        state = wait_for(3)
+        assert state["available"] is False and state["holding"] is None
+        assert state["api2_status"] == -2
+    finally:
+        executor.shutdown()
+        if peer is not None:
+            peer.destroy_node()
+        if driver is not None:
+            driver.destroy_node()
+        rclpy.shutdown()
+
+
+@requires_ros_action_runtime
 def test_mock_node_constructs_and_exposes_services():
     rclpy.init()
     node = None
@@ -1348,6 +1412,9 @@ def test_mock_node_constructs_and_exposes_services():
             "stop",
             "recover_motion",
             "status",
+            "tool_power",
+            "tool_power_control",
+            "tool_power_status",
             "coordinates/verify",
             "coordinates/apply",
             "coordinates/select_tool",
@@ -1372,6 +1439,76 @@ def test_mock_node_constructs_and_exposes_services():
             "/l/cartesian_pose",
             ["realman_msgs/action/CartesianPose"],
         ) in actions
+    finally:
+        _destroy_ros_nodes_and_shutdown(node)
+
+
+@requires_ros_action_runtime
+def test_tool_power_services_verify_voltage_and_refuse_during_task_lease():
+    from std_srvs.srv import SetBool, Trigger
+    from realman_msgs.srv import SetToolPower
+
+    rclpy.init()
+    node = None
+    try:
+        node = RealManDriverNode(
+            namespace="r",
+            parameter_overrides=[
+                rclpy.parameter.Parameter("robot_ip", value="127.0.0.1"),
+                rclpy.parameter.Parameter("mock_mode", value=True),
+                rclpy.parameter.Parameter("auto_connect", value=False),
+            ],
+        )
+        assert node.adapter.connect() == 0
+
+        status = node._tool_power_status(Trigger.Request(), Trigger.Response())
+        assert status.success
+        assert json.loads(status.message)["voltage_v"] == 0
+
+        lease = node.arm_ownership.acquire_task("r", "pose6d-test", 10.0)
+        turn_on = SetBool.Request()
+        turn_on.data = True
+        denied = node._set_tool_power(turn_on, SetBool.Response())
+        assert not denied.success
+        assert "busy" in json.loads(denied.message)["message"]
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        leased_on = SetToolPower.Request()
+        leased_on.enabled = True
+        leased_on.task_token = lease.token
+        enabled_with_lease = node._set_tool_power_with_lease(leased_on, SetToolPower.Response())
+        assert enabled_with_lease.success
+        assert json.loads(enabled_with_lease.message)["voltage_v"] == 24
+        assert node.adapter.tool_voltage() == (0, 3)
+
+        leased_off = SetToolPower.Request()
+        leased_off.enabled = False
+        leased_off.task_token = lease.token
+        disabled_with_lease = node._set_tool_power_with_lease(leased_off, SetToolPower.Response())
+        assert disabled_with_lease.success
+        assert json.loads(disabled_with_lease.message)["voltage_v"] == 0
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        invalid = SetToolPower.Request()
+        invalid.enabled = True
+        invalid.task_token = "not-the-lease-token"
+        rejected = node._set_tool_power_with_lease(invalid, SetToolPower.Response())
+        assert not rejected.success
+        assert "task token" in json.loads(rejected.message)["message"]
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        node.arm_ownership.release_task("r", lease.token)
+
+        enabled = node._set_tool_power(turn_on, SetBool.Response())
+        assert enabled.success
+        assert json.loads(enabled.message)["voltage_v"] == 24
+        assert node.adapter.tool_voltage() == (0, 3)
+
+        turn_off = SetBool.Request()
+        turn_off.data = False
+        disabled = node._set_tool_power(turn_off, SetBool.Response())
+        assert disabled.success
+        assert json.loads(disabled.message)["voltage_v"] == 0
     finally:
         _destroy_ros_nodes_and_shutdown(node)
 
@@ -1572,3 +1709,51 @@ def test_controller_info_service_reports_adapter_errors_without_raising():
     assert result.success is False
     assert json.loads(result.message)["error"] == "sdk exploded"
     assert messages
+
+
+@requires_ros_action_runtime
+def test_event_recovery_uses_task_token_and_timer_defers_to_lease():
+    from realman_robot_driver.motion_coordinator import ArmOwnership
+    import threading
+    ownership = ArmOwnership()
+    lease = ownership.acquire_task("l", "grasp", 60.0)
+    coordinator = SimpleNamespace(event_channel_recovery_required=True)
+    connects = []
+    def connect(*, event_recovery):
+        assert event_recovery and ownership.motion_is_busy("l")
+        connects.append(True)
+        coordinator.event_channel_recovery_required = False
+        return 0
+    node = SimpleNamespace(
+        arm_id="l", arm_ownership=ownership, motion_coordinator=coordinator,
+        auto_connect=True, reconnect_interval=1.0,
+        _event_recovery_lock=threading.Lock(),
+        _last_event_recovery_attempt=0.0, _event_recovery_delay_sec=0.0,
+        _event_recovery_retry_interval_sec=0.0,
+        _connect_to_robot=connect,
+        get_logger=lambda: SimpleNamespace(warn=lambda _: None, error=lambda _: None),
+    )
+    node._recover_event_channel = lambda: connects.append("timer must defer")
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == []
+    assert RealManDriverNode._recover_event_channel(node, "wrong") is False
+    assert node._last_event_recovery_attempt == 0.0
+    assert RealManDriverNode._recover_event_channel(node, lease.token) is True
+    assert connects == [True]
+    assert ownership.motion_is_busy("l") is False
+    assert ownership.validate_task("l", lease.token)
+
+
+@requires_ros_action_runtime
+def test_state_timeout_does_not_reconnect_during_action_stop():
+    connects=[]
+    coordinator=SimpleNamespace(event_channel_recovery_required=False,active_generation=8)
+    node=SimpleNamespace(auto_connect=True,reconnect_interval=1.0,
+        adapter=SimpleNamespace(connected=False),motion_coordinator=coordinator,
+        _last_connect_attempt=0.0,_connect_to_robot=lambda:connects.append(True),
+        get_logger=lambda:SimpleNamespace(error=lambda _:None))
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == []
+    coordinator.active_generation=None
+    RealManDriverNode._maybe_reconnect(node)
+    assert connects == [True]

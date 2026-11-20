@@ -27,6 +27,15 @@ class FakeRobot:
         self.calls.append(("rm_get_joint_degree",))
         return self.joint_result
 
+    def rm_get_io_input(self):
+        return self._call("rm_get_io_input")
+
+    def rm_set_tool_voltage(self, voltage_type):
+        return self._call("rm_set_tool_voltage", voltage_type)
+
+    def rm_get_tool_voltage(self):
+        return self._call("rm_get_tool_voltage")
+
     def rm_movej(self, joint, velocity, radius, connect, block):
         return self._call("rm_movej", joint, velocity, radius, connect, block)
 
@@ -131,6 +140,41 @@ def adapter(fake_robot):
 def test_movej_is_nonblocking_and_preserves_degrees(adapter, fake_robot):
     assert adapter.movej([1.0] * 6, 20, 0, False) == 0
     assert fake_robot.calls[-1] == ("rm_movej", [1.0] * 6, 20, 0, 0, 0)
+
+
+def test_controller_inputs_preserve_levels_and_vendor_errors(adapter, fake_robot):
+    for result in [(0, [1, -1, 0, 1]), (-2, None)]:
+        fake_robot.results["rm_get_io_input"] = result
+        assert adapter.controller_io_inputs() == result
+        assert fake_robot.calls[-1] == ("rm_get_io_input",)
+
+
+def test_tool_voltage_reads_and_sets_documented_voltage_types(adapter, fake_robot):
+    fake_robot.results["rm_get_tool_voltage"] = (0, 3)
+    assert adapter.tool_voltage() == (0, 3)
+    assert fake_robot.calls[-1] == ("rm_get_tool_voltage",)
+
+    assert adapter.set_tool_voltage(0) == 0
+    assert fake_robot.calls[-1] == ("rm_set_tool_voltage", 0)
+    assert adapter.set_tool_voltage(3) == 0
+    assert fake_robot.calls[-1] == ("rm_set_tool_voltage", 3)
+
+    fake_robot.results["rm_set_tool_voltage"] = 14
+    assert adapter.set_tool_voltage(3) == 14
+    fake_robot.results["rm_get_tool_voltage"] = (9, 3)
+    assert adapter.tool_voltage() == (9, None)
+
+    calls = list(fake_robot.calls)
+    assert adapter.set_tool_voltage(True) == -1
+    assert adapter.set_tool_voltage(4) == -1
+    assert fake_robot.calls == calls
+
+
+def test_mock_inputs_do_not_invent_a_sensor_reading():
+    adapter = RealManSdkAdapter(ip="192.0.2.123", port=8080, thread_mode="RM_TRIPLE_MODE_E",
+                               robot_model="RM65-B", mock_mode=True, arm_id="r")
+    assert adapter.connect() == 0
+    assert adapter.controller_io_inputs() == (0, [-1, -1, -1, -1])
 
 
 @pytest.mark.parametrize(
@@ -923,6 +967,9 @@ def test_mock_adapter_is_safe_and_deterministic():
     assert adapter.movej_p([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 20, 0, False) == 0
     assert adapter.set_movev_init(1, 0, 5) == 0
     assert adapter.movev([0.0] * 6, True, 0, 0) == 0
+    assert adapter.tool_voltage() == (0, 0)
+    assert adapter.set_tool_voltage(3) == 0
+    assert adapter.tool_voltage() == (0, 3)
     assert adapter.forward_kinematics([0.0] * 6) == (0, [0.0] * 6)
     assert adapter.inverse_kinematics([1.0] * 6, [0.1] * 6) == (0, [1.0] * 6)
     tool = ToolFrame(
@@ -1535,3 +1582,37 @@ def test_controller_info_in_mock_mode_makes_no_sdk_calls():
     assert adapter.connect() == 0
 
     assert adapter.controller_info() == {}
+
+
+@pytest.mark.parametrize('method,vendor', [('stop','rm_set_arm_stop'),('slow_stop','rm_set_arm_slow_stop')])
+def test_stop_still_uses_valid_handle_after_state_timeout(adapter, fake_robot, method, vendor):
+    fake_robot.joint_result = (-2, [])
+    state = adapter.get_state()
+    assert not state.connected and state.error_code == -2
+    assert getattr(adapter, method)() == 0
+    assert (vendor,) in fake_robot.calls
+    # A stop attempt does not reopen admission for ordinary commands.
+    assert not adapter.connected
+    assert adapter.movej([0.0]*6, 20, 0, False) != 0
+
+
+def test_configured_sdk_timeout_is_applied_before_connect(monkeypatch):
+    calls = []
+    class Robot:
+        def __init__(self, mode): pass
+        def rm_set_timeout(self, milliseconds): calls.append(('timeout',milliseconds))
+        def rm_create_robot_arm(self, ip, port):
+            calls.append(('connect',ip,port))
+            return SimpleNamespace(id=17)
+    _install_connecting_sdk(monkeypatch, Robot)
+    adapter = RealManSdkAdapter(ip='192.0.2.123',port=8080,thread_mode='RM_TRIPLE_MODE_E',
+                                robot_model='RM65-B',mock_mode=False,sdk_timeout_ms=1000)
+    assert adapter.connect() == 0
+    assert calls == [('timeout',1000),('connect','192.0.2.123',8080)]
+
+
+@pytest.mark.parametrize('value', [0,-1,True,1.5,float('nan')])
+def test_invalid_sdk_timeout_is_rejected(value):
+    with pytest.raises(ValueError,match='sdk_timeout_ms'):
+        RealManSdkAdapter(ip='192.0.2.123',port=8080,thread_mode='RM_TRIPLE_MODE_E',
+                         robot_model='RM65-B',mock_mode=False,sdk_timeout_ms=value)

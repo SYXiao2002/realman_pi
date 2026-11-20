@@ -27,6 +27,7 @@ bt_core::NodeConfig validConfig(rclcpp::Node* ros_node,
       realman_bt::kRuntimeDiagnosticsBlackboardKey, diagnostics);
   config.port_values = {
       {"dry_run", dry_run ? "true" : "false"},
+      {"arms", "l,m,r"},
       {"l_joint_degrees", "24,20,66,24,84,14.5"},
       {"m_joint_degrees", "0,18,70,0,90,9"},
       {"r_joint_degrees", "15,22,65,23,82,-7.5"},
@@ -42,6 +43,7 @@ struct ServerState {
   std::condition_variable changed;
   int received{0};
   int completed{0};
+  int expected_received{3};
   bool release_r{false};
   bool fail_m{false};
   std::array<std::array<double, 6>, 3> goals{};
@@ -85,6 +87,26 @@ int main(int argc, char** argv) {
          std::set<std::string>({"/l/execute_motion", "/m/execute_motion",
                                 "/r/execute_motion"}));
 
+  realman_bt::RuntimeDiagnostics duo_diagnostics;
+  auto duo_config = validConfig(ros_node.get(), &duo_diagnostics);
+  duo_config.port_values["arms"] = "l,r";
+  realman_bt::ThreeArmMoveJNode duo_move("duo_move", duo_config);
+  assert(duo_move.executeTick() == bt_core::NodeStatus::SUCCESS);
+  std::set<std::string> duo_interfaces;
+  for (const auto& event : duo_diagnostics.snapshot().events) {
+    if (event.source == "ACTION" && event.phase == "result") {
+      duo_interfaces.insert(event.interface_name);
+    }
+  }
+  assert(duo_interfaces == std::set<std::string>({"/l/execute_motion", "/r/execute_motion"}));
+
+  realman_bt::RuntimeDiagnostics invalid_arms_diagnostics;
+  auto invalid_arms_config = validConfig(ros_node.get(), &invalid_arms_diagnostics);
+  invalid_arms_config.port_values["arms"] = "l,m,l";
+  realman_bt::ThreeArmMoveJNode invalid_arms_move("invalid_arms", invalid_arms_config);
+  assert(invalid_arms_move.executeTick() == bt_core::NodeStatus::FAILURE);
+  assert(invalid_arms_move.failureReason().find("without duplicates") != std::string::npos);
+
   realman_bt::RuntimeDiagnostics invalid_diagnostics;
   auto invalid_config = validConfig(ros_node.get(), &invalid_diagnostics);
   invalid_config.port_values["m_joint_degrees"] = "0,18,70";
@@ -116,7 +138,7 @@ int main(int argc, char** argv) {
               ++server_state.received;
               server_state.changed.notify_all();
               server_state.changed.wait(lock, [&]() {
-                return server_state.received == 3;
+                return server_state.received == server_state.expected_received;
               });
               should_fail = server_state.fail_m && index == 1;
               if (index == 2) {
@@ -190,8 +212,34 @@ int main(int argc, char** argv) {
     assert(server_state.completed == 3);
     server_state.received = 0;
     server_state.completed = 0;
-    server_state.release_r = false;
+    server_state.release_r = true;
     server_state.fail_m = false;
+    server_state.expected_received = 2;
+  }
+
+  realman_bt::RuntimeDiagnostics duo_live_diagnostics;
+  auto duo_live_config = validConfig(ros_node.get(), &duo_live_diagnostics, false);
+  duo_live_config.port_values["arms"] = "l,r";
+  realman_bt::ThreeArmMoveJNode duo_live_move("duo_live_move", duo_live_config);
+  assert(tickUntil(
+      duo_live_move,
+      [&server_state](bt_core::NodeStatus status) {
+        std::lock_guard<std::mutex> lock(server_state.mutex);
+        return status == bt_core::NodeStatus::SUCCESS && server_state.completed == 2;
+      },
+      std::chrono::seconds(5)));
+  {
+    std::lock_guard<std::mutex> lock(server_state.mutex);
+    const std::array<double, 6> expected_l{{24, 20, 66, 24, 84, 14.5}};
+    const std::array<double, 6> expected_r{{15, 22, 65, 23, 82, -7.5}};
+    assert(server_state.received == 2);
+    assert(server_state.completed == 2);
+    assert(server_state.goals[0] == expected_l);
+    assert(server_state.goals[2] == expected_r);
+    server_state.received = 0;
+    server_state.completed = 0;
+    server_state.release_r = false;
+    server_state.expected_received = 3;
   }
 
   realman_bt::RuntimeDiagnostics live_diagnostics;

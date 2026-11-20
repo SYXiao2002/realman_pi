@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!-- Two-arm variant of three.xml for machines without the M arm: the same
+     staged concurrent submission, but only l and r Action servers are
+     required and driven. RealMan joint angles are degrees. -->
+<root main_tree_to_execute="MainTree"
+      realman_arm_id="r"
+      realman_required_arms="l,r"
+      realman_launch="arm_move"
+      realman_stop_on_terminal="true"
+      realman_exit_on_terminal="true">
+  <BehaviorTree ID="MainTree">
+    <Sequence name="two_arm_staged_move">
+      <ThreeArmMoveJ name="requested_pose" arms="l,r" dry_run="{dry_run}" l_joint_degrees="0.229,30.124,82.19,-2.241,70.44,174.223" r_joint_degrees="2.583,30.02,93.644,2.532,56.142,-0.285" velocity_percent="10" blend_radius_percent="0" timeout_sec="120"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

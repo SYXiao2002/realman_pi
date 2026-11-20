@@ -114,6 +114,7 @@ def test_default_dry_run_has_no_hardware_resources_and_reports_refusal(graph):
 def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, monkeypatch):
     profile = ready_profile()
     profile["readiness_problems"] = ["synthetic test profile"]
+    profile["workspace_m"] = [[-.1, -.1, .35], [.1, .1, .45]]
     monkeypatch.setattr(bridge_module, "load_profile", lambda *a, **k: copy.deepcopy(profile))
     node, client = graph(dry_run=True)
     published = []
@@ -121,15 +122,17 @@ def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, 
     T = np.eye(4)
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
-        "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32) * 0.4,
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": None,
-        "T_base_camera": None, "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
+        "color_bgr": np.zeros((16, 16, 3), np.uint8), "depth_m": np.full((16, 16), .4, np.float32),
+        "K": np.array([[20., 0., 8.], [0., 20., 8.], [0., 0., 1.]]), "up_camera": None,
+        "T_base_camera": np.eye(4), "seed": [0.] * 6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
-    monkeypatch.setattr(bridge_module, "infer", lambda *a, **k: {
-        "model_id": "fixture-model", "diagnostics": {},
-        "candidates": [{"candidate_id": "c1", "object_id": "1", "class_name": "eu", "backend": "geometry",
-                        "T_camera_grasp": T, "width_m": 0.03, "score": 0.8}],
-    })
+    inferred = {}
+    def inference(_uri, request, **_kwargs):
+        inferred["depth_m"] = request["depth_m"].copy()
+        return {"model_id": "fixture-model", "diagnostics": {},
+                "candidates": [{"candidate_id": "c1", "object_id": "1", "class_name": "eu", "backend": "geometry",
+                                "T_camera_grasp": T, "width_m": 0.03, "score": 0.8}]}
+    monkeypatch.setattr(bridge_module, "infer", inference)
     monkeypatch.setattr(node, "solve", lambda *a: pytest.fail("evaluation called IK"))
     goal_request = goal()
     goal_request.profile_name = "right_wrist"
@@ -141,8 +144,13 @@ def test_dry_run_evaluation_infers_and_publishes_without_ik_or_waypoints(graph, 
     assert wrapped.status == GoalStatus.STATUS_SUCCEEDED
     assert wrapped.result.success and not wrapped.result.plan_id
     assert list(node.clients) == []
+    assert np.count_nonzero(inferred["depth_m"]) == 121
+    assert inferred["depth_m"][0, 0] == 0
+    assert inferred["depth_m"][8, 8] == pytest.approx(.4)
     assert [event["phase"] for event in published] == ["captured", "inferred"]
-    assert published[-1]["candidates"][0]["T_base_grasp"] is None
+    assert published[-1]["depth_stats"]["valid_pixels_before_workspace_crop"] == 256
+    assert published[-1]["depth_stats"]["valid_pixels_after_workspace_crop"] == 121
+    assert published[-1]["candidates"][0]["T_base_grasp"] is not None
     assert published[-1]["read_only"] and not published[-1]["execution_ready"]
 
 
@@ -205,8 +213,8 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     T = np.eye(4)
     T[2, 3] = 0.4
     monkeypatch.setattr(node, "capture", lambda *a, **k: {
-        "color_bgr": np.zeros((8, 8, 3), np.uint8), "depth_m": np.ones((8, 8), np.float32),
-        "K": np.array([[10., 0., 4.], [0., 10., 4.], [0., 0., 1.]]), "up_camera": [0., 0., 1.],
+        "color_bgr": np.zeros((16, 16, 3), np.uint8), "depth_m": np.ones((16, 16), np.float32) * .4,
+        "K": np.array([[20., 0., 8.], [0., 20., 8.], [0., 0., 1.]]), "up_camera": [0., 0., 1.],
         "T_base_camera": np.eye(4), "seed": [0.]*6, "capture_timestamp_ns": node.get_clock().now().nanoseconds,
         "source_header": Header(frame_id=profile["color_frame"])})
     # Measured test geometry is synthetic and never persisted as a production value.
@@ -221,6 +229,11 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
                 "diagnostics": {"segmap_png": b"binary-label-image", "vertical_axis_camera": np.array([0., 0., -1.]),
                                 "segmap_sha256": "fixture-label-hash", "archive_id": "fixture-archive"}}
     monkeypatch.setattr(bridge_module, "infer", inference)
+    # This test isolates lease and feedback lifecycle from collision geometry.
+    def collision_safe(response, *_args):
+        return {**response, "candidates": [
+            {**candidate, "collision": {"status": "safe"}} for candidate in response["candidates"]]}
+    monkeypatch.setattr(bridge_module, "annotate_candidates", collision_safe)
     monkeypatch.setattr(node, "solve", lambda T, seed, canceled: seed)
     monkeypatch.setattr(node, "lookup", lambda *a: np.eye(4))
     monkeypatch.setattr(node, "stopped", lambda *a: not stale_feedback)
@@ -235,7 +248,7 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
         return
     if stale_feedback:
         assert result.status == GoalStatus.STATUS_ABORTED
-        assert "joint feedback is stale" in result.result.message
+        assert "did not settle with fresh joint feedback" in result.result.message
         assert not result.result.success and not result.result.plan_id
         return
     assert result.status == GoalStatus.STATUS_SUCCEEDED, result.result.message
@@ -246,8 +259,35 @@ def test_frozen_plan_requires_live_task_lease_through_inference(graph, monkeypat
     assert diagnostics["archive_id"] == "fixture-archive"
     assert diagnostics["vertical_axis_camera"] == [0., 0., -1.]
     assert "segmap_png" not in diagnostics
-    np.testing.assert_allclose(result.result.grasp_position_m, [0, 0, 0.4])
+    np.testing.assert_allclose(result.result.grasp_position_m,
+                               [0, 0, 0.4 - node.settings["geometry_center_offset_m"]])
     assert node.lease_checks == 4
+
+
+def test_post_plan_wait_accepts_transient_motion_after_arm_settles():
+    outcomes = iter((False, False, True))
+    bridge = SimpleNamespace(
+        settings={"post_plan_settle_timeout_sec": 0.2},
+        lock=threading.Lock(),
+        inputs={"joints": []},
+        stopped=lambda *_: next(outcomes),
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1)),
+    )
+    GraspBridge.wait_until_stopped(bridge, lambda: False)
+
+
+def test_post_plan_wait_stops_on_cancel_and_times_out_if_feedback_stays_stale():
+    bridge = SimpleNamespace(
+        settings={"post_plan_settle_timeout_sec": 0.03},
+        lock=threading.Lock(),
+        inputs={"joints": []},
+        stopped=lambda *_: False,
+        get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=1)),
+    )
+    with pytest.raises(bridge_module.PlanningCanceled, match="waiting for fresh"):
+        GraspBridge.wait_until_stopped(bridge, lambda: True)
+    with pytest.raises(TimeoutError, match="did not settle with fresh joint feedback"):
+        GraspBridge.wait_until_stopped(bridge, lambda: False)
 
 
 def test_revoked_task_cannot_begin_capture(graph, monkeypatch):
@@ -301,5 +341,5 @@ def test_latest_flange_tf_requires_recent_feedback(graph, monkeypatch, offset_se
     value.header.stamp.sec, value.header.stamp.nanosec = divmod(timestamp, 1_000_000_000)
     value.transform.rotation.w = 1.
     monkeypatch.setattr(node.tf, "lookup_transform", lambda *a, **k: value)
-    with pytest.raises(ValueError, match="latest flange TF is stale or future"):
+    with pytest.raises(ValueError, match=r"latest flange TF is stale or future.*parent=r/base_link, child=r/link_6.*age_ms=.*max_age_ms=250.0"):
         node.lookup("r/base_link", "r/link_6", 0)

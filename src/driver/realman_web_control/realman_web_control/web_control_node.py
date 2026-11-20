@@ -36,6 +36,7 @@ from realman_msgs.srv import (
     SelectInputMode,
     SolveCalibration,
     UpdateCalibrationLayout,
+    VerifyCalibration,
     SolveIk,
 )
 from sensor_msgs.msg import JointState
@@ -53,7 +54,7 @@ from .keyboard_control_bridge import KeyboardControlBridge
 from .model_manifest import build_manifest
 from .protocol import ProtocolError, reject_if_read_only
 from .tf_pose import transform_stamped_pose
-from .web_server import WebControlServer, load_server_config
+from .web_server import MAX_MESSAGE_BYTES, WebControlServer, load_server_config
 
 
 ARMS = ("l", "m", "r")
@@ -167,6 +168,7 @@ class WebControlNode(Node):
         self._control_lock = threading.RLock()
         self._actions: dict[tuple[str, str], ActionRecord] = {}
         self._coordinate_state: dict[str, dict[str, Any]] = {}
+        self._vacuum_states: dict[str, tuple[dict[str, Any], float]] = {}
         self._camera_health: dict[str, Any] = {"type": "camera_health", "inputs": []}
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
@@ -177,6 +179,7 @@ class WebControlNode(Node):
         self._cartesian_velocity_states: dict[str, dict[str, Any]] = {}
         self._grasp_evaluation: dict[str, Any] | None = None
         self._grasp_bridge_status: dict[str, Any] | None = None
+        self._pose6d_commands = self.create_publisher(String, "/pose6d_bridge/command", 10)
         self._joint_records = JointRecordStore(joint_record_dir)
         self._callback_group = ReentrantCallbackGroup()
         self._grasp_client = ActionClient(
@@ -197,6 +200,10 @@ class WebControlNode(Node):
         self._mode_select_client = self.create_client(
             SelectInputMode, "/realman_bt_executor/select_input_mode", callback_group=self._callback_group,
         )
+        self._tool_power_clients = {
+            "set": self.create_client(SetBool, "/r/tool_power", callback_group=self._callback_group),
+            "status": self.create_client(Trigger, "/r/tool_power_status", callback_group=self._callback_group),
+        }
         self._grippers = {}
         self._gripper_clients = {}
         self._gripper_states = {}
@@ -321,6 +328,11 @@ class WebControlNode(Node):
             "/camera_calibration/solve",
             callback_group=self._callback_group,
         )
+        self._verify_calibration_client = self.create_client(
+            VerifyCalibration,
+            "/camera_calibration/verify",
+            callback_group=self._callback_group,
+        )
         self._web_subscriptions.append(
             self.create_subscription(
                 String,
@@ -344,7 +356,18 @@ class WebControlNode(Node):
             String, "/grasp_bridge/review_status", self._grasp_bridge_status_message,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL), callback_group=self._callback_group))
+        self._web_subscriptions.append(self.create_subscription(
+            String, "/pose6d_bridge/events", self._pose6d_event, 10, callback_group=self._callback_group))
         for arm in ARMS:
+            self._web_subscriptions.append(
+                self.create_subscription(
+                    String, f"/{arm}/vacuum/state",
+                    lambda message, selected=arm: self._vacuum_state_message(selected, message),
+                    QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                               durability=DurabilityPolicy.TRANSIENT_LOCAL),
+                    callback_group=self._callback_group,
+                )
+            )
             self._web_subscriptions.append(
                 self.create_subscription(
                     JointState,
@@ -400,6 +423,11 @@ class WebControlNode(Node):
             logger=self.get_logger(),
         )
         self._server.start()
+        # Repeat the authoritative socket membership for late bridge discovery
+        # and Web-only restarts; an individual disconnect may never reach ROS.
+        self._pose6d_clients_timer = self.create_timer(
+            1.0, self._publish_pose6d_clients, callback_group=self._callback_group,
+        )
         self._mode_discovery_timer = self.create_timer(
             web_config.discovery_period_sec, self._probe_input_modes, callback_group=self._callback_group,
         )
@@ -457,9 +485,18 @@ class WebControlNode(Node):
                 )
 
     @_serialized_control
+    def _publish_pose6d_clients(self) -> None:
+        if self._pose6d_commands.get_subscription_count() == 1:
+            self._pose6d_commands.publish(String(data=json.dumps(
+                {"type": "clients", "client_ids": self._server.connected_client_ids()},
+                separators=(",", ":"),
+            )))
+
+    @_serialized_control
     def _dispatch(self, client_id: str, message: dict[str, Any]) -> None:
         message_type = message["type"]
         if message_type == "client_connected":
+            self._publish_pose6d_clients()
             self._send_cached_state(client_id)
         elif message_type == "client_disconnected":
             self._client_disconnected(client_id)
@@ -477,6 +514,8 @@ class WebControlNode(Node):
             self._solve_ik(client_id, message)
         elif message_type == "gripper_command":
             self._gripper_command(client_id, message)
+        elif message_type in {"tool_power_set", "tool_power_status"}:
+            self._tool_power_command(client_id, message)
         elif message_type == "select_input_mode":
             self._apply_input_mode_effects(self._input_modes.select_mode(client_id, message))
         elif message_type == "keyboard_state":
@@ -503,8 +542,16 @@ class WebControlNode(Node):
             self._update_calibration_layout(client_id, message)
         elif message_type == "solve_calibration":
             self._solve_calibration(client_id, message)
+        elif message_type == "verify_calibration":
+            self._verify_calibration(client_id, message)
         elif message_type == "plan_grasp":
             self._plan_grasp(client_id, message)
+        elif message_type.startswith("pose6d_"):
+            if self._pose6d_commands.get_subscription_count() != 1:
+                raise ProtocolError("pose6d_unavailable", "pose6d bridge unavailable or ambiguous", message["request_id"])
+            command = {**message, "type": message_type.removeprefix("pose6d_"), "client_id": client_id}
+            self._publish_pose6d_clients()
+            self._pose6d_commands.publish(String(data=json.dumps(command, separators=(",", ":"))))
         else:
             raise ProtocolError("unsupported_type", f"unsupported message type: {message_type}")
 
@@ -851,6 +898,63 @@ class WebControlNode(Node):
         future.add_done_callback(lambda completed: self._gripper_result(client_id, name, command, request_id, completed))
         self._server.send_event({"type": "gripper_result", "name": name, "command": command, "request_id": request_id, "state": "requested"}, client_id)
 
+    def _tool_power_command(self, client_id: str, message: dict[str, Any]) -> None:
+        request_id = message["request_id"]
+        operation = message["type"]
+        if operation == "tool_power_set":
+            reject_if_read_only(operation, self._server.read_only, request_id)
+            client = self._tool_power_clients["set"]
+            request = SetBool.Request()
+            request.data = message["enabled"]
+        else:
+            client = self._tool_power_clients["status"]
+            request = Trigger.Request()
+        if not client.service_is_ready():
+            raise ProtocolError("tool_power_unavailable", "/r/tool_power service is not available", request_id)
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._tool_power_result(client_id, operation, request_id, completed)
+        )
+        self._server.send_event({
+            "type": "tool_power_result",
+            "operation": operation,
+            "request_id": request_id,
+            "state": "requested",
+        }, client_id)
+
+    def _tool_power_result(self, client_id: str, operation: str, request_id: str, future: Any) -> None:
+        try:
+            response = future.result()
+            try:
+                payload = json.loads(response.message)
+                if not isinstance(payload, dict):
+                    payload = {}
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            event = {
+                **payload,
+                "type": "tool_power_state",
+                "arm": "r",
+                "request_id": request_id,
+                "operation": operation,
+                "success": bool(response.success),
+                "state": "completed",
+            }
+            if not payload:
+                event["message"] = response.message
+        except Exception as error:
+            event = {
+                "type": "tool_power_state",
+                "arm": "r",
+                "request_id": request_id,
+                "operation": operation,
+                "success": False,
+                "available": False,
+                "state": "failed",
+                "message": str(error),
+            }
+        self._server.send_event(event, client_id)
+
     def _gripper_result(self, client_id: str, name: str, command: str, request_id: str, future: Any) -> None:
         try:
             response = future.result()
@@ -871,6 +975,7 @@ class WebControlNode(Node):
         request.session_id = message["session_id"]
         request.start_new_session = message["start_new_session"]
         request.arm_id = message["arm_id"]
+        request.purpose = message.get("purpose", "")
         future = client.call_async(request)
         future.add_done_callback(
             lambda completed: self._calibration_capture_response(
@@ -977,6 +1082,64 @@ class WebControlNode(Node):
                 "mean_reprojection_error_px": 0.0,
                 "layout_updated": False,
                 "layout_backup_file": "",
+                "message": str(error),
+            }
+        self._server.send_event(event, client_id)
+
+    def _verify_calibration(self, client_id: str, message: dict[str, Any]) -> None:
+        client = self._verify_calibration_client
+        if not client.service_is_ready():
+            raise ProtocolError(
+                "calibration_unavailable",
+                "/camera_calibration/verify is not available",
+                message["request_id"],
+            )
+        request = VerifyCalibration.Request()
+        request.arm_id = message["arm_id"]
+        request.baseline_session_id = message["baseline_session_id"]
+        request.verify_session_id = message["verify_session_id"]
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._calibration_verify_response(
+                client_id, message["request_id"], completed
+            )
+        )
+
+    def _calibration_verify_response(self, client_id: str, request_id: str, future: Any) -> None:
+        try:
+            response = future.result()
+            event = {
+                "type": "calibration_verify_result",
+                "request_id": request_id,
+                "success": bool(response.success),
+                "arm_id": response.arm_id,
+                "verify_session_id": response.verify_session_id,
+                "sample_count": int(response.sample_count),
+                "translation_spread_m": float(response.translation_spread_m),
+                "rotation_spread_rad": float(response.rotation_spread_rad),
+                "mean_reprojection_error_px": float(response.mean_reprojection_error_px),
+                "max_reprojection_error_px": float(response.max_reprojection_error_px),
+                "passed": bool(response.passed),
+                "result_file": response.result_file,
+                "result_json": response.result_json,
+                "message": response.message,
+            }
+        except Exception as error:
+            self.get_logger().error(f"Web calibration verify failed: {error}")
+            event = {
+                "type": "calibration_verify_result",
+                "request_id": request_id,
+                "success": False,
+                "arm_id": "",
+                "verify_session_id": "",
+                "sample_count": 0,
+                "translation_spread_m": 0.0,
+                "rotation_spread_rad": 0.0,
+                "mean_reprojection_error_px": 0.0,
+                "max_reprojection_error_px": 0.0,
+                "passed": False,
+                "result_file": "",
+                "result_json": "",
                 "message": str(error),
             }
         self._server.send_event(event, client_id)
@@ -1425,6 +1588,37 @@ class WebControlNode(Node):
             client_id,
         )
 
+    @_serialized_control
+    def _vacuum_state_message(self, arm: str, message: String) -> None:
+        try:
+            payload = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict) or payload.get("type") != "vacuum_state" or payload.get("arm") != arm:
+            return
+        ttl = payload.get("stale_after_sec")
+        stamp = payload.get("stamp_ns")
+        if (type(ttl) not in (int, float) or not math.isfinite(ttl) or ttl <= 0
+                or type(stamp) is not int or stamp < 0
+                or type(payload.get("enabled")) is not bool
+                or type(payload.get("available")) is not bool):
+            return
+        if payload["enabled"]:
+            age = max(0.0, (self.get_clock().now().nanoseconds - stamp) / 1e9)
+            if age >= ttl:
+                payload = {**payload, "available": False, "holding": None,
+                           "raw_input": None, "message": "状态超时"}
+            else:
+                payload = {**payload, "stale_after_sec": ttl - age}
+        self._vacuum_states[arm] = (payload, time.monotonic())
+        self._server.send_event(payload)
+
+    def _send_cached_vacuum_state(self, client_id: str) -> None:
+        for state, received_at in self._vacuum_states.values():
+            remaining = float(state["stale_after_sec"]) - (time.monotonic() - received_at)
+            if remaining > 0 or not state["enabled"]:
+                self._server.send_event({**state, "stale_after_sec": max(0.0, remaining)}, client_id)
+
     def _coordinate_state_message(self, arm: str, message: String) -> None:
         try:
             payload = json.loads(message.data)
@@ -1484,8 +1678,32 @@ class WebControlNode(Node):
         self._camera_health = payload
         self._server.send_event(payload)
 
+    def _pose6d_event(self, message: String) -> None:
+        if len(message.data.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            self.get_logger().warning("ignoring oversized pose6d event")
+            return
+        try:
+            payload = json.loads(message.data)
+        except (ValueError, TypeError):
+            self.get_logger().warning("ignoring invalid pose6d event")
+            return
+        if not isinstance(payload, dict) or payload.get("type") not in (
+                "pose6d_capture", "pose6d_vision_progress", "pose6d_instances",
+                "pose6d_instance_preview", "pose6d_result",
+                "pose6d_error", "pose6d_motion", "pose6d_tool_selected", "pose6d_frames"):
+            return
+        if payload["type"] == "pose6d_frames":
+            payload.pop("client_id", None)
+            self._server.send_event(payload)
+            return
+        client = payload.pop("client_id", None)
+        if isinstance(client, str) and client:
+            self._server.send_event(payload, client)
+
     def _grasp_evaluation_message(self, message: String) -> None:
-        if len(message.data.encode("utf-8")) > 2 * 1024 * 1024:
+        # Dense RGB-D review clouds mirror the offline Plotly preview and can
+        # be several MiB; keep a bounded ROS-to-WebSocket handoff.
+        if len(message.data.encode("utf-8")) > MAX_MESSAGE_BYTES:
             self.get_logger().warning("ignoring oversized grasp evaluation")
             return
         try:
@@ -1505,7 +1723,7 @@ class WebControlNode(Node):
         except (TypeError, ValueError):
             self.get_logger().warning("ignoring grasp evaluation with invalid timestamp")
             return
-        if timestamp <= 0 or payload["phase"] not in ("captured", "inferred", "rejected"):
+        if timestamp <= 0 or payload["phase"] not in ("captured", "inferred", "planned", "rejected"):
             self.get_logger().warning("ignoring grasp evaluation with invalid identity or phase")
             return
         previous = self._grasp_evaluation
@@ -1517,8 +1735,8 @@ class WebControlNode(Node):
                 if previous_timestamp == timestamp and (
                     payload["observation_id"] != previous["observation_id"]
                     or payload["profile_id"] != previous["profile_id"]
-                    or {"captured": 0, "inferred": 1, "rejected": 2}[payload["phase"]]
-                    <= {"captured": 0, "inferred": 1, "rejected": 2}[previous["phase"]]
+                    or {"captured": 0, "inferred": 1, "planned": 2, "rejected": 2}[payload["phase"]]
+                    <= {"captured": 0, "inferred": 1, "planned": 2, "rejected": 2}[previous["phase"]]
                 ):
                     return
             except (KeyError, TypeError, ValueError):
@@ -1602,6 +1820,7 @@ class WebControlNode(Node):
         self._server.send_event({"type": "gripper_list", "grippers": list(self._grippers.values())}, client_id)
         for state in self._gripper_states.values():
             self._server.send_event({"type": "gripper_state", **state}, client_id)
+        self._send_cached_vacuum_state(client_id)
         for arm in ARMS:
             state = self._coordinate_state.get(arm)
             if state is not None:
@@ -2170,6 +2389,11 @@ class WebControlNode(Node):
 
     def _client_disconnected(self, client_id: str) -> None:
         self._apply_input_mode_effects(self._input_modes.client_disconnected(client_id))
+        if self._pose6d_commands.get_subscription_count() == 1:
+            self._publish_pose6d_clients()
+            self._pose6d_commands.publish(String(data=json.dumps(
+                {"type": "disconnect", "client_id": client_id, "request_id": ""}, separators=(",", ":")
+            )))
         for record in list(self._actions.values()):
             if record.owner != client_id:
                 continue

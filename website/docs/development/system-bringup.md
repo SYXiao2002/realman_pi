@@ -107,7 +107,7 @@ ros2 launch realman_bringup system.launch.py \
 | `motion_config_file` | `config/ros/realman_motion.yaml` | 指定运动速度、加速度和 watchdog 限制 |
 | `start_web_control` | `false` | 启动浏览器 WebSocket、Action 和 URDF 控制桥 |
 | `start_camera_calibration` | `false` | 启动 ChArUco 左右依次单臂采样/手眼求解 service |
-| `start_grasp_bridge` / `grasp_profile` / `grasp_dry_run` | `false` / `right_wrist` / `true` | 显式启动纯规划抓取 bridge；默认不创建传感器/IK 客户端，详见[腕相机抓取](./grasping) |
+| `start_grasp_bridge` / `REALMAN_GRASP_PROFILE` / `grasp_dry_run` | `true` / 空（用 `grasp_bridge.yaml` 默认） / `false` | 启动抓取规划 bridge，与 `grasp.html` 共用配置，详见[腕相机抓取](./grasping) |
 | `camera_calibration_config_file` | `config/ros/camera_calibration.yaml` | 指定标定板、相机话题、TF 和求解阈值 |
 | `web_control_config_file` | `config/ros/realman_web_control.yaml` | 指定浏览器控制桥配置 |
 | `wait_for_joy_device` | `false` | 输入设备不存在时持续轮询；Docker 输入服务设为 `true` |
@@ -195,7 +195,7 @@ docker compose run --rm realman_driver_rviz
 | `REALMAN_USE_RVIZ` | `use_rviz` | `true` / `false` |
 | `REALMAN_START_WEB_CONTROL` | `start_web_control` | `true` / `false` |
 | `REALMAN_START_CAMERA_CALIBRATION` | `start_camera_calibration` | `true` / `false` |
-| `REALMAN_CAMERA_CALIBRATION_CONFIG_FILE` | `start_grasp_bridge` / `grasp_profile` / `grasp_dry_run` | `false` / `right_wrist` / `true` | 显式启动纯规划抓取 bridge；默认不创建传感器/IK 客户端，详见[腕相机抓取](./grasping) |
+| `REALMAN_CAMERA_CALIBRATION_CONFIG_FILE` | `start_grasp_bridge` / `REALMAN_GRASP_PROFILE` / `grasp_dry_run` | `true` / 空（用 `grasp_bridge.yaml` 默认） / `false` | 启动抓取规划 bridge，与 `grasp.html` 共用配置，详见[腕相机抓取](./grasping) |
 | `camera_calibration_config_file` | 标定配置绝对路径 |
 | `REALMAN_JOINT_RECORD_DIR` | `joint_record_dir` | 默认 `/opt/rm65_ws/config/web-control/joint-records` |
 | `REALMAN_WAIT_FOR_JOY_DEVICE` | `wait_for_joy_device` | `true` / `false` |

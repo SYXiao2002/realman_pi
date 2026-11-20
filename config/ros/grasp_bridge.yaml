@@ -1,12 +1,13 @@
-# Planning-only bridge. dry_run enables read-only RGB-D/TF subscriptions and
-# policy evaluation, but never creates IK or task-lease clients. Set false only
-# after the profile is fully verified to enable restricted IK planning; this
-# bridge never executes robot or gripper commands.
+# Planning-only bridge. It may run restricted IK planning for grasp.xml but
+# never commands robot or gripper motion. grasp.html always sends evaluation_only.
 version: 1
-dry_run: true
+dry_run: false
+# Shared default for grasp.html and grasp.xml; robot geometry stays in grasp_profiles.yaml.
 profile: right_wrist
 ws_uri: ws://127.0.0.1:8091
 backend: geometry
+# Shared initial target for grasp.html and grasp.xml; operators may select another.
+target_label: eu
 # Match offline evaluate.py; context affects CGN only, not geometric generation.
 cgn_context: mask
 # Maximum elapsed seconds; independently bound capture, inference and each IK.
@@ -15,11 +16,15 @@ inference_timeout_sec: 20.0
 connect_timeout_sec: 3.0
 ik_timeout_sec: 2.0
 # Read-only driver STATUS validates a supplied task lease around planning.
-lease_status_timeout_sec: 1.0
+# Allow a short controller/SDK scheduling delay while validating the BT lease.
+lease_status_timeout_sec: 3.0
 # Device sync is optional; timestamps are always checked. Stop before capture.
 maximum_pair_skew_sec: 0.02
 maximum_capture_age_sec: 0.75
 settle_sec: 0.5
+# After inference/waypoint planning, wait this long for recent motion or a short
+# joint-feedback gap to clear. Persistent motion/stale feedback still rejects the plan.
+post_plan_settle_timeout_sec: 3.0
 maximum_joint_velocity_rad_sec: 0.01
 maximum_joint_state_age_sec: 0.25
 maximum_view_tilt_rad: 0.35
@@ -30,6 +35,31 @@ plan_validity_sec: 30.0
 # Restrict IK branch changes at each straight-line corridor sample.
 maximum_ik_step_degrees: 15.0
 cartesian_sample_step_m: 0.01
-max_candidates: 15
-# Expected server model is explicit; null prevents live plans until pinned.
+# Positive value moves geometry contact poses down in the selected base frame
+# (base -Z when calibrated). Units are metres, range [0, 0.2]; 0 disables it.
+# This is applied by grasp_bridge after the backend returns candidates.
+geometry_center_offset_m: 0.01
+# Pose planning and motion execution are separate. Keep this false for the
+# time-critical path: the controller receives the three MOVEL waypoints and
+# performs its own Cartesian feasibility check. Set true to restore the
+# bridge-side seeded-IK precheck before any motion command is sent.
+ik_precheck: false
+max_candidates: 32
+# Optional expected server model identity. When set, mismatch still rejects.
 expected_model_id: null
+
+# Point-cloud collision gate for the visual two-finger boxes. These thresholds
+# are evidence limits in metres/counts; they do not change measured gripper
+# dimensions in config/grasp/gripper_specs.yaml. Blocking follows the list below.
+collision:
+  enabled: true
+  warning_clearance_m: 0.003
+  collision_penetration_m: 0.002
+  sweep_step_m: 0.005
+  cluster_voxel_m: 0.003
+  minimum_local_points: 20
+  minimum_collision_points: 200
+  # Warning and unknown evidence are advisory; keep their metrics/masks visible
+  # for review. Only a confirmed collision blocks planning. Unknown does not
+  # mean safe: it means this policy explicitly accepts incomplete evidence.
+  blocking_statuses: [collision]

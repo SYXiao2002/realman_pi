@@ -104,6 +104,8 @@ sequenceDiagram
 
 **腕相机抓取**：BT 获取任务租约 → `grasp_bridge` 配对 RGB-D、D2C 与停稳采集 → WS 调用独立纯 Python/CUDA `grasp_server` → 相机坐标系多候选 → robot-side TCP 转换与受限 IK → BT 复用驱动和夹爪接口执行。默认 dry-run，实测配置未通过时拒绝执行，见[抓取契约](../development/grasping)。
 
+**单帧 6D Pose 与吸盘**：`pose6d_bridge` 冻结腕部 RGB-D 和拍摄时手眼变换 → Web 上传单帧 mask → 独立 FoundationPose 服务注册与几何筛查 → 页面显示 OBJ/点云/吸盘。右臂 `tcpsuck` 已按原 TCP 局部 `+Z` 前移 200 mm 配置并得到实时坐标匹配；当前运动配置已启用，bridge 通过 per-arm 任务租约和既有驱动接口执行 `+40 mm` 准备 MOVEL 及 `+/-` 有符号法向步进。尚未完成实机接触测试，详见[开发契约](../development/grasping#单帧-6d-位姿开发状态)。
+
 ## 包与目录
 
 | 路径 | 角色 | 开发者页面 |
@@ -117,6 +119,7 @@ sequenceDiagram
 | `src/gripper/gripper_ros2` `gripper_ros2_msgs` | 左右 42D 二值适配（Modbus RTU / RS-485）；可选 Changingtek 驱动 | [夹爪控制](../development/gripper-control) |
 | `src/recording/realman_recording`、`realman_recording_msgs` | **只订阅**驱动与夹爪输出的数据录制：MCAP/JPEG 录制、预检、LeRobot v3 导出、Web 回放与整理 | [独立数据录制平台](../development/recording-platform) |
 | `src/grasp` | 无 ROS 算法服务/协议，以及机器人侧 `grasp_bridge` 纯规划包 | [腕相机抓取](../development/grasping) |
+| `src/pose6d` | 独立 FoundationPose 单帧服务、ROS bridge、点云筛查与吸盘运动状态机 | [单帧 6D Pose 与吸盘](../development/grasping#单帧-6d-位姿开发状态) |
 | `src/policy_bridge` | VLA 策略 WebSocket ⇄ ROS 2 纯协议桥 | [策略桥接](../development/policy-bridge) |
 | `src/sensor/realman_camera_calibration` | ChArUco 手眼标定节点 | [手眼标定](../development/camera-calibration) |
 | `src/sensor_bringup/scripts/host_cameras.py`、宿主机 `orbbec_camera` | 四路二进制驱动 RGB launch 与生命周期管理 | [相机指南](../guide/cameras) |

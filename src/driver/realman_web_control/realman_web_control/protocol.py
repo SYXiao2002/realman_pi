@@ -15,7 +15,7 @@ ACTION_NAMES = frozenset(
 MAX_REQUEST_ID_LENGTH = 96
 # Sanity cap only; gripper_manager enforces the real per-gripper travel.
 MAX_GRIPPER_POSITION = 1_000_000
-WRITE_LIMIT_COMMANDS = frozenset({"set_limits", "move_raw"})
+WRITE_LIMIT_COMMANDS = frozenset({"set_limits", "move_raw", "tool_power_set"})
 
 
 class ProtocolError(ValueError):
@@ -101,7 +101,7 @@ def _gripper_position(message: dict[str, Any], field: str, request_id: str) -> i
 
 
 def reject_if_read_only(command: str, read_only: bool, request_id: str = "") -> None:
-    """Refuse gripper travel writes at the server boundary in read-only mode."""
+    """Refuse hardware writes at the server boundary in read-only mode."""
     if read_only and command in WRITE_LIMIT_COMMANDS:
         raise ProtocolError("read_only", "the server is read-only", request_id)
 
@@ -182,12 +182,16 @@ def _parse_capture_calibration_sample(message: dict[str, Any]) -> dict[str, Any]
     if not isinstance(start_new_session, bool):
         raise ProtocolError("invalid_field", "start_new_session must be a boolean", request_id)
     arm_id = _calibration_arm_id(message)
+    purpose = _string(message.get("purpose", ""), "purpose", maximum=16, allow_empty=True)
+    if purpose not in ("", "verify"):
+        raise ProtocolError("invalid_field", "purpose must be empty or 'verify'", request_id)
     return {
         "type": "capture_calibration_sample",
         "request_id": request_id,
         "session_id": session_id,
         "start_new_session": start_new_session,
         "arm_id": arm_id,
+        "purpose": purpose,
     }
 
 
@@ -197,6 +201,16 @@ def _parse_solve_calibration(message: dict[str, Any]) -> dict[str, Any]:
         "request_id": _request_id(message),
         "session_id": _string(message.get("session_id", ""), "session_id", maximum=128, allow_empty=True),
         "arm_id": _calibration_arm_id(message),
+    }
+
+
+def _parse_verify_calibration(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "verify_calibration",
+        "request_id": _request_id(message),
+        "arm_id": _calibration_arm_id(message),
+        "baseline_session_id": _string(message.get("baseline_session_id"), "baseline_session_id", maximum=128),
+        "verify_session_id": _string(message.get("verify_session_id"), "verify_session_id", maximum=128),
     }
 
 
@@ -237,6 +251,23 @@ def _parse_gripper_command(message: dict[str, Any]) -> dict[str, Any]:
     if command == "move_raw":
         normalized["position"] = _gripper_position(message, "position", request_id)
     return normalized
+
+
+def _parse_tool_power(message: dict[str, Any]) -> dict[str, Any]:
+    kind = message["type"]
+    request_id = _request_id(message)
+    if kind == "tool_power_status":
+        if set(message) != {"type", "request_id"}:
+            raise ProtocolError("invalid_field", "unexpected tool power status fields", request_id)
+        return {"type": kind, "request_id": request_id}
+    if kind == "tool_power_set":
+        if set(message) != {"type", "request_id", "enabled"}:
+            raise ProtocolError("invalid_field", "unexpected tool power command fields", request_id)
+        enabled = message.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ProtocolError("invalid_field", "enabled must be a boolean", request_id)
+        return {"type": kind, "request_id": request_id, "enabled": enabled}
+    raise ProtocolError("unsupported_type", f"unsupported message type: {kind}", request_id)
 
 
 def _parse_get_current_pose(message: dict[str, Any], arm: str) -> dict[str, Any]:
@@ -498,6 +529,58 @@ def _parse_plan_grasp(message: dict[str, Any]) -> dict[str, Any]:
             "backend": backend, "cgn_context": context}
 
 
+def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
+    kind = message.get("type")
+    allowed = {"type", "request_id"}
+    result = {"type": kind, "request_id": _request_id(message)}
+    if kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer"):
+        allowed |= {"observation_id"}
+        result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
+        if kind == "pose6d_infer":
+            if ("instance_id" in message) == ("mask_png" in message):
+                raise ProtocolError("invalid_field", "infer requires exactly one of instance_id or mask_png", result["request_id"])
+            if "instance_id" in message:
+                allowed.add("instance_id")
+                result["instance_id"] = _string(message.get("instance_id"), "instance_id", maximum=160)
+            else:
+                allowed.add("mask_png")
+                result["mask_png"] = _string(message.get("mask_png"), "mask_png", maximum=7 * 1024 * 1024)
+        elif kind == "pose6d_preview":
+            allowed.add("instance_id")
+            result["instance_id"] = _string(message.get("instance_id"), "instance_id", maximum=160)
+    elif kind == "pose6d_select_tool":
+        allowed |= {"tool_name"}
+        result["tool_name"] = _string(message.get("tool_name"), "tool_name", maximum=32)
+    elif kind == "pose6d_prepare":
+        allowed |= {"observation_id", "result_id", "grasp_id", "review_confirmed", "warning_confirmed"}
+        for field in ("observation_id", "result_id", "grasp_id"):
+            result[field] = _string(message.get(field), field, maximum=128)
+        for field in ("review_confirmed", "warning_confirmed"):
+            if not isinstance(message.get(field), bool):
+                raise ProtocolError("invalid_field", f"{field} must be a boolean", result["request_id"])
+            result[field] = message[field]
+    elif kind == "pose6d_jog":
+        allowed |= {"session_id", "step_mm"}
+        result["session_id"] = _string(message.get("session_id"), "session_id", maximum=128)
+        result["step_mm"] = _number(message.get("step_mm"), "step_mm")
+        if result["step_mm"] == 0 or abs(result["step_mm"]) > 500:
+            raise ProtocolError("invalid_field", "step_mm must be non-zero and within ±500 mm", result["request_id"])
+    elif kind == "pose6d_auto_suction":
+        allowed |= {"session_id"}
+        result["session_id"] = _string(message.get("session_id"), "session_id", maximum=128)
+    elif kind in ("pose6d_stop", "pose6d_close", "pose6d_heartbeat"):
+        if kind == "pose6d_heartbeat" or "session_id" in message:
+            allowed |= {"session_id"}
+            session = message.get("session_id", "")
+            result["session_id"] = _string(session, "session_id", maximum=128,
+                                           allow_empty=kind != "pose6d_heartbeat")
+        elif kind in ("pose6d_stop", "pose6d_close"):
+            result["session_id"] = ""
+    if set(message) != allowed:
+        raise ProtocolError("invalid_field", "unexpected pose6d command fields", result["request_id"])
+    return result
+
+
 _ARMLESS_PARSERS = {
     "ping": _parse_ping,
     "select_input_mode": _parse_select_input_mode,
@@ -505,9 +588,23 @@ _ARMLESS_PARSERS = {
     "keyboard_state": _parse_keyboard_state,
     "capture_calibration_sample": _parse_capture_calibration_sample,
     "solve_calibration": _parse_solve_calibration,
+    "verify_calibration": _parse_verify_calibration,
     "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
+    "tool_power_status": _parse_tool_power,
+    "tool_power_set": _parse_tool_power,
     "plan_grasp": _parse_plan_grasp,
+    "pose6d_capture": _parse_pose6d,
+    "pose6d_segment": _parse_pose6d,
+    "pose6d_preview": _parse_pose6d,
+    "pose6d_infer": _parse_pose6d,
+    "pose6d_select_tool": _parse_pose6d,
+    "pose6d_prepare": _parse_pose6d,
+    "pose6d_jog": _parse_pose6d,
+    "pose6d_auto_suction": _parse_pose6d,
+    "pose6d_stop": _parse_pose6d,
+    "pose6d_close": _parse_pose6d,
+    "pose6d_heartbeat": _parse_pose6d,
 }
 
 _ARM_PARSERS = {
