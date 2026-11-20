@@ -32,6 +32,11 @@
 .pose-controls .wide { grid-column: 1 / -1; }
 .pose-controls .step-buttons { display: flex; gap: 8px; }
 .pose-controls .step-buttons button { width: 44px; height: 36px; font-size: 20px; }
+.tool-power-control { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 14px; padding: 9px 0 12px; border-bottom: 1px solid #d5ddda; }
+.tool-power-control label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.tool-power-control input { min-height: auto; margin: 0; accent-color: #258563; }
+#tool-power-state { color: #4d5c59; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+#tool-power-state[data-error="true"] { color: #a23226; }
 .pose-status { font-size: 13px; padding: 8px 0; color: #315d56; }
 .pose-status[data-error="true"] { color: #a23226; }
 .pose-metrics { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }

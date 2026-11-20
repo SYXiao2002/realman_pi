@@ -72,6 +72,30 @@ def test_plan_grasp_is_read_only_and_armless():
                                   "target_label": "eu"}))
 
 
+def test_tool_power_commands_have_strict_fields_and_boolean_value():
+    assert parse_message('{"type":"tool_power_status","request_id":"power-read"}') == {
+        "type": "tool_power_status", "request_id": "power-read",
+    }
+    assert parse_message('{"type":"tool_power_set","request_id":"power-set","enabled":true}') == {
+        "type": "tool_power_set", "request_id": "power-set", "enabled": True,
+    }
+    for message in (
+        {"type": "tool_power_status", "request_id": "power-read", "enabled": False},
+        {"type": "tool_power_set", "request_id": "power-set", "enabled": 1},
+        {"type": "tool_power_set", "request_id": "power-set", "enabled": False, "arm": "l"},
+    ):
+        with pytest.raises(ProtocolError):
+            parse_message(json.dumps(message))
+
+
+def test_tool_power_set_is_blocked_by_read_only_policy():
+    from realman_web_control.protocol import reject_if_read_only
+
+    with pytest.raises(ProtocolError, match="read-only"):
+        reject_if_read_only("tool_power_set", True, "power-set")
+    reject_if_read_only("tool_power_status", True, "power-read")
+
+
 def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
     select_tool = {"type": "pose6d_select_tool", "request_id": "t1", "tool_name": "tcpsuck"}
     assert parse_message(json.dumps(select_tool)) == select_tool
@@ -80,7 +104,7 @@ def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
     assert parse_message(json.dumps(prepare)) == prepare
     jog = {"type": "pose6d_jog", "request_id": "j1", "session_id": "s1", "step_mm": -2.5}
     assert parse_message(json.dumps(jog)) == jog
-    auto = {"type": "pose6d_auto_suction", "request_id": "a1", "session_id": "s1", "vacuum_confirmed": True}
+    auto = {"type": "pose6d_auto_suction", "request_id": "a1", "session_id": "s1"}
     assert parse_message(json.dumps(auto)) == auto
     heartbeat = {"type": "pose6d_heartbeat", "request_id": "h1", "session_id": "s1"}
     assert parse_message(json.dumps(heartbeat)) == heartbeat

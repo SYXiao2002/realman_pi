@@ -15,7 +15,7 @@ ACTION_NAMES = frozenset(
 MAX_REQUEST_ID_LENGTH = 96
 # Sanity cap only; gripper_manager enforces the real per-gripper travel.
 MAX_GRIPPER_POSITION = 1_000_000
-WRITE_LIMIT_COMMANDS = frozenset({"set_limits", "move_raw"})
+WRITE_LIMIT_COMMANDS = frozenset({"set_limits", "move_raw", "tool_power_set"})
 
 
 class ProtocolError(ValueError):
@@ -101,7 +101,7 @@ def _gripper_position(message: dict[str, Any], field: str, request_id: str) -> i
 
 
 def reject_if_read_only(command: str, read_only: bool, request_id: str = "") -> None:
-    """Refuse gripper travel writes at the server boundary in read-only mode."""
+    """Refuse hardware writes at the server boundary in read-only mode."""
     if read_only and command in WRITE_LIMIT_COMMANDS:
         raise ProtocolError("read_only", "the server is read-only", request_id)
 
@@ -251,6 +251,23 @@ def _parse_gripper_command(message: dict[str, Any]) -> dict[str, Any]:
     if command == "move_raw":
         normalized["position"] = _gripper_position(message, "position", request_id)
     return normalized
+
+
+def _parse_tool_power(message: dict[str, Any]) -> dict[str, Any]:
+    kind = message["type"]
+    request_id = _request_id(message)
+    if kind == "tool_power_status":
+        if set(message) != {"type", "request_id"}:
+            raise ProtocolError("invalid_field", "unexpected tool power status fields", request_id)
+        return {"type": kind, "request_id": request_id}
+    if kind == "tool_power_set":
+        if set(message) != {"type", "request_id", "enabled"}:
+            raise ProtocolError("invalid_field", "unexpected tool power command fields", request_id)
+        enabled = message.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ProtocolError("invalid_field", "enabled must be a boolean", request_id)
+        return {"type": kind, "request_id": request_id, "enabled": enabled}
+    raise ProtocolError("unsupported_type", f"unsupported message type: {kind}", request_id)
 
 
 def _parse_get_current_pose(message: dict[str, Any], arm: str) -> dict[str, Any]:
@@ -549,11 +566,8 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
         if result["step_mm"] == 0 or abs(result["step_mm"]) > 500:
             raise ProtocolError("invalid_field", "step_mm must be non-zero and within ±500 mm", result["request_id"])
     elif kind == "pose6d_auto_suction":
-        allowed |= {"session_id", "vacuum_confirmed"}
+        allowed |= {"session_id"}
         result["session_id"] = _string(message.get("session_id"), "session_id", maximum=128)
-        if not isinstance(message.get("vacuum_confirmed"), bool):
-            raise ProtocolError("invalid_field", "vacuum_confirmed must be a boolean", result["request_id"])
-        result["vacuum_confirmed"] = message["vacuum_confirmed"]
     elif kind in ("pose6d_stop", "pose6d_close", "pose6d_heartbeat"):
         if kind == "pose6d_heartbeat" or "session_id" in message:
             allowed |= {"session_id"}
@@ -577,6 +591,8 @@ _ARMLESS_PARSERS = {
     "verify_calibration": _parse_verify_calibration,
     "update_calibration_layout": _parse_update_calibration_layout,
     "gripper_command": _parse_gripper_command,
+    "tool_power_status": _parse_tool_power,
+    "tool_power_set": _parse_tool_power,
     "plan_grasp": _parse_plan_grasp,
     "pose6d_capture": _parse_pose6d,
     "pose6d_segment": _parse_pose6d,

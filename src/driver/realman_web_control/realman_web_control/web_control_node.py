@@ -200,6 +200,10 @@ class WebControlNode(Node):
         self._mode_select_client = self.create_client(
             SelectInputMode, "/realman_bt_executor/select_input_mode", callback_group=self._callback_group,
         )
+        self._tool_power_clients = {
+            "set": self.create_client(SetBool, "/r/tool_power", callback_group=self._callback_group),
+            "status": self.create_client(Trigger, "/r/tool_power_status", callback_group=self._callback_group),
+        }
         self._grippers = {}
         self._gripper_clients = {}
         self._gripper_states = {}
@@ -510,6 +514,8 @@ class WebControlNode(Node):
             self._solve_ik(client_id, message)
         elif message_type == "gripper_command":
             self._gripper_command(client_id, message)
+        elif message_type in {"tool_power_set", "tool_power_status"}:
+            self._tool_power_command(client_id, message)
         elif message_type == "select_input_mode":
             self._apply_input_mode_effects(self._input_modes.select_mode(client_id, message))
         elif message_type == "keyboard_state":
@@ -891,6 +897,63 @@ class WebControlNode(Node):
         future = client.call_async(request)
         future.add_done_callback(lambda completed: self._gripper_result(client_id, name, command, request_id, completed))
         self._server.send_event({"type": "gripper_result", "name": name, "command": command, "request_id": request_id, "state": "requested"}, client_id)
+
+    def _tool_power_command(self, client_id: str, message: dict[str, Any]) -> None:
+        request_id = message["request_id"]
+        operation = message["type"]
+        if operation == "tool_power_set":
+            reject_if_read_only(operation, self._server.read_only, request_id)
+            client = self._tool_power_clients["set"]
+            request = SetBool.Request()
+            request.data = message["enabled"]
+        else:
+            client = self._tool_power_clients["status"]
+            request = Trigger.Request()
+        if not client.service_is_ready():
+            raise ProtocolError("tool_power_unavailable", "/r/tool_power service is not available", request_id)
+        future = client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._tool_power_result(client_id, operation, request_id, completed)
+        )
+        self._server.send_event({
+            "type": "tool_power_result",
+            "operation": operation,
+            "request_id": request_id,
+            "state": "requested",
+        }, client_id)
+
+    def _tool_power_result(self, client_id: str, operation: str, request_id: str, future: Any) -> None:
+        try:
+            response = future.result()
+            try:
+                payload = json.loads(response.message)
+                if not isinstance(payload, dict):
+                    payload = {}
+            except (TypeError, json.JSONDecodeError):
+                payload = {}
+            event = {
+                **payload,
+                "type": "tool_power_state",
+                "arm": "r",
+                "request_id": request_id,
+                "operation": operation,
+                "success": bool(response.success),
+                "state": "completed",
+            }
+            if not payload:
+                event["message"] = response.message
+        except Exception as error:
+            event = {
+                "type": "tool_power_state",
+                "arm": "r",
+                "request_id": request_id,
+                "operation": operation,
+                "success": False,
+                "available": False,
+                "state": "failed",
+                "message": str(error),
+            }
+        self._server.send_event(event, client_id)
 
     def _gripper_result(self, client_id: str, name: str, command: str, request_id: str, future: Any) -> None:
         try:
