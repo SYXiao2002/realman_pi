@@ -27,7 +27,7 @@ test("controller TCP selection invalidates old pose review and reports readback"
   await page.goto("6d_pose.html");
   await page.locator("#controller-tool").selectOption("tcpsuck");
   await page.locator("#apply-tool").click();
-  const request = await page.evaluate(() => (window as any).poseSocket.sent[0]);
+  const request = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_select_tool"));
   expect(request).toEqual({ type: "pose6d_select_tool", request_id: request.request_id, tool_name: "tcpsuck" });
   await page.evaluate((event) => (window as any).poseSocket.emit(event), {
     type: "pose6d_tool_selected", request_id: request.request_id, tool_name: "tcpsuck", current_tool: "tcpsuck",
@@ -38,6 +38,62 @@ test("controller TCP selection invalidates old pose review and reports readback"
   await expect(page.locator("#prepare")).toBeDisabled();
 });
 
+test("tool power switch reads output and waits for verified 24V or 0V before changing", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  const request = await page.evaluate(() => (window as any).poseSocket.sent[0]);
+  expect(request).toMatchObject({ type: "tool_power_status" });
+  const toggle = page.locator("#tool-power");
+  await expect(toggle).toBeDisabled();
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "tool_power_state", arm: "r", request_id: request.request_id, success: true,
+    available: true, voltage_type: 0, voltage_v: 0, enabled: false,
+  });
+  await expect(toggle).toBeEnabled();
+  await expect(page.locator("#tool-power-state")).toContainText("0 V");
+
+  await toggle.check();
+  const failedEnable = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(failedEnable).toMatchObject({ type: "tool_power_set", enabled: true });
+  await expect(toggle).toBeChecked();
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "tool_power_state", arm: "r", request_id: failedEnable.request_id, operation: "tool_power_set",
+    success: false, available: true, voltage_type: 2, voltage_v: 12, enabled: false,
+    message: "tool voltage readback mismatch",
+  });
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator("#tool-power-state")).toContainText("12 V");
+  await expect(page.locator("#tool-power-state")).toHaveAttribute("data-error", "true");
+
+  await toggle.check();
+  const enable = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(enable).toMatchObject({ type: "tool_power_set", enabled: true });
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "tool_power_state", arm: "r", request_id: enable.request_id, operation: "tool_power_set",
+    success: true, available: true, voltage_type: 3, voltage_v: 24, enabled: true,
+  });
+  await expect(toggle).toBeChecked();
+  await expect(page.locator("#tool-power-state")).toContainText("24 V");
+
+  await page.evaluate(() => (window as any).poseSocket.emit({
+    type: "pose6d_motion", state: "ready", busy: false, session_id: "motion-1", lease_retained: true,
+  }));
+  await expect(toggle).toBeDisabled();
+  await page.evaluate(() => (window as any).poseSocket.emit({
+    type: "pose6d_motion", state: "idle", busy: false, lease_retained: false,
+  }));
+  await expect(toggle).toBeEnabled();
+
+  await toggle.uncheck();
+  const disable = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(disable).toMatchObject({ type: "tool_power_set", enabled: false });
+  await expect(toggle).not.toBeChecked();
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "tool_power_state", arm: "r", request_id: disable.request_id, operation: "tool_power_set",
+    success: true, available: true, voltage_type: 0, voltage_v: 0, enabled: false,
+  });
+  await expect(toggle).not.toBeChecked();
+});
+
 test("capture, upload and pose review keep motion disabled without calibration", async ({ page, context }, info) => {
   await context.route("**/6d_pose_history/api/records/*/preview/score", route => route.fulfill({
     contentType: "image/png",
@@ -46,7 +102,7 @@ test("capture, upload and pose review keep motion disabled without calibration",
   await page.goto("6d_pose.html");
   await expect(page.locator("#score-preview")).toBeHidden();
   await page.locator("#capture").click();
-  const capture = await page.evaluate(() => (window as any).poseSocket.sent[0]);
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_capture"));
   expect(capture.type).toBe("pose6d_capture");
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_capture", request_id: capture.request_id,
@@ -117,7 +173,7 @@ test("capture, upload and pose review keep motion disabled without calibration",
 test("reviewed suction motion sends only signed steps and displays confirmed distance", async ({ page }, info) => {
   await page.goto("6d_pose.html");
   await page.locator("#capture").click();
-  const capture = await page.evaluate(() => (window as any).poseSocket.sent[0]);
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_capture"));
   const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_capture", request_id: capture.request_id,
     observation_id: "obs-2", rgb: png, depth: png, profile: "right_wrist", width: 1, height: 1, camera_frame: "camera", calibration: "available",
@@ -173,7 +229,7 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   }, prepare.request_id);
   await expect(page.locator("#distance")).toHaveValue("40.0");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  expect(await page.evaluate(() => (window as any).poseSocket.sent.map((item: any) => item.type)))
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.map((item: any) => item.type).filter((type: string) => !type.startsWith("tool_power_"))))
     .toEqual(["pose6d_capture", "pose6d_segment", "pose6d_infer", "pose6d_prepare"]);
   await page.locator("#step").fill("50");
   await page.locator("#minus").click();
@@ -185,22 +241,61 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#distance")).toHaveValue("-10.0");
   await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_motion", session_id: "session-2",
     state: "ready", busy: false, confirmed_mm: 40, auto_suction_ready: true, lease_retained: true }));
-  await page.locator("#vacuum-confirmed").check();
+  await expect(page.locator("#auto-vacuum")).toContainText("开始时开启 24 V，提升完成后关闭至 0 V");
   await expect(page.locator("#auto-suction")).toBeEnabled();
   await page.locator("#auto-suction").click();
   const automatic = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
   expect(automatic.type).toBe("pose6d_auto_suction");
   expect(automatic.session_id).toBe("session-2");
-  expect(automatic.vacuum_confirmed).toBe(true);
-  await expect(page.locator("#vacuum-confirmed")).not.toBeChecked();
+  expect(automatic).not.toHaveProperty("vacuum_confirmed");
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "auto_suction", busy: true, lease_retained: true,
+    tool_power: { available: true, success: true, voltage_type: 3, voltage_v: 24, enabled: true },
+    message: "MOVEL approaching suction position slowly" }), automatic.request_id);
+  await expect(page.locator("#tool-power")).toBeChecked();
+  await expect(page.locator("#tool-power")).toBeDisabled();
+  await expect(page.locator("#tool-power-state")).toContainText("24 V");
+  await expect(page.locator("#auto-suction")).toBeDisabled();
+  // A lifted TCP while the power command is pending must not unlock controls
+  // or claim that the suction has already been released.
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "lifted", busy: true, lease_retained: true,
+    tool_power: { available: false, message: "工具电源切换中，等待回读" } }), automatic.request_id);
+  await expect(page.locator("#tool-power-state")).toContainText("等待回读");
+  await expect(page.locator("#capture")).toBeDisabled();
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
     session_id: "session-2", state: "lifted", busy: false, auto_suction_ready: false,
-    lease_retained: true, message: "自动运动完成；真空由外部保持开启" }), automatic.request_id);
+    tool_power: { available: true, success: true, voltage_type: 0, voltage_v: 0, enabled: false },
+    lease_retained: true, message: "自动运动完成；提升已确认，吸盘已关闭（0 V）" }), automatic.request_id);
   await expect(page.locator("#distance")).toHaveValue("提升完成");
+  await expect(page.locator("#tool-power")).not.toBeChecked();
+  await expect(page.locator("#tool-power-state")).toContainText("0 V");
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "tool_power_set"))).toBe(false);
   await expect(page.locator("#auto-suction")).toBeDisabled();
   await expect(page.locator("#minus")).toBeDisabled();
   await page.screenshot({ path: info.outputPath("pose6d-auto-lift.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("automatic power errors display unknown output and keep motion locked", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  await page.evaluate(() => (window as any).poseSocket.emit({
+    type: "pose6d_motion", session_id: "power-failure", state: "ready", busy: false,
+    auto_suction_ready: true, lease_retained: true,
+  }));
+  await page.locator("#auto-suction").click();
+  const request = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate((id) => (window as any).poseSocket.emit({
+    type: "pose6d_error", request_id: id, message: "power response lost",
+    motion: { session_id: "power-failure", state: "blocked", busy: false, auto_suction_ready: false,
+      lease_retained: true, tool_power: { available: false, success: false, message: "工具电源切换未确认" } },
+  }), request.request_id);
+  await expect(page.locator("#tool-power-state")).toHaveText("工具电源切换未确认");
+  await expect(page.locator("#tool-power-state")).toHaveAttribute("data-error", "true");
+  await expect(page.locator("#auto-suction")).toBeDisabled();
+  await expect(page.locator("#minus")).toBeDisabled();
+  await expect(page.locator("#stop-motion")).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.some((item: any) => item.type === "tool_power_set"))).toBe(false);
 });
 
 test("workspace uses capture-time BASE transform, toggles without robot commands and survives telemetry loss", async ({ page }) => {
@@ -235,7 +330,7 @@ test("workspace uses capture-time BASE transform, toggles without robot commands
   await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_frames", arm: "r", available: false, message: "feedback gap" }));
   expect((await page.locator("#viewer").screenshot()).equals(visible)).toBe(true);
   const sent = await page.evaluate(() => (window as any).poseSocket.sent);
-  expect(sent.map((request: any) => request.type)).toEqual([
+  expect(sent.map((request: any) => request.type).filter((type: string) => !type.startsWith("tool_power_"))).toEqual([
     "pose6d_capture", "pose6d_segment", "pose6d_capture", "pose6d_segment",
   ]);
   await capture(null);
