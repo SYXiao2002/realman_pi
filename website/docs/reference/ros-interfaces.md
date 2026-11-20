@@ -144,6 +144,8 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 按当前配置工具读 BASE TCP，用于运动前/后的新鲜停稳读回 |
 | `/<arm>/solve_ik` | `realman_msgs/SolveIk` | BASE 系逐点 seeded IK 检查笛卡尔扫掠路径连续性，不执行运动 |
 | `/<arm>/task_control` | `realman_msgs/TaskControl` | 在准备位及点动会话期间持有同一 per-arm 任务租约 |
+| `/<arm>/tool_power`、`tool_power_status` | `std_srvs/SetBool`、`std_srvs/Trigger` | 手动设置 24 V / 0 V 和只读查询；设置后回读确认，持有任务租约时拒绝无令牌写入 |
+| `/<arm>/tool_power_control` | `realman_msgs/SetToolPower` | `enabled` 加 `task_token`；驱动验证当前任务租约并回读输出。6D 自动动作开始前开 24 V，确认提升完成后关 0 V |
 | `/<arm>/execute_motion` | Action `realman_msgs/ExecuteMotion` | 仅在配置启用后使用 BASE `MOVEL`；成功终态及实际 TCP 到位读回后才提交当前距离 |
 | `/<arm>/stop` | `std_srvs/Trigger` | 用户停止、浏览器断线/隐藏或 watchdog 触发的受控停止；未知 Action 结果保留任务租约 |
 | `/<arm>/coordinates/state`、`joint_states` | `std_msgs/String`、`sensor_msgs/JointState` | 校验活动 controller tool 与坐标状态，并验证新鲜、停稳的关节反馈 |

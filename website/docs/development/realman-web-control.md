@@ -635,23 +635,23 @@ Action cancel。浏览器刷新不会留下仍由网页拥有的速度命令。
 
 ## 吸盘真空传感器状态
 
-`:8765/` 主界面与 `/6d_pose.html` 的吸盘区域始终显示左、右臂吸盘指示灯：绿灯“已吸附”，红灯“未吸附”；未启用、机械臂离线、IO 读取失败或状态超时均为灰灯，并显示原因。指示灯与当前选中的运动机械臂无关，刷新或重新连接后自动接收最新状态。悬停可查看机械臂、IO 端口和有效读数。
+`:8765/` 主界面与 `/6d_pose.html` 的吸盘区域始终显示左、右臂吸盘指示灯：绿灯“已吸附”，红灯“未吸附”；未启用、机械臂离线、IO 读取失败、必要的工具端电源关闭或状态超时均为灰灯，并显示原因。指示灯与当前选中的运动机械臂无关，刷新或重新连接后自动接收最新状态。悬停可查看机械臂、IO 端口和有效读数。
 
-配置统一放在 `config/ros/vacuum_sensors.yaml`，由每臂 `realman_driver` 读取 `arms.<l|m|r>`。`enabled` 控制监测开关，`io` 是该臂控制器端口号（1–4），`active_level` 是吸住物体时的输入电平（0 或 1），`publish_rate_hz` 控制读取和发布频率。当前右臂 IO3 已启用，NPN 低电平有效；2026-11-19 空载只读实测为 IO3=1、通用输入模式。未来左臂安装后设置 `arms.l.enabled: true` 并核对 IO 和有效电平即可，页面无需改动。驱动只读输入，不设置 IO 模式或真空阀输出；输入端口须提前配置正确。
+配置统一放在 `config/ros/vacuum_sensors.yaml`，由每臂 `realman_driver` 读取 `arms.<l|m|r>`。`enabled` 控制监测开关，`io` 是该臂控制器端口号（1–4），`active_level` 是吸住物体时的输入电平（0 或 1），`requires_tool_power` 可要求控制器回读为 24 V 后才接受输入状态，`publish_rate_hz` 控制读取和发布频率。当前右臂 IO1 已启用并要求工具端 24 V；NPN 低电平有效。实测 0 V 时 IO1 可能为低电平，因此该状态显示未知，不误报“已吸附”；24 V 空载为高电平，吸附后为低电平。未来左臂安装后设置 `arms.l.enabled: true` 并核对 IO、电源依赖和有效电平即可，页面无需改动。驱动只读输入和工具电源设置，不设置 IO 模式或真空阀输出；输入端口须提前配置正确。
 
 驱动按默认 5 Hz 发布 `/<arm>/vacuum/state`，类型为 `std_msgs/msg/String`，内容为 JSON（与坐标状态话题方式一致），QoS 为 reliable、transient-local、depth=1：
 
 ```json
-{"type":"vacuum_state","arm":"r","enabled":true,"io":3,"active_level":0,"available":true,"holding":false,"raw_input":1,"api2_status":0,"stamp_ns":1790000000000000000,"stale_after_sec":2.0,"message":"未吸附"}
+{"type":"vacuum_state","arm":"r","enabled":true,"io":1,"active_level":0,"requires_tool_power":true,"tool_power_available":true,"tool_power_voltage_v":24,"available":true,"holding":false,"raw_input":1,"api2_status":0,"stamp_ns":1790000000000000000,"stale_after_sec":2.0,"message":"未吸附"}
 ```
 
-ROS 消费者须同时检查 `enabled && available` 才能使用 `holding`，并在超过 `stale_after_sec` 未收到新消息后视为未知。未启用或无有效读数时，`holding`、`raw_input` 为 `null`，不会伪造“未吸附”。订阅后需持续接收新消息，不能把 transient-local 保留的旧消息当成持续有效证据。Web 新连接只补发尚未超时的缓存，浏览器在断开连接或反馈超时后清除红/绿灯。
+ROS 消费者须同时检查 `enabled && available` 才能使用 `holding`，并在超过 `stale_after_sec` 未收到新消息后视为未知。未启用或无有效读数时，`holding` 为 `null`；工具电源关闭时仍保留 `raw_input` 供诊断，但不据此判断吸附。订阅后需持续接收新消息，不能把 transient-local 保留的旧消息当成持续有效证据。Web 新连接只补发尚未超时的缓存，浏览器在断开连接或反馈超时后清除红/绿灯。
 
 ```bash
 ros2 topic echo /r/vacuum/state
 ```
 
-修改 YAML 后重启驱动生效；驱动 launch 参数 `vacuum_config_file` 可覆盖路径（默认跟随 `REALMAN_CONFIG_ROOT/ros/vacuum_sensors.yaml`）。`end_effectors.yaml` 继续负责三维显示模型。本功能仅提供状态监测，不改变 6D Pose 的运动或人工真空确认流程。
+修改 YAML 后重启驱动生效；驱动 launch 参数 `vacuum_config_file` 可覆盖路径（默认跟随 `REALMAN_CONFIG_ROOT/ros/vacuum_sensors.yaml`）。`end_effectors.yaml` 继续负责三维显示模型。该传感器只提供吸附状态监测；6D Pose 的工具电源开关及自动开关时序见[吸盘运动接线](./grasping#吸盘运动接线与当前门禁)。
 
 ## URDF 与影子模型
 
