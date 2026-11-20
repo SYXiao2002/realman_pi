@@ -29,13 +29,14 @@ from realman_msgs.srv import (
     GetCurrentPose,
     RecoverMotion,
     SelectFrame,
+    SetToolPower,
     SolveIk,
     TaskControl,
     VerifyCoordinates,
 )
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 from .coordinate_manager import CoordinateManager
 from .coordinate_services import (
@@ -409,6 +410,9 @@ class RealManDriverNode(Node):
                 self._recover_motion,
             ),
             self.create_service(Trigger, "status", self._status),
+            self.create_service(SetBool, "tool_power", self._set_tool_power),
+            self.create_service(SetToolPower, "tool_power_control", self._set_tool_power_with_lease),
+            self.create_service(Trigger, "tool_power_status", self._tool_power_status),
             self.create_service(Trigger, "controller_info", self._controller_info),
             self.create_service(
                 VerifyCoordinates,
@@ -632,6 +636,93 @@ class RealManDriverNode(Node):
         )
         if self.adapter.last_error_message:
             response.message += f" detail={self.adapter.last_error_message}"
+        return response
+
+    def _tool_power_state(self, voltage_type: int | None, *, available: bool, message: str = "") -> dict[str, Any]:
+        voltage_values = {0: 0, 1: 5, 2: 12, 3: 24}
+        voltage = voltage_values.get(voltage_type) if voltage_type is not None else None
+        state = {
+            "type": "tool_power_state",
+            "arm": self.arm_id,
+            "available": available,
+            "voltage_type": voltage_type,
+            "voltage_v": voltage,
+            "enabled": available and voltage_type == 3,
+        }
+        if message:
+            state["message"] = message
+        return state
+
+    def _tool_power_status(
+        self, _request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        status, voltage_type = self.adapter.tool_voltage()
+        available = status == 0 and voltage_type is not None
+        state = self._tool_power_state(
+            voltage_type,
+            available=available,
+            message="" if available else f"tool voltage query failed with API2 status {status}",
+        )
+        response.success = available
+        response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        return response
+
+    def _set_tool_power(
+        self, request: SetBool.Request, response: SetBool.Response
+    ) -> SetBool.Response:
+        return self._run_tool_power(request.data, "", response)
+
+    def _set_tool_power_with_lease(
+        self, request: SetToolPower.Request, response: SetToolPower.Response
+    ) -> SetToolPower.Response:
+        if not request.task_token:
+            state = self._tool_power_state(None, available=False, message="task_token is required")
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+            return response
+        return self._run_tool_power(request.enabled, request.task_token, response)
+
+    def _run_tool_power(self, enabled: bool, task_token: str, response: Any) -> Any:
+        voltage_type = 3 if enabled else 0
+        command_id = ""
+        try:
+            command_id = self.arm_ownership.acquire_external(self.arm_id, task_token)
+            status = self.adapter.set_tool_voltage(voltage_type)
+            if status != 0:
+                state = self._tool_power_state(
+                    None,
+                    available=False,
+                    message=f"tool voltage command failed with API2 status {status}",
+                )
+                response.success = False
+                response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                return response
+
+            read_status, actual_voltage_type = self.adapter.tool_voltage()
+            success = read_status == 0 and actual_voltage_type == voltage_type
+            message = "tool voltage verified" if success else (
+                f"tool voltage readback mismatch: requested {voltage_type}, "
+                f"status={read_status}, actual={actual_voltage_type}"
+            )
+            state = self._tool_power_state(
+                actual_voltage_type,
+                available=read_status == 0 and actual_voltage_type is not None,
+                message=message,
+            )
+            response.success = success
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        except ValueError as error:
+            state = self._tool_power_state(None, available=False, message=str(error))
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        except Exception as error:
+            self.get_logger().error(f"RealMan tool voltage service failed: {error}")
+            state = self._tool_power_state(None, available=False, message=str(error))
+            response.success = False
+            response.message = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        finally:
+            if command_id:
+                self.arm_ownership.release_external(self.arm_id, command_id)
         return response
 
     def _controller_info(

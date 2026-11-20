@@ -8,6 +8,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from realman_robot_driver.coordinate_manager import CoordinateManager, CoordinatePolicy
 from realman_robot_driver.coordinate_services import CoordinateOperationResult
@@ -98,12 +99,14 @@ class FakeCoordinateAdapter:
 
 def _controller_tool(name: str):
     if name == "tcpgrip":
+        # Follow the installed dimensions instead of an obsolete 120 mm TCP.
+        tool = yaml.safe_load(COORDINATES_CONFIG_PATH.read_text())["robots"]["l"]["tools"][name]
         return SimpleNamespace(
             controller_name=name,
-            xyz_m=(0.0, 0.0, 0.120),
-            quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
-            payload_kg=0.80,
-            center_of_mass_m=(0.0, 0.0, 0.060),
+            xyz_m=tuple(tool["pose"]["xyz_m"]),
+            quaternion_wxyz=tuple(tool["pose"]["quaternion_wxyz"]),
+            payload_kg=tool["payload_kg"],
+            center_of_mass_m=tuple(tool["center_of_mass_m"]),
         )
     return SimpleNamespace(
         controller_name=name,
@@ -1409,6 +1412,9 @@ def test_mock_node_constructs_and_exposes_services():
             "stop",
             "recover_motion",
             "status",
+            "tool_power",
+            "tool_power_control",
+            "tool_power_status",
             "coordinates/verify",
             "coordinates/apply",
             "coordinates/select_tool",
@@ -1433,6 +1439,76 @@ def test_mock_node_constructs_and_exposes_services():
             "/l/cartesian_pose",
             ["realman_msgs/action/CartesianPose"],
         ) in actions
+    finally:
+        _destroy_ros_nodes_and_shutdown(node)
+
+
+@requires_ros_action_runtime
+def test_tool_power_services_verify_voltage_and_refuse_during_task_lease():
+    from std_srvs.srv import SetBool, Trigger
+    from realman_msgs.srv import SetToolPower
+
+    rclpy.init()
+    node = None
+    try:
+        node = RealManDriverNode(
+            namespace="r",
+            parameter_overrides=[
+                rclpy.parameter.Parameter("robot_ip", value="127.0.0.1"),
+                rclpy.parameter.Parameter("mock_mode", value=True),
+                rclpy.parameter.Parameter("auto_connect", value=False),
+            ],
+        )
+        assert node.adapter.connect() == 0
+
+        status = node._tool_power_status(Trigger.Request(), Trigger.Response())
+        assert status.success
+        assert json.loads(status.message)["voltage_v"] == 0
+
+        lease = node.arm_ownership.acquire_task("r", "pose6d-test", 10.0)
+        turn_on = SetBool.Request()
+        turn_on.data = True
+        denied = node._set_tool_power(turn_on, SetBool.Response())
+        assert not denied.success
+        assert "busy" in json.loads(denied.message)["message"]
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        leased_on = SetToolPower.Request()
+        leased_on.enabled = True
+        leased_on.task_token = lease.token
+        enabled_with_lease = node._set_tool_power_with_lease(leased_on, SetToolPower.Response())
+        assert enabled_with_lease.success
+        assert json.loads(enabled_with_lease.message)["voltage_v"] == 24
+        assert node.adapter.tool_voltage() == (0, 3)
+
+        leased_off = SetToolPower.Request()
+        leased_off.enabled = False
+        leased_off.task_token = lease.token
+        disabled_with_lease = node._set_tool_power_with_lease(leased_off, SetToolPower.Response())
+        assert disabled_with_lease.success
+        assert json.loads(disabled_with_lease.message)["voltage_v"] == 0
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        invalid = SetToolPower.Request()
+        invalid.enabled = True
+        invalid.task_token = "not-the-lease-token"
+        rejected = node._set_tool_power_with_lease(invalid, SetToolPower.Response())
+        assert not rejected.success
+        assert "task token" in json.loads(rejected.message)["message"]
+        assert node.adapter.tool_voltage() == (0, 0)
+
+        node.arm_ownership.release_task("r", lease.token)
+
+        enabled = node._set_tool_power(turn_on, SetBool.Response())
+        assert enabled.success
+        assert json.loads(enabled.message)["voltage_v"] == 24
+        assert node.adapter.tool_voltage() == (0, 3)
+
+        turn_off = SetBool.Request()
+        turn_off.data = False
+        disabled = node._set_tool_power(turn_off, SetBool.Response())
+        assert disabled.success
+        assert json.loads(disabled.message)["voltage_v"] == 0
     finally:
         _destroy_ros_nodes_and_shutdown(node)
 

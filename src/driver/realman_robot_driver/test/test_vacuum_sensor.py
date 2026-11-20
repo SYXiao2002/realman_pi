@@ -13,9 +13,12 @@ from realman_robot_driver.vacuum_sensor import VacuumSensorConfig
 CONFIG = Path(__file__).resolve().parents[4] / "config/ros/vacuum_sensors.yaml"
 
 
-def test_deployment_enables_right_io3_and_reserves_left():
+def test_deployment_enables_right_npn_sensor_and_reserves_left():
     right = VacuumSensorConfig.from_yaml(str(CONFIG), "r")
-    assert (right.enabled, right.io, right.active_level) == (True, 3, 0)
+    # The port is installation configuration; polarity and enabled arms are
+    # deployment requirements. Port selection is exercised separately below.
+    assert right.enabled and right.io == 1 and right.active_level == 0
+    assert right.requires_tool_power
     assert not VacuumSensorConfig.from_yaml(str(CONFIG), "l").enabled
     assert not VacuumSensorConfig.from_yaml(str(CONFIG), "m").enabled
 
@@ -57,8 +60,59 @@ def test_vendor_exception_is_unavailable():
     assert state["available"] is False and "timeout" in state["message"]
 
 
+@pytest.mark.parametrize(("inputs", "holding"), [
+    ([1, 0, 0, 0], False),
+    ([0, 0, 0, 0], True),
+])
+def test_tool_power_gated_sensor_uses_npn_state_only_at_24v(inputs, holding):
+    adapter = SimpleNamespace(
+        connected=True,
+        controller_io_inputs=Mock(return_value=(0, inputs)),
+        tool_voltage=Mock(return_value=(0, 3)),
+    )
+
+    state = VacuumSensorConfig(True, 1, 0, requires_tool_power=True).sample(adapter, "r", 123)
+
+    assert state["available"] is True
+    assert state["holding"] is holding
+    assert state["raw_input"] == inputs[0]
+    assert state["tool_power_voltage_v"] == 24
+
+
+@pytest.mark.parametrize("voltage", [(0, 0), (0, 1), (0, 2)])
+def test_unpowered_sensor_does_not_report_npn_low_as_held(voltage):
+    adapter = SimpleNamespace(
+        connected=True,
+        controller_io_inputs=Mock(return_value=(0, [0, 1, 1, 1])),
+        tool_voltage=Mock(return_value=voltage),
+    )
+
+    state = VacuumSensorConfig(True, 1, 0, requires_tool_power=True).sample(adapter, "r", 123)
+
+    assert state["available"] is False
+    assert state["holding"] is None
+    assert state["raw_input"] == 0
+    assert state["tool_power_available"] is True
+    assert "24 V 未开启" in state["message"]
+
+
+def test_sensor_power_read_failure_never_claims_holding():
+    adapter = SimpleNamespace(
+        connected=True,
+        controller_io_inputs=Mock(return_value=(0, [0, 1, 1, 1])),
+        tool_voltage=Mock(return_value=(-2, None)),
+    )
+
+    state = VacuumSensorConfig(True, 1, 0, requires_tool_power=True).sample(adapter, "r", 123)
+
+    assert state["available"] is False
+    assert state["holding"] is None
+    assert state["tool_power_available"] is False
+    assert state["tool_power_api2_status"] == -2
+
+
 @pytest.mark.parametrize("values", [
-    {"enabled": "false"}, {"io": 0}, {"io": 5}, {"io": True},
+    {"enabled": "false"}, {"io": 0}, {"io": 5}, {"io": True}, {"requires_tool_power": "yes"},
     {"active_level": 2}, {"active_level": False}, {"enabeld": True},
 ])
 def test_invalid_sensor_config_rejected(tmp_path, values):

@@ -111,6 +111,7 @@ class RealManSdkAdapter:
         self._mock_work_frame: ControllerFrame | None = None
         self._mock_trajectory_active = False
         self._mock_trajectory_reads_remaining = 0
+        self._mock_tool_voltage = 0
 
     @property
     def connected(self) -> bool:
@@ -573,6 +574,34 @@ class RealManSdkAdapter:
             mock_success=(0, [-1, -1, -1, -1]),
         )
 
+    def set_tool_voltage(self, voltage_type: int) -> int:
+        """Select 0V, 5V, 12V, or 24V on the tool power output."""
+        if type(voltage_type) is not int or voltage_type not in (0, 1, 2, 3):
+            return -1
+        return self._command("rm_set_tool_voltage", "SDK tool voltage setting failed", voltage_type)
+
+    def tool_voltage(self) -> tuple[int, int | None]:
+        """Read the selected tool power output voltage type."""
+        with self._lock:
+            if self.mock_mode:
+                status = self._ready_status_locked()
+                if status is not None:
+                    return status, None
+                return 0, self._mock_tool_voltage
+        result = self._query("rm_get_tool_voltage", "SDK tool voltage query failed")
+        try:
+            status, voltage_type = _unpack_result(result)
+            voltage_type = int(voltage_type)
+        except (TypeError, ValueError):
+            return -1, None
+        if status != 0:
+            return status, None
+        if voltage_type not in (0, 1, 2, 3):
+            with self._lock:
+                self._set_failure_locked(-3, "SDK returned an invalid tool voltage type")
+            return -3, None
+        return 0, voltage_type
+
     def current_arm_state(self) -> Any:
         return self._query("rm_get_current_arm_state", "SDK arm state query failed")
 
@@ -936,6 +965,8 @@ class RealManSdkAdapter:
                     if method_name in {"rm_movej", "rm_movel", "rm_movej_p"}:
                         self._mock_trajectory_active = True
                         self._mock_trajectory_reads_remaining = 1
+                    elif method_name == "rm_set_tool_voltage":
+                        self._mock_tool_voltage = int(args[0])
                     elif method_name in {
                         "rm_set_arm_stop",
                         "rm_set_arm_slow_stop",

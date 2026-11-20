@@ -6,10 +6,10 @@ publish_rate_hz: 5.0
 arms:
   l:
     enabled: false       # Enable after the left sensor is installed.
-    io: 3                # Controller IO number, 1..4.
+    io: 1                # Controller IO number, 1..4.
     active_level: 0      # NPN: low = object held; high = no object.
   r:
     enabled: true
-    io: 3
-    # Verified unloaded on 2026-11-19: right IO3 = 1, general input mode.
+    io: 1
+    requires_tool_power: true # Only trust IO1 when its 24 V supply is active.
     active_level: 0

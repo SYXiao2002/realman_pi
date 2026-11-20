@@ -30,6 +30,12 @@ class FakeRobot:
     def rm_get_io_input(self):
         return self._call("rm_get_io_input")
 
+    def rm_set_tool_voltage(self, voltage_type):
+        return self._call("rm_set_tool_voltage", voltage_type)
+
+    def rm_get_tool_voltage(self):
+        return self._call("rm_get_tool_voltage")
+
     def rm_movej(self, joint, velocity, radius, connect, block):
         return self._call("rm_movej", joint, velocity, radius, connect, block)
 
@@ -141,6 +147,27 @@ def test_controller_inputs_preserve_levels_and_vendor_errors(adapter, fake_robot
         fake_robot.results["rm_get_io_input"] = result
         assert adapter.controller_io_inputs() == result
         assert fake_robot.calls[-1] == ("rm_get_io_input",)
+
+
+def test_tool_voltage_reads_and_sets_documented_voltage_types(adapter, fake_robot):
+    fake_robot.results["rm_get_tool_voltage"] = (0, 3)
+    assert adapter.tool_voltage() == (0, 3)
+    assert fake_robot.calls[-1] == ("rm_get_tool_voltage",)
+
+    assert adapter.set_tool_voltage(0) == 0
+    assert fake_robot.calls[-1] == ("rm_set_tool_voltage", 0)
+    assert adapter.set_tool_voltage(3) == 0
+    assert fake_robot.calls[-1] == ("rm_set_tool_voltage", 3)
+
+    fake_robot.results["rm_set_tool_voltage"] = 14
+    assert adapter.set_tool_voltage(3) == 14
+    fake_robot.results["rm_get_tool_voltage"] = (9, 3)
+    assert adapter.tool_voltage() == (9, None)
+
+    calls = list(fake_robot.calls)
+    assert adapter.set_tool_voltage(True) == -1
+    assert adapter.set_tool_voltage(4) == -1
+    assert fake_robot.calls == calls
 
 
 def test_mock_inputs_do_not_invent_a_sensor_reading():
@@ -940,6 +967,9 @@ def test_mock_adapter_is_safe_and_deterministic():
     assert adapter.movej_p([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], 20, 0, False) == 0
     assert adapter.set_movev_init(1, 0, 5) == 0
     assert adapter.movev([0.0] * 6, True, 0, 0) == 0
+    assert adapter.tool_voltage() == (0, 0)
+    assert adapter.set_tool_voltage(3) == 0
+    assert adapter.tool_voltage() == (0, 3)
     assert adapter.forward_kinematics([0.0] * 6) == (0, [0.0] * 6)
     assert adapter.inverse_kinematics([1.0] * 6, [0.1] * 6) == (0, [1.0] * 6)
     tool = ToolFrame(
