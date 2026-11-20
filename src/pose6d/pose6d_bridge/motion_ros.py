@@ -9,7 +9,7 @@ from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from realman_msgs.action import ExecuteMotion
-from realman_msgs.srv import GetCurrentPose, SelectFrame, TaskControl
+from realman_msgs.srv import GetCurrentPose, SelectFrame, SetToolPower, TaskControl
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -35,6 +35,7 @@ class MotionRosPort:
         self.group = ReentrantCallbackGroup()
         self.pose = node.create_client(GetCurrentPose, f"/{arm}/get_current_pose", callback_group=self.group)
         self.task = node.create_client(TaskControl, f"/{arm}/task_control", callback_group=self.group)
+        self.tool_power = node.create_client(SetToolPower, f"/{arm}/tool_power_control", callback_group=self.group)
         self.select_tool_client = node.create_client(SelectFrame, f"/{arm}/coordinates/select_tool", callback_group=self.group)
         self.stop_client = node.create_client(Trigger, f"/{arm}/stop", callback_group=self.group)
         self.action = ActionClient(node, ExecuteMotion, f"/{arm}/execute_motion", callback_group=self.group)
@@ -254,6 +255,22 @@ class MotionRosPort:
         response = self._task_status(token)
         if not response.leased or response.expired:
             raise ValueError("driver task lease was revoked or expired")
+
+    def set_tool_power(self, enabled, task_token):
+        request = SetToolPower.Request()
+        request.enabled = bool(enabled)
+        request.task_token = task_token
+        response = self._service(self.tool_power, request)
+        try:
+            state = json.loads(response.message)
+        except (TypeError, ValueError):
+            state = {}
+        expected_voltage = 24 if enabled else 0
+        if (not response.success or not isinstance(state, dict) or state.get("available") is not True
+                or state.get("voltage_v") != expected_voltage):
+            detail = state.get("message") if isinstance(state, dict) else None
+            raise ValueError(str(detail or "tool voltage change was not verified"))
+        return state
 
     def release(self, token):
         with self.goal_lock:

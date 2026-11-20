@@ -187,6 +187,7 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
             self.targets = []
             self.commands = []
             self.velocities = []
+            self.operations = []
             self.unknown = unknown
 
         def context(self): return {"tool": "suction_tcp", "motion_allowed": True}
@@ -204,7 +205,13 @@ def motion_setup(*, execute_error=None, unknown=False, clock=time.monotonic):
             if cancel.is_set(): raise RuntimeError("canceled")
             self.commands.append(command)
             self.velocities.append(velocity_percent)
+            self.operations.append((command, velocity_percent))
             self.pose = target.copy()
+        def set_tool_power(self, enabled, token):
+            assert token == "token" and self.busy
+            self.operations.append(("power", enabled))
+            return {"available": True, "voltage_type": 3 if enabled else 0,
+                    "voltage_v": 24 if enabled else 0, "enabled": enabled}
         def interrupt(self): self.interrupted += 1; self.unknown = False; self.busy = False
         def lease_uncertain(self): return self.unknown
 
@@ -244,16 +251,18 @@ def test_automatic_suction_uses_configured_approach_contact_and_base_vertical_li
     prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
                                    "grasp_id": "g1", "review_confirmed": True}, feedback)
     assert prepared["auto_suction_ready"] is True
-    with pytest.raises(ValueError, match="externally"):
-        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
+    with pytest.raises(ValueError, match="identity"):
+        controller.auto_suction({"client_id": "other", "session_id": prepared["session_id"]}, feedback)
     assert controller.status()["state"] == "ready"
 
-    complete = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"],
-                                        "vacuum_confirmed": True}, feedback)
+    complete = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
     assert complete["state"] == "lifted"
     assert complete["confirmed_mm"] is None and complete["auto_suction_ready"] is False
     assert port.commands == ["movej_p", "movel", "movel", "movel"]
     assert port.velocities == [10, 20, 5, 10]
+    assert port.operations == [("movej_p", 10), ("power", True), ("movel", 20),
+                               ("movel", 5), ("movel", 10), ("power", False)]
+    assert complete["tool_power"]["voltage_v"] == 0
     first, contact, lift = [target for _actual, target in port.targets[1:]]
     assert np.linalg.norm(first[:3, 3] - port.targets[0][1][:3, 3]) == pytest.approx(.035)
     assert np.linalg.norm(contact[:3, 3] - first[:3, 3]) == pytest.approx(.005)
@@ -275,14 +284,76 @@ def test_automatic_suction_failure_blocks_session_without_retrying():
         execute(target, token, cancel, callback, command=command, velocity_percent=velocity_percent)
 
     port.execute = fail_at_contact
-    request = {"client_id": "client", "session_id": prepared["session_id"], "vacuum_confirmed": True}
+    request = {"client_id": "client", "session_id": prepared["session_id"]}
     with pytest.raises(RuntimeError, match="contact segment failed"):
         controller.auto_suction(request, feedback)
     assert controller.status()["state"] == "blocked"
     assert port.commands == ["movej_p", "movel"]
+    assert controller.status()["tool_power"]["voltage_v"] == 24
+    assert [operation for operation in port.operations if operation[0] == "power"] == [("power", True)]
     with pytest.raises(ValueError, match="preparation position"):
         controller.auto_suction(request, feedback)
     assert port.commands == ["movej_p", "movel"]
+
+
+@pytest.mark.parametrize("fail_enabled", [True, False])
+def test_automatic_suction_power_failure_blocks_without_retrying_or_claiming_success(fail_enabled):
+    controller, port, _obs, _config = motion_setup()
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, lambda _event: None)
+    set_power = port.set_tool_power
+
+    def fail_power(enabled, token):
+        if enabled == fail_enabled:
+            raise TimeoutError("power response lost")
+        return set_power(enabled, token)
+
+    port.set_tool_power = fail_power
+    with pytest.raises(TimeoutError, match="power response lost"):
+        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, lambda _event: None)
+    status = controller.status()
+    assert status["state"] == "blocked"
+    assert status["auto_suction_ready"] is False
+    assert status["tool_power"]["available"] is False
+    assert "power response lost" in status["tool_power"]["message"]
+    assert port.commands == (["movej_p"] if fail_enabled else ["movej_p", "movel", "movel", "movel"])
+
+
+def test_automatic_suction_stop_during_lift_keeps_vacuum_on():
+    controller, port, _obs, _config = motion_setup()
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, lambda _event: None)
+    execute = port.execute
+
+    def stop_lift(target, token, cancel, callback, *, command="movel", velocity_percent=None):
+        if controller.status()["state"] == "lifting":
+            controller.stop("client", prepared["session_id"])
+        execute(target, token, cancel, callback, command=command, velocity_percent=velocity_percent)
+
+    port.execute = stop_lift
+    with pytest.raises(RuntimeError, match="canceled"):
+        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, lambda _event: None)
+    assert controller.status()["state"] == "blocked"
+    assert controller.status()["tool_power"]["voltage_v"] == 24
+    assert [operation for operation in port.operations if operation[0] == "power"] == [("power", True)]
+
+
+def test_automatic_suction_releases_power_after_lift_even_when_browser_disconnects():
+    controller, port, _obs, _config = motion_setup()
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, lambda _event: None)
+    execute = port.execute
+
+    def disconnect(target, token, cancel, callback, *, command="movel", velocity_percent=None):
+        controller.detach("client")
+        execute(target, token, cancel, callback, command=command, velocity_percent=velocity_percent)
+
+    port.execute = disconnect
+    result = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, lambda _event: None)
+    assert result["state"] == "lifted" and result["tool_power"]["voltage_v"] == 0
+    assert port.operations[-1] == ("power", False)
+    controller.tick()
+    assert port.released == ["token"]
 
 
 def test_motion_rejects_wrong_owner_and_out_of_range_without_poisoning_ready_session():

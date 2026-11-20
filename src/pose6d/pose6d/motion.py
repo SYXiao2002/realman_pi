@@ -154,7 +154,9 @@ class MotionController:
                         jog.confirmed_m, self.config.get("prepare_distance_m", math.nan),
                         rel_tol=0, abs_tol=1e-9)),
                     "lease_retained": bool(session and session.get("token")) or bool(
-                        getattr(self.port, "lease_uncertain", lambda: False)()), "message": self.reason}
+                        getattr(self.port, "lease_uncertain", lambda: False)()),
+                    "tool_power": session.get("tool_power") if session else None,
+                    "message": self.reason}
 
     def prepare(self, command, feedback):
         if not self.inflight.acquire(False):
@@ -254,8 +256,6 @@ class MotionController:
             with self.lock:
                 session = self._owned(command["client_id"], command["session_id"])
                 session_id = session["id"]
-                if command.get("vacuum_confirmed") is not True:
-                    raise ValueError("confirm that vacuum is already enabled externally")
                 jog = session["jog"]
                 if jog.state != "ready" or not math.isclose(
                         jog.confirmed_m, self.config["prepare_distance_m"], rel_tol=0, abs_tol=1e-9):
@@ -265,6 +265,9 @@ class MotionController:
             actual = self.port.current()
             target = jog.begin_auto_suction(actual, self.config["second_prepare_distance_m"])
             uncertain = True
+            self.reason = "正在开启吸盘，确认工具端 24 V"
+            feedback(self.status())
+            self._auto_tool_power(session_id, True, feedback)
             self.reason = "MOVEL approaching second preparation position"
             feedback(self.status())
             actual = self._execute(actual, target, feedback, velocity_percent=self.config["approach_velocity_percent"],
@@ -284,7 +287,10 @@ class MotionController:
             actual = self._execute(actual, target, feedback, velocity_percent=self.config["lift_velocity_percent"],
                                    finish=False)
             jog.finish_lift(actual)
-            self.reason = "自动运动完成；真空由外部保持开启"
+            self.reason = "提升已确认，正在关闭吸盘，确认工具端 0 V"
+            feedback(self.status())
+            self._auto_tool_power(session_id, False, feedback)
+            self.reason = "自动运动完成；提升已确认，吸盘已关闭（0 V）"
             feedback(self.status())
         except Exception:
             if uncertain and session_id is not None:
@@ -295,6 +301,26 @@ class MotionController:
             if session_id is not None and self._is_blocked(session_id):
                 self._release_if_drained(session_id)
         return self.status()
+
+    def _auto_tool_power(self, session_id, enabled, feedback):
+        self._guard()
+        with self.lock:
+            session = self.session
+            if session is None or session["id"] != session_id:
+                raise ValueError("motion session identity mismatch")
+            token = session["token"]
+            session["tool_power"] = {"available": False, "message": "工具电源切换中，等待回读"}
+        try:
+            power = self.port.set_tool_power(enabled, token)
+        except Exception as exc:
+            with self.lock:
+                session["tool_power"] = {"available": False, "success": False,
+                                         "message": f"工具电源切换未确认：{exc}"}
+            feedback(self.status())
+            raise
+        with self.lock:
+            session["tool_power"] = {**power, "success": True}
+        feedback(self.status())
 
     def _guard(self):
         if self.cancel.is_set():

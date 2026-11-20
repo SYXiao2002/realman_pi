@@ -10,6 +10,7 @@ pytest.importorskip("realman_msgs")
 
 from action_msgs.msg import GoalStatus
 from realman_msgs.action import ExecuteMotion
+from realman_msgs.srv import SetToolPower
 from std_srvs.srv import Trigger
 
 from pose6d_bridge.motion_ros import MotionRosPort
@@ -134,6 +135,32 @@ def test_motion_ros_port_selects_only_idle_configured_tool(monkeypatch):
     adapter._task_status = lambda: SimpleNamespace(leased=True, command_busy=False)
     with pytest.raises(ValueError, match="arm is busy"):
         adapter.select_tool("tcpgrip")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_motion_ros_tool_power_uses_task_token_and_verified_readback(monkeypatch, enabled):
+    import json
+
+    adapter, _stop = port(monkeypatch, Action())
+    state = {"available": True, "voltage_v": 24 if enabled else 0}
+    adapter.tool_power = Client(SetToolPower.Response(success=True, message=json.dumps(state)))
+    assert adapter.set_tool_power(enabled, "lease-token") == state
+    request = adapter.tool_power.requests[0]
+    assert request.enabled == enabled and request.task_token == "lease-token"
+    assert "/r/tool_power_control" in adapter.node.client_names
+
+
+@pytest.mark.parametrize(("success", "payload"), [
+    (False, '{"available":true,"voltage_v":24,"message":"lease denied"}'),
+    (True, '{"available":true,"voltage_v":0}'),
+    (True, '{"available":false,"voltage_v":24}'),
+    (True, 'not-json'),
+])
+def test_motion_ros_tool_power_rejects_unverified_output(monkeypatch, success, payload):
+    adapter, _stop = port(monkeypatch, Action())
+    adapter.tool_power = Client(SetToolPower.Response(success=success, message=payload))
+    with pytest.raises(ValueError):
+        adapter.set_tool_power(True, "lease-token")
 
 
 def goal_result(status=GoalStatus.STATUS_SUCCEEDED, *, success=True, terminal=ExecuteMotion.Result.SUCCEEDED):
