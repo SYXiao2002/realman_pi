@@ -118,7 +118,8 @@ test("capture, upload and pose review keep motion disabled without calibration",
     observation_id: "obs-1", history_id: "1790000000000000000", archive_status: "complete",
     T_camera_object: pose, mesh_obj: "v -0.02 -0.02 0\nv 0.02 -0.02 0\nv 0 0.02 0\nf 1 2 3\n",
     cloud: { xyz_m: [[0, 0, .2], [.01, 0, .2], [0, .01, .2]], rgb: [[255, 0, 0], [0, 255, 0], [0, 0, 255]] },
-    grasps: [{ grasp_id: "grasp_01", status: "pending", radius_m: .007, T_camera_contact: pose }],
+    grasps: [{ grasp_id: "grasp_01", status: "pending", radius_m: .007, T_camera_contact: pose,
+      vertical_down_angle_deg: null, workspace_valid: null, workspace_reason: "缺少采集时的 BASE-相机变换" }],
     screening: { status: "insufficient_evidence", warning: "uncalibrated", metrics: { silhouette_iou: .8 } }, motion_reason: "TCP 未配置" });
   await expect(page.locator("#warning")).toContainText("uncalibrated");
   await expect(page.locator("#score-preview-image")).toBeVisible();
@@ -187,7 +188,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await page.evaluate((event) => (window as any).poseSocket.emit(event), { type: "pose6d_result", request_id: infer.request_id,
     observation_id: "obs-2", result_id: "result-2", T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
     cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
-    grasps: [{ grasp_id: "g1", status: "reliable", radius_m: .007, T_camera_contact: pose,
+    grasps: [{ grasp_id: "g1", status: "reliable", radius_m: .007, vertical_down_angle_deg: 0,
+      workspace_valid: true, workspace_reason: null, T_camera_contact: pose,
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]] }],
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
     motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50 } });
@@ -350,8 +352,11 @@ test("only selected suction method and its reference geometry are rendered", asy
   await completeSegment(page, "selected-only");
   await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
   const pose = (x: number) => [[1, 0, 0, x], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
-  const grasp = (id: string, x: number) => ({ grasp_id: id, status: "reliable", radius_m: .007,
-    T_camera_contact: pose(x), tangent_camera: [1, 0, 0] });
+  const grasp = (id: string, x: number, angle: number, workspaceValid = true, workspaceReason?: string) => ({
+    grasp_id: id, status: "reliable", radius_m: .007, vertical_down_angle_deg: angle,
+    workspace_valid: workspaceValid, workspace_reason: workspaceReason,
+    T_camera_contact: pose(x), tangent_camera: [1, 0, 0],
+  });
   async function infer(grasps: any[]) {
     await page.locator("#infer").click();
     const request = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
@@ -362,19 +367,27 @@ test("only selected suction method and its reference geometry are rendered", asy
       screening: { status: "pass_screening", metrics: {} }, motion_ready: true });
     await page.locator("#fit-view").click();
   }
-  await infer([grasp("g1", -.02)]);
+  await infer([grasp("g1", -.02, 5)]);
   const single = await page.locator("#viewer").screenshot();
-  await infer([grasp("g1", -.02), grasp("g2", .12)]);
+  await infer([grasp("g1", -.02, 5), grasp("g2", .12, 10),
+    grasp("outside", .2, 0, false, "准备位 TCP 或吸盘本体超出 workspace")]);
   await expect(page.locator("#grasp")).toHaveValue("g1");
+  await expect(page.locator("#grasp option")).toHaveText([
+    "g1 · reliable · 向下偏角 5.0°", "g2 · reliable · 向下偏角 10.0°",
+    "outside · reliable · 向下偏角 0.0° · 警告：准备位 TCP 或吸盘本体超出 workspace",
+  ]);
+  await expect(page.locator('#grasp option[value="outside"]')).toHaveAttribute("disabled", "");
   expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(true);
   await page.locator("#review").check();
   await page.locator("#grasp").selectOption("g2");
   await expect(page.locator("#review")).not.toBeChecked();
   await page.locator("#fit-view").click();
-  expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(false);
+  const second = await page.locator("#viewer").screenshot();
+  expect(second.equals(single)).toBe(false);
   await page.locator("#grasp").selectOption("g1");
+  await expect(page.locator("#grasp")).toHaveValue("g1");
   await page.locator("#fit-view").click();
-  expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(true);
+  expect((await page.locator("#viewer").screenshot()).equals(second)).toBe(false);
   expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "pose6d_prepare" || request.type === "pose6d_jog"))).toBe(false);
 });
 
