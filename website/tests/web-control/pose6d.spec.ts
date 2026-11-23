@@ -244,7 +244,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#distance")).toHaveValue("-10.0");
   await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_motion", session_id: "session-2",
     state: "ready", busy: false, confirmed_mm: 40, auto_suction_ready: true, lease_retained: true }));
-  await expect(page.locator("#auto-vacuum")).toContainText("开始时开启 24 V，提升完成后关闭至 0 V");
+  await expect(page.locator("#auto-vacuum")).toContainText("已吸附则 MOVEJ_P 到放置位后关闭");
+  await expect(page.locator("#auto-path")).toContainText("BASE [64.173, -274.147, 40.462] mm");
   await expect(page.locator("#auto-suction")).toBeEnabled();
   await page.locator("#auto-suction").click();
   const automatic = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
@@ -259,18 +260,24 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#tool-power")).toBeDisabled();
   await expect(page.locator("#tool-power-state")).toContainText("24 V");
   await expect(page.locator("#auto-suction")).toBeDisabled();
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "placing", busy: true, lease_retained: true,
+    tool_power: { available: true, success: true, voltage_type: 3, voltage_v: 24, enabled: true },
+    message: "真空开关确认已吸附，正在 MOVEJ_P 前往放置位" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("前往放置位");
+  await expect(page.locator("#tool-power")).toBeChecked();
   // A lifted TCP while the power command is pending must not unlock controls
   // or claim that the suction has already been released.
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
-    session_id: "session-2", state: "lifted", busy: true, lease_retained: true,
+    session_id: "session-2", state: "placed", busy: true, lease_retained: true,
     tool_power: { available: false, message: "工具电源切换中，等待回读" } }), automatic.request_id);
   await expect(page.locator("#tool-power-state")).toContainText("等待回读");
   await expect(page.locator("#capture")).toBeDisabled();
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
-    session_id: "session-2", state: "lifted", busy: false, auto_suction_ready: false,
+    session_id: "session-2", state: "placed", busy: false, auto_suction_ready: false,
     tool_power: { available: true, success: true, voltage_type: 0, voltage_v: 0, enabled: false },
-    lease_retained: true, message: "自动运动完成；提升已确认，吸盘已关闭（0 V）" }), automatic.request_id);
-  await expect(page.locator("#distance")).toHaveValue("提升完成");
+    lease_retained: true, message: "自动运动完成；物体已放置，吸盘已关闭（0 V）" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("已到放置位");
   await expect(page.locator("#tool-power")).not.toBeChecked();
   await expect(page.locator("#tool-power-state")).toContainText("0 V");
   expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "tool_power_set"))).toBe(false);
