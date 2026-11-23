@@ -7,11 +7,12 @@ import time
 import yaml
 
 from grasp_bridge.geometry import from_pose
-from pose6d.geometry import configured_transform, rigid, suction_pose, tcp_target
+from pose6d.geometry import angle_to_vertical_down_degrees, configured_transform, rigid, suction_pose, tcp_target
 from pose6d.jog import JogSession
 from pose6d.observation import ObservationStore
 from pose6d.motion import MotionController, validate_config
 from pose6d.path import screen_workspace
+from pose6d.scoring import assess_prepare_pose
 
 
 def test_contact_transform_and_signed_distance():
@@ -35,6 +36,37 @@ def test_configured_transform_accepts_xyz_rpy_mapping():
     np.testing.assert_allclose(configured_transform(transform.tolist()), transform)
     with pytest.raises(ValueError, match="three finite"):
         configured_transform({"xyz_m": [0, 0, 0], "rpy_rad": [0, np.nan, 0]})
+
+
+def test_prepare_score_measures_directed_angle_to_vertical_down():
+    downward = np.diag([1., -1., -1., 1.])
+    horizontal = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1.]])
+    upward = np.eye(4)
+    assert angle_to_vertical_down_degrees(downward) == pytest.approx(0)
+    assert angle_to_vertical_down_degrees(horizontal) == pytest.approx(90)
+    assert angle_to_vertical_down_degrees(upward) == pytest.approx(180)
+
+
+def test_prepare_assessment_keeps_angle_and_checks_workspace_envelope():
+    config = {"workspace_m": [[-1, -1, -1], [1, 1, 1]], "T_contact_tcp": np.eye(4).tolist(),
+              "collision_margin_m": .001}
+    suction = {"body_radius_m": .01, "body_length_m": .02}
+    pose = np.diag([1., -1., -1., 1.])
+    assess = assess_prepare_pose(np.eye(4), pose, pose, config, suction)
+    assert assess["vertical_down_angle_deg"] == pytest.approx(0)
+    assert assess["workspace_valid"] is True
+    assert assess["workspace_reason"] is None
+
+    outside = pose.copy(); outside[0, 3] = .995
+    assess = assess_prepare_pose(np.eye(4), outside, outside, config, suction)
+    assert assess["vertical_down_angle_deg"] == pytest.approx(0)
+    assert assess["workspace_valid"] is False
+    assert "超出 workspace" in assess["workspace_reason"]
+
+    assess = assess_prepare_pose(None, pose, pose, config, suction)
+    assert assess["vertical_down_angle_deg"] is None
+    assert assess["workspace_valid"] is None
+    assert "BASE-相机" in assess["workspace_reason"]
 
 
 def test_motion_uses_a_registered_tool_and_valid_contact_transform():

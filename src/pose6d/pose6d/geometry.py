@@ -78,3 +78,11 @@ def tcp_target(contact, normal, distance_m, T_contact_tcp):
     contact[:3, 3] += float(distance_m) * normal
     return contact @ rigid(T_contact_tcp)
 
+
+def angle_to_vertical_down_degrees(T_base_pose):
+    """Measure the pose's local +Z approach axis against BASE vertical down."""
+    pose = rigid(T_base_pose)
+    approach = pose[:3, 2]
+    cosine = float(np.clip(np.dot(approach, [0.0, 0.0, -1.0]), -1.0, 1.0))
+    return math.degrees(math.acos(cosine))
+

@@ -32,6 +32,7 @@ from grasp_protocol.wire import MAX_MESSAGE_BYTES, packb, unpackb
 from pose6d.geometry import configured_transform, suction_pose, tcp_target
 from pose6d.motion import MotionController
 from pose6d.observation import ObservationStore
+from pose6d.scoring import assess_prepare_pose
 from .motion_ros import MotionRosPort
 
 WEB_EVENT_LIMIT = 8 * 1024 * 1024
@@ -697,13 +698,16 @@ class PoseBridge(Node):
                                           configured_transform(self.motion_config["T_contact_tcp"]))
             except (KeyError, ValueError, TypeError):
                 prepared_tcp = None
+            assessment = assess_prepare_pose(obs["T_base_camera"], prepared, prepared_tcp,
+                                             self.motion_config, self.settings["suction"])
             grasps.append({"grasp_id": grasp["grasp_id"], "status": grasp["status"],
                            "radius_m": grasp["contact_region"]["radius_m"],
                            "contact_region": grasp["contact_region"],
                            "T_camera_contact": contact.tolist(), "normal_camera": normal.tolist(),
                            "tangent_camera": (T_camera_object[:3, :3] @ np.asarray(grasp["contact_region"]["tangent_ref_obj"])).tolist(),
                            "T_camera_prepare_contact": prepared.tolist(),
-                           "T_camera_prepare_tcp": prepared_tcp.tolist() if prepared_tcp is not None else None})
+                           "T_camera_prepare_tcp": prepared_tcp.tolist() if prepared_tcp is not None else None,
+                           **assessment})
         screen = result["screening"]
         overlay = screen.pop("overlay_png", None)
         result_id = result["request_id"]
