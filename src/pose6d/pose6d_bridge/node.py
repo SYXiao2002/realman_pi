@@ -30,7 +30,7 @@ from grasp_bridge.profiles import camera_identity, default_config_root, load_pro
 from grasp_bridge.rgbd import image_array, rectify_color, register_depth, validate_timing
 from grasp_protocol.wire import MAX_MESSAGE_BYTES, packb, unpackb
 from pose6d.geometry import configured_transform, suction_pose, tcp_target
-from pose6d.motion import MotionController
+from pose6d.motion import DEFAULT_PLACE_POSITION_M, MotionController
 from pose6d.observation import ObservationStore
 from pose6d.scoring import assess_prepare_pose
 from .motion_ros import MotionRosPort
@@ -692,6 +692,7 @@ class PoseBridge(Node):
             lift_height = self.motion_config.get("lift_height_m", .05)
             if type(lift_height) not in (int, float) or not math.isfinite(lift_height) or lift_height <= 0:
                 lift_height = .05
+            place_position = self.motion_config.get("place_position_m", DEFAULT_PLACE_POSITION_M)
             prepared = tcp_target(contact, normal, prepare_distance, np.eye(4))
             try:
                 prepared_tcp = tcp_target(contact, normal, prepare_distance,
@@ -727,7 +728,8 @@ class PoseBridge(Node):
                 "motion_waypoints": {"prepare_distance_mm": prepare_distance * 1000,
                                      "second_prepare_distance_mm": second_prepare_distance * 1000,
                                      "contact_offset_mm": contact_offset * 1000,
-                                     "lift_height_mm": lift_height * 1000},
+                                     "lift_height_mm": lift_height * 1000,
+                                     "place_position_mm": [value * 1000 for value in place_position]},
                 "overlay": "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None,
                 "cloud": points, "mesh_obj": (self.mesh_dir / "TexturedMeshSimplified.obj").read_text(encoding="utf-8"),
                 "motion_ready": ready, "motion_reason": motion_reason,

@@ -41,6 +41,10 @@ motion:
   prepare_distance_m: 0.04
   second_prepare_distance_m: 0.01
   lift_height_m: 0.1
+  # Wait for post-lift IO updates; require two samples and allow vacuum to build.
+  vacuum_confirm_timeout_sec: 1.5
+  # BASE TCP xyz; keep the lifted orientation. Placement bypasses workspace checks.
+  place_position_m: [0.064173, -0.274147, 0.040462]
   prepare_velocity_percent: 20
   approach_velocity_percent: 20
   contact_velocity_percent: 5

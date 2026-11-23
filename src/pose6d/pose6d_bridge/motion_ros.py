@@ -42,6 +42,9 @@ class MotionRosPort:
         self.coordinates = None
         self.coordinates_at = 0.0
         self.coordinate_lock = threading.Lock()
+        self.vacuum_state = None
+        self.vacuum_state_at = 0.0
+        self.vacuum_lock = threading.Lock()
         self.joint_samples = []
         self.joint_lock = threading.Lock()
         self.active_goal = None
@@ -58,6 +61,12 @@ class MotionRosPort:
                 callback_group=self.group),
             node.create_subscription(JointState, f"/{arm}/joint_states", self._joints, 10,
                                      callback_group=self.group),
+            node.create_subscription(
+                String, f"/{arm}/vacuum/state", self._vacuum_state_event,
+                QoSProfile(history=QoSHistoryPolicy.KEEP_LAST, depth=1,
+                           reliability=QoSReliabilityPolicy.RELIABLE,
+                           durability=QoSDurabilityPolicy.TRANSIENT_LOCAL),
+                callback_group=self.group),
         ]
 
     def _coordinates(self, message):
@@ -69,6 +78,85 @@ class MotionRosPort:
                 self.coordinates, self.coordinates_at = value, time.monotonic()
         except (TypeError, ValueError):
             return
+
+    def _vacuum_state_event(self, message):
+        try:
+            value = json.loads(message.data)
+            if not isinstance(value, dict) or value.get("type") != "vacuum_state" or value.get("arm") != self.arm:
+                return
+            with self.vacuum_lock:
+                self.vacuum_state, self.vacuum_state_at = value, time.monotonic()
+        except (TypeError, ValueError):
+            return
+
+    def vacuum_holding(self):
+        with self.vacuum_lock:
+            state, received_at = self.vacuum_state, self.vacuum_state_at
+        return self._vacuum_holding(state, received_at)
+
+    def _vacuum_holding(self, state, received_at):
+        if not state or state.get("enabled") is not True or state.get("available") is not True:
+            return None
+        holding = state.get("holding")
+        ttl = state.get("stale_after_sec")
+        stamp_ns = state.get("stamp_ns")
+        if (type(holding) is not bool or type(ttl) not in (int, float)
+                or not np.isfinite(ttl) or ttl <= 0 or type(stamp_ns) is not int or stamp_ns <= 0):
+            return None
+        if time.monotonic() - received_at >= ttl:
+            return None
+        try:
+            age_sec = (self.node.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        except Exception:
+            return None
+        if age_sec < -0.01 or age_sec >= ttl:
+            return None
+        return holding
+
+    def wait_vacuum_holding(self, cancel):
+        """Confirm new post-lift samples; allow delayed suction before declaring empty."""
+        started = time.monotonic()
+        started_ns = self.node.get_clock().now().nanoseconds
+        deadline = started + self.config.get("vacuum_confirm_timeout_sec", 1.5)
+        last_stamp = started_ns
+        previous = None
+        consecutive = 0
+        sample_count = 0
+        result = None
+        state = None
+        while True:
+            if cancel.is_set():
+                raise ValueError("session stopped during vacuum confirmation")
+            with self.vacuum_lock:
+                state, received_at = self.vacuum_state, self.vacuum_state_at
+            stamp = state.get("stamp_ns") if state else None
+            holding = self._vacuum_holding(state, received_at)
+            if type(stamp) is not int or stamp <= started_ns or received_at < started:
+                holding = None
+            if holding is None:
+                previous, consecutive = None, 0
+            elif stamp > last_stamp:
+                sample_count += 1
+                consecutive = consecutive + 1 if holding is previous else 1
+                previous, last_stamp = holding, stamp
+            elif stamp < last_stamp:
+                previous, consecutive = None, 0
+            if holding is True and consecutive >= 2:
+                result = True
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                # A single empty sample must never switch off a potentially loaded cup.
+                result = False if holding is False and consecutive >= 2 else None
+                break
+            cancel.wait(min(.02, remaining))
+        details = {key: state.get(key) for key in
+                   ("io", "raw_input", "active_level", "available", "holding", "stamp_ns",
+                    "tool_power_voltage_v", "message")} if state else {}
+        self.node.get_logger().info(
+            f"post-lift vacuum confirmation: result={result} samples={sample_count} "
+            f"elapsed_sec={time.monotonic() - started:.3f} state={json.dumps(details, ensure_ascii=False)}")
+        return result
 
     def lease_uncertain(self):
         with self.lease_lock, self.goal_lock:

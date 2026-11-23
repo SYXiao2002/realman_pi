@@ -91,6 +91,8 @@ class Node:
     def __init__(self, stop_client):
         self.stop_client = stop_client
         self.client_names = []
+        self.now_ns = 10_000_000_000
+        self.logs = []
 
     def create_client(self, _type, name, callback_group=None):
         self.client_names.append(name)
@@ -100,6 +102,12 @@ class Node:
 
     def create_subscription(self, *_args, **_kwargs):
         return object()
+
+    def get_clock(self):
+        return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=self.now_ns))
+
+    def get_logger(self):
+        return SimpleNamespace(info=self.logs.append)
 
 
 def port(monkeypatch, action, timeout=.03, selectable_tool_names=()):
@@ -161,6 +169,89 @@ def test_motion_ros_tool_power_rejects_unverified_output(monkeypatch, success, p
     adapter.tool_power = Client(SetToolPower.Response(success=success, message=payload))
     with pytest.raises(ValueError):
         adapter.set_tool_power(True, "lease-token")
+
+
+def test_motion_ros_vacuum_holding_requires_fresh_available_switch_state(monkeypatch):
+    import json
+    from std_msgs.msg import String
+
+    adapter, _stop = port(monkeypatch, Action())
+    event = {"type": "vacuum_state", "arm": "r", "enabled": True, "available": True,
+             "holding": False, "stamp_ns": adapter.node.now_ns, "stale_after_sec": 2.0}
+    adapter._vacuum_state_event(String(data=json.dumps(event)))
+    assert adapter.vacuum_holding() is False
+
+    event["holding"] = True
+    adapter._vacuum_state_event(String(data=json.dumps(event)))
+    assert adapter.vacuum_holding() is True
+
+    adapter.vacuum_state_at -= 3
+    assert adapter.vacuum_holding() is None
+
+    event["available"] = False
+    adapter._vacuum_state_event(String(data=json.dumps(event)))
+    assert adapter.vacuum_holding() is None
+
+    event["available"] = True
+    event["stamp_ns"] -= 2_000_000_000
+    adapter._vacuum_state_event(String(data=json.dumps(event)))
+    assert adapter.vacuum_holding() is None
+
+
+@pytest.mark.parametrize(("updates", "expected", "elapsed"), [
+    ([(.2, False), (.4, True), (.6, True)], True, .6),
+    ([(.2, False), (.4, False), (.8, True), (1.0, True)], True, 1.0),
+    ([(.2, False), (.4, False), (.6, False)], False, 1.5),
+    ([(.2, True), (.4, False), (.6, False)], False, 1.5),
+    ([(.2, True)], None, 1.5),
+    ([(.2, False)], None, 1.5),
+    ([], None, 1.5),
+    ([(.2, False), (.4, False), (.6, None)], None, 1.5),
+])
+def test_post_lift_vacuum_confirmation_waits_for_distinct_new_samples(
+        monkeypatch, updates, expected, elapsed):
+    import json
+    from std_msgs.msg import String
+
+    adapter, _stop = port(monkeypatch, Action())
+    adapter.config["vacuum_confirm_timeout_sec"] = 1.5
+    started_ns = adapter.node.now_ns
+    timer = {"now": 10.0}
+    schedule = list(updates)
+    monkeypatch.setattr("pose6d_bridge.motion_ros.time.monotonic", lambda: timer["now"])
+    # A cached holding result before lift is not evidence of the state after lift.
+    cached = {"type": "vacuum_state", "arm": "r", "enabled": True, "available": True,
+              "holding": True, "raw_input": 0, "active_level": 0, "io": 1,
+              "stamp_ns": started_ns - 1, "stale_after_sec": 2.0}
+    adapter._vacuum_state_event(String(data=json.dumps(cached)))
+
+    class Cancel:
+        def is_set(self): return False
+        def wait(self, delay):
+            timer["now"] += delay
+            passed = round(timer["now"] - 10, 6)
+            adapter.node.now_ns = started_ns + round(passed * 1e9)
+            while schedule and schedule[0][0] <= passed:
+                stamp_sec, holding = schedule.pop(0)
+                event = {**cached, "stamp_ns": started_ns + round(stamp_sec * 1e9),
+                         "holding": holding, "available": holding is not None,
+                         "raw_input": 0 if holding else 1}
+                adapter._vacuum_state_event(String(data=json.dumps(event)))
+
+    result = adapter.wait_vacuum_holding(Cancel())
+    assert result is expected
+    assert timer["now"] - 10 == pytest.approx(elapsed, abs=.03)
+    assert f"result={expected}" in adapter.node.logs[-1]
+
+
+def test_post_lift_vacuum_confirmation_can_be_stopped(monkeypatch):
+    import threading
+
+    adapter, _stop = port(monkeypatch, Action())
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(ValueError, match="session stopped"):
+        adapter.wait_vacuum_holding(cancel)
 
 
 def goal_result(status=GoalStatus.STATUS_SUCCEEDED, *, success=True, terminal=ExecuteMotion.Result.SUCCEEDED):

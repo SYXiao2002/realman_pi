@@ -39,13 +39,16 @@ class JogSession:
         self.pending_m = None
 
     def _check_pose(self, actual_tcp, expected_m):
-        actual = rigid(actual_tcp)
         expected = tcp_target(self.contact, self.normal, expected_m, self.tool)
+        self._check_target_pose(actual_tcp, expected, "position and orientation")
+
+    def _check_target_pose(self, actual_tcp, expected, description):
+        actual = rigid(actual_tcp)
         position_error = np.linalg.norm(actual[:3, 3] - expected[:3, 3])
         relative = expected[:3, :3].T @ actual[:3, :3]
         angle_error = math.acos(float(np.clip((np.trace(relative) - 1) / 2, -1, 1)))
         if position_error > self.position_tolerance_m or angle_error > self.angular_tolerance_rad:
-            raise ValueError("actual TCP does not match the expected position and orientation")
+            raise ValueError(f"actual TCP does not match the expected {description}")
 
     def prepare(self):
         if self.state != "review":
@@ -94,14 +97,27 @@ class JogSession:
     def finish_lift(self, actual_tcp):
         if self.state != "lifting" or not hasattr(self, "lift_target"):
             raise ValueError("vertical lift has no pending target")
-        actual = rigid(actual_tcp)
-        position_error = np.linalg.norm(actual[:3, 3] - self.lift_target[:3, 3])
-        relative = self.lift_target[:3, :3].T @ actual[:3, :3]
-        angle_error = math.acos(float(np.clip((np.trace(relative) - 1) / 2, -1, 1)))
-        if position_error > self.position_tolerance_m or angle_error > self.angular_tolerance_rad:
-            raise ValueError("actual TCP does not match the expected vertical lift pose")
+        self._check_target_pose(actual_tcp, self.lift_target, "vertical lift pose")
         self.confirmed_m, self.pending_m, self.state = None, None, "lifted"
         del self.lift_target
+
+    def begin_place(self, actual_tcp, position_m):
+        if self.state != "lifted":
+            raise ValueError("placement requires a confirmed vertical lift")
+        position = np.asarray(position_m, dtype=float)
+        if position.shape != (3,) or not np.isfinite(position).all():
+            raise ValueError("placement requires three finite BASE coordinates")
+        self.place_target = rigid(actual_tcp).copy()
+        self.place_target[:3, 3] = position
+        self.state = "placing"
+        return self.place_target.copy()
+
+    def finish_place(self, actual_tcp):
+        if self.state != "placing" or not hasattr(self, "place_target"):
+            raise ValueError("placement has no pending target")
+        self._check_target_pose(actual_tcp, self.place_target, "place pose")
+        self.state = "placed"
+        del self.place_target
 
     def jog(self, step_m, actual_tcp):
         if self.state != "ready":
