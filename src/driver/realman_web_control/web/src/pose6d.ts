@@ -144,6 +144,24 @@ function draw(result: Message) {
   showLayers(); fitView();
 }
 function highlight() { const id = el<HTMLSelectElement>("grasp").value; el<HTMLInputElement>("review").checked = false; groups.forEach((g, i) => g.userData.ring.material.color.set(grasps[i].grasp_id === id ? 0xe96d42 : 0x2f7585)); showLayers(); update(); }
+function graspOptions(candidates: Message[]) {
+  return candidates.map((grasp, index) => ({ grasp, index })).sort((a, b) => {
+    const eligibility = Number(b.grasp.workspace_valid === true) - Number(a.grasp.workspace_valid === true);
+    if (eligibility) return eligibility;
+    const angleA = Number.isFinite(a.grasp.vertical_down_angle_deg) ? a.grasp.vertical_down_angle_deg : Infinity;
+    const angleB = Number.isFinite(b.grasp.vertical_down_angle_deg) ? b.grasp.vertical_down_angle_deg : Infinity;
+    return angleA - angleB || a.index - b.index;
+  }).map(({ grasp }) => {
+    const angle = Number.isFinite(grasp.vertical_down_angle_deg)
+      ? `向下偏角 ${Number(grasp.vertical_down_angle_deg).toFixed(1)}°` : "角度未知";
+    const reason = grasp.workspace_valid === true ? "" : ` · 警告：${grasp.workspace_reason || "workspace 未通过或无法判定"}`;
+    const option = new Option(`${grasp.grasp_id} · ${grasp.status} · ${angle}${reason}`, grasp.grasp_id);
+    option.disabled = grasp.workspace_valid !== true;
+    option.title = grasp.workspace_valid === true ? `${angle} · workspace 合格`
+      : grasp.workspace_reason || "workspace 未通过或无法判定";
+    return option;
+  });
+}
 let socket: WebSocket | undefined, observation = "", resultId = "", pending = "", mask = "", maskRevision = 0, requestTimer = 0;
 let instances: Message[] = [], selectedInstance = "";
 let motionReady = false, motionState = "review", motionSession = "", motionPending = "", stopPending = "";
@@ -229,7 +247,8 @@ function update() {
   el<HTMLInputElement>("mask").disabled = !observation || !!pending || !!motionPending || !!motionSession;
   el<HTMLButtonElement>("infer").disabled = !observation || (!mask && !selectedInstance) || !!pending || !!motionPending || !!motionSession;
   const checked = el<HTMLInputElement>("review").checked, locked = !!motionPending || !!toolPowerSetPending || !online;
-  el<HTMLButtonElement>("prepare").disabled = !motionReady || !checked || locked || motionState !== "review";
+  const selectedGrasp = grasps.find(grasp => grasp.grasp_id === el<HTMLSelectElement>("grasp").value);
+  el<HTMLButtonElement>("prepare").disabled = !motionReady || selectedGrasp?.workspace_valid !== true || !checked || locked || motionState !== "review";
   el<HTMLButtonElement>("minus").disabled = locked || motionState !== "ready";
   el<HTMLButtonElement>("plus").disabled = locked || motionState !== "ready";
   el<HTMLButtonElement>("auto-suction").disabled = !autoSuctionReady || locked;
@@ -372,9 +391,10 @@ function connect() {
       draw(msg); resultId = msg.result_id; motionReady = msg.motion_ready; motionState = "review";
       const cupMm = Number(msg.suction?.cup_diameter_m ?? .01) * 1000;
       el("cup-info").textContent = `吸盘实物直径 ${cupMm.toFixed(1)} mm，细线圈表示人工标注接触区域。`;
-      const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(...msg.grasps.map((g: Message) => new Option(`${g.grasp_id} · ${g.status}`, g.grasp_id)));
-      showLayers();
-      el<HTMLInputElement>("review").disabled = !msg.grasps.length || !motionReady;
+      const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(...graspOptions(msg.grasps));
+      if (!select.value && select.options.length) select.options[0].selected = true;
+      highlight();
+      el<HTMLInputElement>("review").disabled = !msg.grasps.some((g: Message) => g.workspace_valid === true) || !motionReady;
       if (msg.overlay) { el<HTMLImageElement>("overlay").src = msg.overlay; el("overlay-caption").textContent = selectedInstance ? `#${instances.find(item => item.instance_id === selectedInstance)?.detection_id} · 解算结果` : "解算结果"; }
       el("warning").textContent = `${msg.screening.status}${msg.screening.warning ? ` · ${msg.screening.warning}` : ""}`;
       el("metrics").textContent = JSON.stringify(msg.screening.metrics, null, 2); el("pose").textContent = JSON.stringify(msg.T_camera_object, null, 2);
