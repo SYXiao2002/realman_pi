@@ -605,6 +605,21 @@ class RealManSdkAdapter:
     def current_arm_state(self) -> Any:
         return self._query("rm_get_current_arm_state", "SDK arm state query failed")
 
+    def initial_joint_degrees(self) -> tuple[int, list[float]]:
+        """Read the controller's saved initial posture without changing it."""
+        result = self._query("rm_get_init_pose", "SDK initial posture query failed",
+                             mock_success=(0, [0.0] * 6))
+        try:
+            status, values = _unpack_result(result)
+            if status != 0:
+                return status, []
+            joints = [float(value) for value in values]
+            if len(joints) != 6 or not all(math.isfinite(value) for value in joints):
+                raise ValueError("invalid initial joint angles")
+            return 0, joints
+        except (TypeError, ValueError):
+            return -3, []
+
     def controller_info(self) -> dict[str, dict[str, Any]]:
         """Read version and parameter getters, one entry per query.
 

@@ -414,6 +414,7 @@ class RealManDriverNode(Node):
             self.create_service(SetToolPower, "tool_power_control", self._set_tool_power_with_lease),
             self.create_service(Trigger, "tool_power_status", self._tool_power_status),
             self.create_service(Trigger, "controller_info", self._controller_info),
+            self.create_service(Trigger, "get_init_pose", self._get_init_pose),
             self.create_service(
                 VerifyCoordinates,
                 "coordinates/verify",
@@ -741,6 +742,17 @@ class RealManDriverNode(Node):
             self.get_logger().error(f"RealMan controller info query failed: {error}")
             response.success = False
             response.message = json.dumps({"arm": self.arm_id, "error": str(error)})
+        return response
+
+    def _get_init_pose(self, _request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        """Expose the posture saved by the controller's web teach pendant."""
+        try:
+            status, joints = self.adapter.initial_joint_degrees()
+            response.success = status == 0
+            response.message = json.dumps({"api2_status": status, "joint_degrees": joints})
+        except Exception as error:
+            response.success = False
+            response.message = json.dumps({"api2_status": -1, "message": str(error)})
         return response
 
     def _verify_coordinates(

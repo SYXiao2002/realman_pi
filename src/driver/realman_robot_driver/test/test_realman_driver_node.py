@@ -1691,6 +1691,16 @@ def test_controller_info_service_returns_adapter_getters_as_json():
 
 
 @requires_ros_action_runtime
+@pytest.mark.parametrize("status", [0, -2])
+def test_initial_posture_service_reports_saved_joint_angles_and_query_errors(status):
+    joints = [9.76, 11.964, 106.229, -1.437, 54.787, 10.141] if status == 0 else []
+    node = SimpleNamespace(adapter=SimpleNamespace(initial_joint_degrees=lambda: (status, joints)))
+    result = RealManDriverNode._get_init_pose(node, SimpleNamespace(), SimpleNamespace())
+    assert result.success is (status == 0)
+    assert json.loads(result.message) == {"api2_status": status, "joint_degrees": joints}
+
+
+@requires_ros_action_runtime
 def test_controller_info_service_reports_adapter_errors_without_raising():
     def boom():
         raise RuntimeError("sdk exploded")

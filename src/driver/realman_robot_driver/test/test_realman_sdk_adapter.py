@@ -30,6 +30,9 @@ class FakeRobot:
     def rm_get_io_input(self):
         return self._call("rm_get_io_input")
 
+    def rm_get_init_pose(self):
+        return self._call("rm_get_init_pose")
+
     def rm_set_tool_voltage(self, voltage_type):
         return self._call("rm_set_tool_voltage", voltage_type)
 
@@ -147,6 +150,20 @@ def test_controller_inputs_preserve_levels_and_vendor_errors(adapter, fake_robot
         fake_robot.results["rm_get_io_input"] = result
         assert adapter.controller_io_inputs() == result
         assert fake_robot.calls[-1] == ("rm_get_io_input",)
+
+
+@pytest.mark.parametrize("result, expected_status", [
+    ((0, [9.76, 11.964, 106.229, -1.437, 54.787, 10.141]), 0),
+    ((-2, None), -2),
+    ((0, [1, 2]), -3),
+    ((0, [float("nan")] * 6), -3),
+])
+def test_initial_posture_reads_saved_controller_joint_angles(adapter, fake_robot, result, expected_status):
+    fake_robot.results["rm_get_init_pose"] = result
+    status, joints = adapter.initial_joint_degrees()
+    assert status == expected_status
+    assert joints == (result[1] if expected_status == 0 else [])
+    assert fake_robot.calls == [("rm_get_init_pose",)]
 
 
 def test_tool_voltage_reads_and_sets_documented_voltage_types(adapter, fake_robot):
