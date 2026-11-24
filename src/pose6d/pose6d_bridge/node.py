@@ -85,7 +85,7 @@ class PoseBridge(Node):
             annotation = None
             if spec.get("annotation_file"):
                 annotation = json.loads((mesh_dir / spec["annotation_file"]).read_text(encoding="utf-8"))
-                if (annotation.get("object_id") != object_id
+                if (annotation.get("object_id") != spec.get("annotation_object_id", object_id)
                         or annotation.get("normal_convention") != "outward_surface"):
                     raise ValueError(f"suction annotation identity or normal convention mismatch for {object_id}")
             self.models[object_id] = {

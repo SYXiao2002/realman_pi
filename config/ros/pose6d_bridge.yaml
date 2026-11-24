@@ -18,7 +18,7 @@ vision_max_mask_bytes: 16777216
 # Mounted read-only in the optional pose6d_bridge container. A model without
 # annotation_file is available for pose inference/review only; suction motion
 # remains disabled until its contact regions and normals are annotated.
-default_object_id: eu_plug
+default_object_id: eu_plug_1124
 models:
   eu_plug:
     label: 欧规插头
@@ -30,7 +30,10 @@ models:
     label: 欧规插头 1124
     mesh_dir: /models/eu_plug_1124
     mesh_file: eu-plug-1124mtl.obj
-    suction_enabled: false
+    annotation_file: eu-plug-1124mtl_grasps.json
+    # The annotation tool exports the mesh stem as its object ID.
+    annotation_object_id: eu-plug-1124mtl
+    suction_enabled: true
 cloud_stride: 4
 
 # Operator supplied cup diameter; annotation contact-region radii stay separate.
@@ -65,7 +68,7 @@ motion:
   timeout_sec: 10
   position_tolerance_m: 0.002
   angular_tolerance_rad: 0.035
-  workspace_m:  [[-0.498187, -0.252385, -0.12], [0.167103, 0.213348, 0.359098]]
+  workspace_m:  [[-0.498187, -0.252385, -0.15], [0.167103, 0.213348, 0.359098]]
   cartesian_sample_step_m: 0.005
   angular_sample_step_rad: 0.05
   collision_margin_m: 0.003
