@@ -267,7 +267,9 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
       workspace_valid: true, workspace_reason: null, T_camera_contact: pose,
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]] }],
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
-    motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50 } });
+    motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50,
+      home_joint_degrees: [9.76, 11.964, 106.229, -1.437, 54.787, 10.141],
+      place_joint_degrees: [95.045, 11.965, 106.228, -1.437, 54.787, 10.14] } });
   await expect(page.locator("#auto-path")).toContainText("40 → 5 → -5 mm");
   await page.evaluate(() => {
     const frames = { type: "pose6d_frames", arm: "r", available: true,
@@ -319,8 +321,11 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#distance")).toHaveValue("-10.0");
   await page.evaluate(() => (window as any).poseSocket.emit({ type: "pose6d_motion", session_id: "session-2",
     state: "ready", busy: false, confirmed_mm: 40, auto_suction_ready: true, lease_retained: true }));
-  await expect(page.locator("#auto-vacuum")).toContainText("已吸附则 MOVEJ_P 到放置位后关闭");
-  await expect(page.locator("#auto-path")).toContainText("BASE [64.173, -274.147, 40.462] mm");
+  await expect(page.locator("#auto-vacuum")).toContainText("MOVEJ 回初始姿态，确认到位后 MOVEJ 放置");
+  await expect(page.locator("#auto-path")).toContainText("MOVEJ 回初始姿态（YAML） → 确认到位 → MOVEJ 放置");
+  await expect(page.locator("#auto-path")).toContainText("关闭吸盘 → MOVEJ 回初始姿态");
+  await expect(page.locator("#auto-path")).toContainText("初始关节角 [9.760, 11.964, 106.229, -1.437, 54.787, 10.141]°");
+  await expect(page.locator("#auto-path")).toContainText("关节角 [95.045, 11.965, 106.228, -1.437, 54.787, 10.140]°");
   await expect(page.locator("#auto-suction")).toBeEnabled();
   await page.locator("#auto-suction").click();
   const automatic = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
@@ -336,9 +341,20 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#tool-power-state")).toContainText("24 V");
   await expect(page.locator("#auto-suction")).toBeDisabled();
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "returning_home", busy: true, lease_retained: true,
+    message: "MOVEJ 回到控制器初始姿态" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("返回初始姿态");
+  await expect(page.locator("#stop-motion")).toBeEnabled();
+  await expect(page.locator("#tool-power")).toBeChecked();
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "at_home", busy: true, lease_retained: true,
+    message: "初始姿态已确认到位" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("初始姿态到位");
+  await expect(page.locator("#auto-suction")).toBeDisabled();
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
     session_id: "session-2", state: "placing", busy: true, lease_retained: true,
     tool_power: { available: true, success: true, voltage_type: 3, voltage_v: 24, enabled: true },
-    message: "真空开关确认已吸附，正在 MOVEJ_P 前往放置位" }), automatic.request_id);
+    message: "初始姿态已确认到位，正在 MOVEJ 前往放置位" }), automatic.request_id);
   await expect(page.locator("#distance")).toHaveValue("前往放置位");
   await expect(page.locator("#tool-power")).toBeChecked();
   // A lifted TCP while the power command is pending must not unlock controls
@@ -349,10 +365,18 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
   await expect(page.locator("#tool-power-state")).toContainText("等待回读");
   await expect(page.locator("#capture")).toBeDisabled();
   await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
-    session_id: "session-2", state: "placed", busy: false, auto_suction_ready: false,
+    session_id: "session-2", state: "returning_after_place", busy: true, auto_suction_ready: false,
     tool_power: { available: true, success: true, voltage_type: 0, voltage_v: 0, enabled: false },
-    lease_retained: true, message: "自动运动完成；物体已放置，吸盘已关闭（0 V）" }), automatic.request_id);
-  await expect(page.locator("#distance")).toHaveValue("已到放置位");
+    lease_retained: true, message: "吸盘已关闭（0 V），正在 MOVEJ 返回初始姿态" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("放置后回初始位");
+  await expect(page.locator("#capture")).toBeDisabled();
+  await expect(page.locator("#auto-suction")).toBeDisabled();
+  await expect(page.locator("#stop-motion")).toBeEnabled();
+  await page.evaluate((id) => (window as any).poseSocket.emit({ type: "pose6d_motion", request_id: id,
+    session_id: "session-2", state: "completed", busy: false, auto_suction_ready: false,
+    tool_power: { available: true, success: true, voltage_type: 0, voltage_v: 0, enabled: false },
+    lease_retained: true, message: "自动运动完成；物体已放置、吸盘已关闭（0 V），已回到初始姿态" }), automatic.request_id);
+  await expect(page.locator("#distance")).toHaveValue("已回初始位");
   await expect(page.locator("#tool-power")).not.toBeChecked();
   await expect(page.locator("#tool-power-state")).toContainText("0 V");
   expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "tool_power_set"))).toBe(false);
