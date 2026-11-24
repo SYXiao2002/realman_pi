@@ -38,6 +38,81 @@ test("controller TCP selection invalidates old pose review and reports readback"
   await expect(page.locator("#prepare")).toBeDisabled();
 });
 
+test("one EU capture and segmentation can solve repeatedly with different OBJ models", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  await page.evaluate(() => (window as any).poseSocket.emit({
+    type: "pose6d_frames", arm: "r", available: false,
+    pose6d_models: [
+      { object_id: "eu_plug", label: "欧规插头", default: true },
+      { object_id: "eu_plug_1124", label: "欧规插头 1124", default: false },
+    ],
+  }));
+  await expect(page.locator("#capture-object option")).toHaveCount(1);
+  await expect(page.locator("#capture-object")).toHaveValue("eu_plug");
+  await page.locator("#object").selectOption("eu_plug_1124");
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_capture"));
+  expect(capture.object_id).toBe("eu_plug");
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_capture", request_id: capture.request_id, observation_id: "obs-shared",
+    object_id: "eu_plug", rgb: png, depth: png, profile: "right_wrist",
+    width: 1, height: 1, camera_frame: "camera", calibration: "available",
+  });
+  const segment = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(segment.type).toBe("pose6d_segment");
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instances", request_id: segment.request_id, observation_id: "obs-shared",
+    status: "ok", detection_overlay: png, timings: {}, detections: [{
+      instance_id: "obs-shared:0", detection_id: "0", class_name: "eu", confidence: .9,
+      bbox: [0, 0, 1, 1],
+      status: "ok", sam_score: .95, sam_predict_ms: 1, valid_depth_pixels: 4, mask_pixels: 4,
+    }],
+  });
+  await page.locator("#instance-list button").click();
+  const preview = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instance_preview", request_id: preview.request_id, observation_id: "obs-shared",
+    instance_id: "obs-shared:0", preview: png, mask_pixels: 4, valid_depth_pixels: 4,
+  });
+  const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
+  for (const objectId of ["eu_plug", "eu_plug_1124", "eu_plug", "eu_plug_1124"]) {
+    await page.locator("#object").selectOption(objectId);
+    await expect(page.locator("#rgb")).toHaveAttribute("src", png);
+    await expect(page.locator("#instances-overview")).toHaveAttribute("src", png);
+    await expect(page.locator("#overlay")).toHaveAttribute("src", png);
+    await expect(page.locator("#instance-list button")).toHaveAttribute("data-selected", "true");
+    await expect(page.locator("#infer")).toBeEnabled();
+    await page.locator("#infer").click();
+    const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+    expect(infer).toMatchObject({ type: "pose6d_infer", object_id: objectId,
+      observation_id: "obs-shared", instance_id: "obs-shared:0" });
+    await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+      type: "pose6d_result", request_id: infer.request_id, observation_id: "obs-shared",
+      object_id: objectId, result_id: `result-${infer.request_id}`, suction_available: false,
+      T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
+      cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] }, grasps: [],
+      screening: { status: "insufficient_evidence", metrics: {} }, motion_ready: false,
+      motion_reason: "该物体尚无吸盘接触标注，已禁用运动",
+    });
+    await expect(page.locator("#state")).toContainText("解算完成");
+    await expect(page.locator("#prepare")).toBeDisabled();
+  }
+  // A manually supplied mask can also be reused after a successful solve.
+  await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
+  await expect(page.locator("#state")).toContainText("Mask 已选择");
+  await page.locator("#object").selectOption("eu_plug");
+  await expect(page.locator("#mask")).toHaveValue(/mask.png/);
+  await expect(page.locator("#infer")).toBeEnabled();
+  await page.locator("#infer").click();
+  const manual = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(manual).toMatchObject({ type: "pose6d_infer", object_id: "eu_plug", observation_id: "obs-shared", mask_png: png.split(",")[1] });
+  const commands = await page.evaluate(() => (window as any).poseSocket.sent);
+  expect(commands.filter((item: any) => item.type === "pose6d_capture")).toHaveLength(1);
+  expect(commands.filter((item: any) => item.type === "pose6d_segment")).toHaveLength(1);
+  expect(commands.filter((item: any) => item.type === "pose6d_close")).toHaveLength(0);
+});
+
 test("tool power switch reads output and waits for verified 24V or 0V before changing", async ({ page }) => {
   await page.goto("6d_pose.html");
   const request = await page.evaluate(() => (window as any).poseSocket.sent[0]);
