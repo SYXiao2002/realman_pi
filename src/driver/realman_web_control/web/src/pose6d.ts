@@ -202,7 +202,7 @@ function receiveModelChoices(message: Message) {
   const models = message.pose6d_models.filter((item: Message) => typeof item?.object_id === "string" && item.object_id);
   const key = JSON.stringify(models);
   if (key === modelChoicesKey || !models.length) return;
-  const select = el<HTMLSelectElement>("object"), previous = select.value;
+  const select = el<HTMLSelectElement>("object"), previous = modelChoicesKey ? select.value : "";
   modelChoicesKey = key;
   select.replaceChildren(...models.map((item: Message) => new Option(
     item.mesh_file ? `${item.label || item.object_id} · ${item.mesh_file}` : String(item.label || item.object_id), item.object_id)));
