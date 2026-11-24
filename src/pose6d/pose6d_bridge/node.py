@@ -66,16 +66,43 @@ class PoseBridge(Node):
         self.connected_clients = None  # Unknown until Web control's first socket snapshot.
         self.active_review_client = None
         self.motion_config = self.settings["motion"]
+        configured_models = self.settings.get("models")
+        if configured_models is None:
+            configured_models = {self.settings["object_id"]: {
+                "mesh_dir": self.settings["mesh_dir"], "mesh_file": "TexturedMeshSimplified.obj",
+                "annotation_file": "eu_plug_grasps.json", "label": self.settings["object_id"]}}
+        if not isinstance(configured_models, dict) or not configured_models:
+            raise ValueError("pose6d models must be a nonempty mapping")
+        self.models = {}
+        for object_id, spec in configured_models.items():
+            if (not isinstance(object_id, str) or not object_id or not isinstance(spec, dict)
+                    or not isinstance(spec.get("mesh_dir"), str) or not isinstance(spec.get("mesh_file"), str)):
+                raise ValueError("each pose6d model needs a mesh_dir and mesh_file")
+            mesh_dir = Path(spec["mesh_dir"])
+            mesh_path = mesh_dir / spec["mesh_file"]
+            if not mesh_path.is_file():
+                raise FileNotFoundError(f"mesh for {object_id} does not exist: {mesh_path}")
+            annotation = None
+            if spec.get("annotation_file"):
+                annotation = json.loads((mesh_dir / spec["annotation_file"]).read_text(encoding="utf-8"))
+                if (annotation.get("object_id") != object_id
+                        or annotation.get("normal_convention") != "outward_surface"):
+                    raise ValueError(f"suction annotation identity or normal convention mismatch for {object_id}")
+            self.models[object_id] = {
+                **spec, "mesh_dir": mesh_dir, "mesh_path": mesh_path, "annotation": annotation,
+                "model_sha256": hashlib.sha256(mesh_path.read_bytes()).hexdigest(),
+            }
+        self.default_object_id = self.settings.get("default_object_id", self.settings.get("object_id"))
+        if self.default_object_id not in self.models:
+            raise ValueError("default_object_id must exist in configured pose6d models")
+        self.settings["object_id"] = self.default_object_id
+        self.mesh_hash = self.models[self.default_object_id]["model_sha256"]
+        self.mesh_dir = self.models[self.default_object_id]["mesh_dir"]
+        self.annotation = self.models[self.default_object_id]["annotation"]
         coordinate_arm = read_yaml(self.root / "ros/realman_coordinates.yaml")["robots"][self.profile["arm"]]
         self.selectable_tool_names = {self.profile["tool_name"], self.motion_config["tool_name"]}
         if not self.selectable_tool_names.issubset(coordinate_arm["tools"]):
             raise ValueError("pose6d tool choices must be registered in realman_coordinates.yaml")
-        self.mesh_dir = Path(self.settings["mesh_dir"])
-        self.mesh_hash = hashlib.sha256((self.mesh_dir / "TexturedMeshSimplified.obj").read_bytes()).hexdigest()
-        self.annotation = json.loads((self.mesh_dir / "eu_plug_grasps.json").read_text(encoding="utf-8"))
-        if (self.annotation.get("object_id") != self.settings["object_id"]
-                or self.annotation.get("normal_convention") != "outward_surface"):
-            raise ValueError("suction annotation identity or normal convention mismatch")
         self.tf = Buffer(cache_time=Duration(seconds=60))
         self.listener = TransformListener(self.tf, self)
         self.events = self.create_publisher(String, "~/events", 10)
@@ -102,9 +129,15 @@ class PoseBridge(Node):
 
     def publish_frames(self):
         """Read-only display telemetry; never calls the motion/settle pipeline."""
+        configured_models = getattr(self, "models", {})
+        default_object_id = getattr(self, "default_object_id", None)
         event = {"type": "pose6d_frames", "arm": self.profile["arm"],
                  "base_frame": self.profile["base_frame"],
-                 "workspace_m": self.motion_config.get("workspace_m"), "available": False}
+                 "workspace_m": self.motion_config.get("workspace_m"), "available": False,
+                 "pose6d_models": [{"object_id": object_id, "label": model.get("label", object_id),
+                                    "mesh_file": model.get("mesh_file"),
+                                    "default": object_id == default_object_id}
+                                   for object_id, model in configured_models.items()]}
         try:
             with self.motion_port.coordinate_lock:
                 coordinates = self.motion_port.coordinates
@@ -202,7 +235,7 @@ class PoseBridge(Node):
                     self.observation_owner = None
                 if self.motion.status().get("lease_retained"):
                     raise ValueError("close the active suction motion session before capturing a new frame")
-                result = self.capture()
+                result = self.capture(command.get("object_id"))
                 with self.owner_lock:
                     if client not in self.disconnected_clients:
                         self.observation_owner = client
@@ -341,7 +374,13 @@ class PoseBridge(Node):
         p, q = tf.transform.translation, tf.transform.rotation
         return from_pose([p.x, p.y, p.z], [q.w, q.x, q.y, q.z])
 
-    def capture(self):
+    def capture(self, object_id=None):
+        settings = getattr(self, "settings", {})
+        object_id = object_id or getattr(self, "default_object_id", settings.get("object_id"))
+        models = getattr(self, "models", {})
+        model_spec = models.get(object_id)
+        if models and model_spec is None:
+            raise ValueError("unknown 6D object selection")
         deadline = time.monotonic() + self.capture_settings["capture_timeout_sec"]
         not_before = self.get_clock().now().nanoseconds
         problem = "waiting for RGB-D and stationary arm"
@@ -378,7 +417,7 @@ class PoseBridge(Node):
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                 base_camera, detail = self.base_camera(stamp)
                 oid = self.store.freeze(rgb=rgb, depth_m=aligned, K=cm.K, timestamp_ns=stamp,
-                                        camera_frame=cm.frame, T_base_camera=base_camera)
+                                        camera_frame=cm.frame, T_base_camera=base_camera, object_id=object_id)
                 depth_display = cv2.applyColorMap(cv2.convertScaleAbs(aligned, alpha=255 / 1.0), cv2.COLORMAP_TURBO)
                 depth_display[aligned == 0] = 0
                 return {"type": "pose6d_capture", "observation_id": oid, "timestamp_ns": str(stamp),
@@ -388,7 +427,9 @@ class PoseBridge(Node):
                         "T_base_camera": base_camera.tolist() if base_camera is not None else None,
                         "base_frame": self.profile["base_frame"],
                         "workspace_m": self.motion_config.get("workspace_m"),
-                        "object_id": self.settings["object_id"], "model_sha256": self.mesh_hash}
+                        "object_id": object_id,
+                        "model_sha256": model_spec["model_sha256"] if model_spec else getattr(self, "mesh_hash", ""),
+                        "object_label": model_spec.get("label", object_id) if model_spec else object_id}
             except Exception as exc:
                 problem = str(exc)
             time.sleep(.02)
@@ -641,6 +682,15 @@ class PoseBridge(Node):
 
         oid = command["observation_id"]
         obs = self.store.get(oid)
+        object_id = command.get("object_id") or obs.get("object_id") or getattr(self, "default_object_id", "")
+        models = getattr(self, "models", None)
+        model = models.get(object_id) if isinstance(models, dict) else {
+            "model_sha256": getattr(self, "mesh_hash", ""),
+            "annotation": getattr(self, "annotation", None),
+            "mesh_path": getattr(self, "mesh_dir", Path(".")) / "TexturedMeshSimplified.obj",
+        }
+        if models is not None and model is None:
+            raise ValueError("unknown 6D OBJ model selection")
         if "instance_id" in command:
             self.store.select_instance(oid, command["instance_id"])
         else:
@@ -657,12 +707,16 @@ class PoseBridge(Node):
                 raise ValueError("mask must be a single-channel 8-bit PNG")
             self.store.set_mask(oid, mask)
         obs = self.store.get(oid)
-        generation, request = self.store.request(oid, object_id=self.settings["object_id"], model_sha256=self.mesh_hash)
+        generation, request = self.store.request(oid, object_id=object_id, model_sha256=model["model_sha256"])
         with connect(self.settings["ws_uri"], open_timeout=self.settings["connect_timeout_sec"],
                      max_size=MAX_MESSAGE_BYTES, compression=None) as ws:
             hello = unpackb(ws.recv(timeout=self.settings["connect_timeout_sec"]))
+            registered_models = hello.get("models")
+            registered_hash = (registered_models.get(object_id, {}).get("model_sha256")
+                               if isinstance(registered_models, dict) else
+                               hello.get("model_sha256") if hello.get("object_id") == object_id else None)
             if (hello.get("type") != "hello" or not hello.get("ready")
-                    or hello.get("model_sha256") != self.mesh_hash or hello.get("object_id") != self.settings["object_id"]):
+                    or registered_hash != model["model_sha256"]):
                 raise ValueError("backend model identity mismatch")
             ws.send(packb(request))
             result = unpackb(ws.recv(timeout=self.settings["inference_timeout_sec"]))
@@ -673,26 +727,27 @@ class PoseBridge(Node):
         T_camera_object = np.asarray(result["T_camera_object"])
         points = self.cloud(obs)
         grasps = []
-        for grasp in self.annotation["grasps"]:
+        annotation = model["annotation"]
+        prepare_distance = self.motion_config.get("prepare_distance_m", .04)
+        if (type(prepare_distance) not in (int, float) or not math.isfinite(prepare_distance)
+                or prepare_distance <= 0):
+            prepare_distance = .04
+        second_prepare_distance = self.motion_config.get("second_prepare_distance_m", .005)
+        if (type(second_prepare_distance) not in (int, float) or not math.isfinite(second_prepare_distance)
+                or second_prepare_distance < 0):
+            second_prepare_distance = .005
+        contact_offset = self.motion_config.get("contact_offset_m", 0.0)
+        if (type(contact_offset) not in (int, float) or not math.isfinite(contact_offset)
+                or contact_offset < 0):
+            contact_offset = 0.0
+        lift_height = self.motion_config.get("lift_height_m", .05)
+        if type(lift_height) not in (int, float) or not math.isfinite(lift_height) or lift_height <= 0:
+            lift_height = .05
+        place_position = self.motion_config.get("place_position_m", DEFAULT_PLACE_POSITION_M)
+        for grasp in (annotation or {}).get("grasps", []):
             if grasp.get("status") == "deprecated":
                 continue
             contact, normal = suction_pose(T_camera_object, grasp["contact_region"])
-            prepare_distance = self.motion_config.get("prepare_distance_m", .04)
-            if (type(prepare_distance) not in (int, float) or not math.isfinite(prepare_distance)
-                    or prepare_distance <= 0):
-                prepare_distance = .04
-            second_prepare_distance = self.motion_config.get("second_prepare_distance_m", .005)
-            if (type(second_prepare_distance) not in (int, float) or not math.isfinite(second_prepare_distance)
-                    or second_prepare_distance < 0):
-                second_prepare_distance = .005
-            contact_offset = self.motion_config.get("contact_offset_m", 0.0)
-            if (type(contact_offset) not in (int, float) or not math.isfinite(contact_offset)
-                    or contact_offset < 0):
-                contact_offset = 0.0
-            lift_height = self.motion_config.get("lift_height_m", .05)
-            if type(lift_height) not in (int, float) or not math.isfinite(lift_height) or lift_height <= 0:
-                lift_height = .05
-            place_position = self.motion_config.get("place_position_m", DEFAULT_PLACE_POSITION_M)
             prepared = tcp_target(contact, normal, prepare_distance, np.eye(4))
             try:
                 prepared_tcp = tcp_target(contact, normal, prepare_distance,
@@ -713,7 +768,11 @@ class PoseBridge(Node):
         overlay = screen.pop("overlay_png", None)
         result_id = result["request_id"]
         obs["result"] = result
-        ready, motion_reason = self.motion.load(client or self.observation_owner or "", obs, grasps, result_id)
+        if annotation is not None and model.get("suction_enabled", True):
+            ready, motion_reason = self.motion.load(client or self.observation_owner or "", obs, grasps, result_id)
+        else:
+            ready = False
+            motion_reason = "该物体尚无吸盘接触标注，已禁用运动"
         return {"type": "pose6d_result", "observation_id": oid, "result_id": result_id,
                 "instance_id": obs.get("selected_instance_id"),
                 "mask_source": "sam2" if obs.get("selected_instance_id") else "manual",
@@ -725,13 +784,15 @@ class PoseBridge(Node):
                 "base_frame": self.profile["base_frame"],
                 "workspace_m": self.motion_config.get("workspace_m"),
                 "score": result["score"], "screening": screen, "grasps": grasps,
+                "object_id": object_id, "object_label": model.get("label", object_id),
+                "suction_available": annotation is not None and model.get("suction_enabled", True),
                 "motion_waypoints": {"prepare_distance_mm": prepare_distance * 1000,
                                      "second_prepare_distance_mm": second_prepare_distance * 1000,
                                      "contact_offset_mm": contact_offset * 1000,
                                      "lift_height_mm": lift_height * 1000,
                                      "place_position_mm": [value * 1000 for value in place_position]},
                 "overlay": "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None,
-                "cloud": points, "mesh_obj": (self.mesh_dir / "TexturedMeshSimplified.obj").read_text(encoding="utf-8"),
+                "cloud": points, "mesh_obj": model["mesh_path"].read_text(encoding="utf-8"),
                 "motion_ready": ready, "motion_reason": motion_reason,
                 "suction": self.settings["suction"]}
 

@@ -15,9 +15,22 @@ vision_confidence_threshold: 0.5
 vision_max_detections: 16
 vision_max_image_pixels: 1000000
 vision_max_mask_bytes: 16777216
-# Mounted read-only in the optional pose6d_bridge container.
-mesh_dir: /models/eu_plug
-object_id: eu_plug
+# Mounted read-only in the optional pose6d_bridge container. A model without
+# annotation_file is available for pose inference/review only; suction motion
+# remains disabled until its contact regions and normals are annotated.
+default_object_id: eu_plug
+models:
+  eu_plug:
+    label: 欧规插头
+    mesh_dir: /models/eu_plug
+    mesh_file: TexturedMeshSimplified.obj
+    annotation_file: eu_plug_grasps.json
+    suction_enabled: true
+  eu_plug_1124:
+    label: 欧规插头 1124
+    mesh_dir: /models/eu_plug_1124
+    mesh_file: eu-plug-1124mtl.obj
+    suction_enabled: false
 cloud_stride: 4
 
 # Operator supplied cup diameter; annotation contact-region radii stay separate.

@@ -16,7 +16,7 @@ class ObservationStore:
         self._generation = 0
 
     def freeze(self, *, rgb, depth_m, K, timestamp_ns, camera_frame, T_base_camera=None,
-               captured_at=None):
+               captured_at=None, object_id=None):
         rgb = np.asarray(rgb)
         depth = np.asarray(depth_m)
         K = np.asarray(K, dtype=np.float64)
@@ -43,6 +43,7 @@ class ObservationStore:
             self._observation = {"observation_id": uuid.uuid4().hex, "rgb": arrays[0], "depth_m": arrays[1],
                                  "K": arrays[2], "timestamp_ns": timestamp_ns, "camera_frame": camera_frame,
                                  "T_base_camera": transform, "captured_at": captured_at,
+                                 "object_id": object_id,
                                  "mask": None, "result": None, "instances": {}, "vision": None,
                                  "selected_instance_id": None}
             return self._observation["observation_id"]

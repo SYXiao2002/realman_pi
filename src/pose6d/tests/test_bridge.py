@@ -1,6 +1,7 @@
 """ROS bridge boundaries that do not require a camera or robot."""
 
 import base64
+import hashlib
 import json
 import stat
 import threading
@@ -16,6 +17,7 @@ pytest.importorskip("realman_msgs")
 from pose6d.observation import ObservationStore
 from pose6d.motion import MotionController
 from pose6d_bridge.node import PoseBridge, WEB_EVENT_LIMIT
+from grasp_protocol.wire import packb, unpackb
 from sensor_msgs.msg import CameraInfo, Image, JointState
 from geometry_msgs.msg import TransformStamped
 
@@ -42,18 +44,25 @@ def test_capture_freezes_aligned_rgbd_without_hand_eye():
                "settle_sec": .3, "maximum_joint_state_age_sec": .5, "maximum_joint_velocity_rad_sec": .01}
     store = ObservationStore()
     bridge = SimpleNamespace(capture_settings=capture, settings={**capture, "profile": "right", "object_id": "eu_plug"},
+        default_object_id="eu_plug",
+        models={"eu_plug": {"model_sha256": "eu-hash", "label": "欧规插头"},
+                "eu_plug_1124": {"model_sha256": "1124-hash", "label": "欧规插头 1124"}},
         profile={"color_frame": "color", "depth_frame": "depth", "calibration_data": {}, "base_frame": "r/base_link"},
         motion_config={"workspace_m": [[-.2, -.1, 0], [.3, .4, .5]]},
         lock=threading.Lock(), inputs={"color": [color], "depth": [depth], "color_info": [ci],
                                        "depth_info": [di], "joints": joints}, store=store, mesh_hash="hash",
         get_clock=lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=next(readings))),
         lookup=lambda *_: np.eye(4), base_camera=lambda _: (None, "missing calibration"))
-    event = PoseBridge.capture(bridge)
+    event = PoseBridge.capture(bridge, "eu_plug_1124")
     frozen = store.get(event["observation_id"])
     assert event["calibration"] == "missing calibration"
     assert event["base_frame"] == "r/base_link"
     assert event["workspace_m"] == bridge.motion_config["workspace_m"]
     assert frozen["T_base_camera"] is None
+    assert frozen["object_id"] == "eu_plug_1124"
+    assert event["object_id"] == "eu_plug_1124"
+    assert event["model_sha256"] == "1124-hash"
+    assert event["object_label"] == "欧规插头 1124"
     assert np.all(frozen["rgb"] == [30, 20, 10])
     assert np.allclose(frozen["depth_m"], 1)
 
@@ -96,6 +105,80 @@ def test_infer_rejects_mask_size_or_channels_before_network(shape):
         PoseBridge.infer(bridge, {"observation_id": oid, "mask_png": base64.b64encode(png).decode()})
 
 
+@pytest.mark.parametrize("mask_source", ["manual", "sam2"])
+def test_infer_switches_models_on_one_eu_observation_without_losing_masks(tmp_path, monkeypatch, mask_source):
+    models = {}
+    for object_id in ("eu_plug", "eu_plug_1124"):
+        mesh = tmp_path / f"{object_id}.obj"
+        mesh.write_text(f"# {object_id}\nv 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n")
+        models[object_id] = {"model_sha256": hashlib.sha256(mesh.read_bytes()).hexdigest(),
+                             "annotation": None, "mesh_path": mesh}
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((8, 8, 3), dtype=np.uint8),
+                       depth_m=np.ones((8, 8), dtype=np.float32), K=np.eye(3),
+                       timestamp_ns=1, camera_frame="camera", object_id="eu_plug")
+    mask = np.ones((8, 8), dtype=np.uint8)
+    instance_id = f"{oid}:0"
+    store.set_instances(oid, {instance_id: {"status": "ok", "mask": mask}}, {"sam_image_ms": 1})
+    if mask_source == "sam2":
+        mask_fields = {"instance_id": instance_id}
+    else:
+        ok, encoded = cv2.imencode(".png", mask * 255)
+        assert ok
+        mask_fields = {"mask_png": base64.b64encode(encoded).decode()}
+    requests = []
+
+    class BackendSocket:
+        def __enter__(self):
+            self.request = None
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def recv(self, timeout=None):
+            if self.request is None:
+                return packb({"type": "hello", "ready": True, "models": {
+                    key: {"model_sha256": spec["model_sha256"]} for key, spec in models.items()}})
+            return packb({"type": "result", **{key: self.request[key] for key in
+                          ("request_id", "observation_id", "object_id", "model_sha256")},
+                          "T_camera_object": np.eye(4).tolist(), "score": 1.0,
+                          "screening": {"status": "insufficient_evidence", "metrics": {}}})
+
+        def send(self, payload):
+            self.request = unpackb(payload)
+            requests.append(self.request)
+
+    monkeypatch.setattr("websockets.sync.client.connect", lambda *_args, **_kwargs: BackendSocket())
+    bridge = SimpleNamespace(
+        store=store, models=models, default_object_id="eu_plug",
+        settings={"ws_uri": "ws://test", "connect_timeout_sec": 1, "inference_timeout_sec": 1,
+                  "cloud_stride": 1, "suction": {"cup_diameter_m": .01}},
+        profile={"base_frame": "r/base_link"}, motion_config={}, observation_owner="owner",
+    )
+    bridge.cloud = lambda obs: PoseBridge.cloud(bridge, obs)
+    for object_id in ("eu_plug", "eu_plug_1124", "eu_plug", "eu_plug_1124"):
+        result = PoseBridge.infer(bridge, {"observation_id": oid, "object_id": object_id, **mask_fields})
+        assert result["type"] == "pose6d_result"
+        assert result["observation_id"] == oid
+        assert result["object_id"] == object_id
+        assert result["suction_available"] is False
+        assert result["grasps"] == [] and result["motion_ready"] is False
+        assert result["motion_waypoints"]["prepare_distance_mm"] == 40
+        assert result["motion_waypoints"]["second_prepare_distance_mm"] == 5
+        assert requests[-1]["model_sha256"] == models[object_id]["model_sha256"]
+        assert requests[-1]["mask_source"] == mask_source
+        np.testing.assert_array_equal(requests[-1]["mask"], mask)
+        frozen = store.get(oid)
+        assert frozen["object_id"] == "eu_plug"
+        assert frozen["vision"] == {"sam_image_ms": 1}
+        assert list(frozen["instances"]) == [instance_id]
+    assert len({request["request_id"] for request in requests}) == 4
+    with pytest.raises(ValueError, match="unknown 6D OBJ"):
+        PoseBridge.infer(bridge, {"observation_id": oid, "object_id": "unknown", **mask_fields})
+    assert len(requests) == 4
+
+
 def test_oversized_web_event_returns_correlated_error():
     sent = []
     bridge = SimpleNamespace(events=SimpleNamespace(publish=sent.append))
@@ -128,7 +211,7 @@ def review_bridge(owner="old"):
     bridge = SimpleNamespace(observation_owner=owner, owner_lock=threading.Lock(), disconnected_clients=set(),
         connected_clients=None, active_review_client=None, busy=threading.Lock(), motion=motion, store=store, events=[],
         stopped=threading.Event(), get_logger=lambda: SimpleNamespace(warning=lambda _: None),
-        capture=lambda: {"type": "pose6d_capture", "observation_id": "new"})
+        capture=lambda _object_id=None: {"type": "pose6d_capture", "observation_id": "new"})
     bridge.emit = lambda client, request, event: bridge.events.append((client, request, event))
     bridge.mark_disconnected = lambda client: PoseBridge.mark_disconnected(bridge, client)
 
