@@ -23,9 +23,28 @@ ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载
 
 “吸盘与运动”中的右臂工具端电源开关控制电磁阀：24 V 开启吸盘，0 V 关闭吸盘。手动切换调用 `/r/tool_power`，等待驱动回读确认后显示结果；运动会话持有租约时禁用手动切换。
 
-在准备位点击“自动接近并提升”后，bridge 先通过带当前任务令牌的 `/r/tool_power_control` 开启并验证 24 V，再执行 `40 → 5 → 0 mm` 接近和 BASE +Z 提升。只有提升成功且 TCP 到位回读确认后才关闭到 0 V，不再要求勾选“外部开启真空”。这些操作由服务端完成，浏览器断线不会跳过提升后的关闭。中途停止或运动失败时保持吸附；电源切换失败或结果未知时阻断后续运动并显示未确认状态，不自动重试。运动事件的 `tool_power` 携带本会话的电源回读，页面同时更新开关和状态文字；吸附红绿灯继续使用独立真空传感器反馈。
+在准备位点击“自动接近并提升”后，bridge 先通过带当前任务令牌的 `/r/tool_power_control` 开启并验证 24 V，再按 `prepare_distance_m → second_prepare_distance_m → -contact_offset_m` 执行 MOVEL 接近和 BASE +Z 提升，当前配置为 `40 → 10 → -5 mm`、提升 `100 mm`。提升并确认真空吸附后，`MOVEJ` 回初始姿态，确认到位后 `MOVEJ` 到固定放置关节角，确认放置到位并关闭吸盘至 0 V，最后再 `MOVEJ` 回同一初始姿态。最后一段的 Action 成功、关节停稳、关节角和 TCP 位姿回读均确认到位后，流程才进入 `completed` 并报告完成。
 
-网页只发送当前 observation/result/grasp/session ID、人工复核确认和有符号毫米步长，不接受浏览器提供任意目标位姿。`pose6d_bridge` 通过 `MotionRosPort` 读取 `/<arm>/get_current_pose`，检查采样路径的工作区，以 `/<arm>/task_control` 持有驱动租约，并通过 `/<arm>/execute_motion` 的 BASE/MOVEL 执行；运动前不做逐点 IK 或关节连续性预检。只有 ROS Action 成功、驱动结果成功且 TCP 回读与目标位置/方向及停稳状态相符，才提交当前 `x`。准备按钮移动到法向线上 `+40 mm`；之后 `+` 沿法向远离物体，`−` 沿法向靠近，步长可调且距离允许跨过零变为负数。每次最多一个在途命令；页面切后台和浏览器断线不会停止已下发的动作，断线后 bridge 等待当前动作终态再释放会话。人工停止、工具/坐标变化或未知 Action 结果仍会停止或锁定会话，不自动重发。
+初始姿态由 `motion.home_joint_degrees` 选择：默认 `null` 通过只读 `/r/get_init_pose` 使用控制器网页保存的六轴初始关节角；填入六个角度时使用 YAML 配置。一次自动流程只确定一次初始关节目标，放置前中转和放置后回程共用该目标。放置位使用 `motion.place_joint_degrees`，当前为 `[95.045, 11.965, 106.228, -1.437, 54.787, 10.14]°`。回初始和放置直接使用关节角，FK 仅用于核对 TCP 到位。
+
+点位、距离和每段速度集中在 `config/ros/pose6d_bridge.yaml` 的 `motion` 下：
+
+| 阶段 | 点位 / 距离参数 | 速度参数（当前百分比） |
+| --- | --- | --- |
+| 准备位 | `prepare_distance_m`（+40 mm） | `prepare_velocity_percent: 20` |
+| 第二准备位 | `second_prepare_distance_m`（+10 mm） | `approach_velocity_percent: 20` |
+| 吸取接触位 | `contact_offset_m`（向内 5 mm） | `contact_velocity_percent: 5` |
+| BASE +Z 提升 | `lift_height_m`（100 mm） | `lift_velocity_percent: 50` |
+| 放置前回初始 | `home_joint_degrees`（null 或六个角度） | `home_velocity_percent: 10` |
+| 放置 | `place_joint_degrees`（六个角度） | `place_velocity_percent: 10` |
+| 放置后回初始 | 同一个 `home_joint_degrees` | `return_velocity_percent: 10` |
+| 手动点动 | `max_step_m`、有符号距离范围 | `velocity_percent: 10` |
+
+关节角单位为度，距离单位为米，速度是 SDK 的 1–100 整数百分比；`timeout_sec` 是每一段的超时秒数，调低速度时可相应增大。准备和接触点由解算位姿加配置距离得到。YAML 已挂载到容器，修改后在当前运动结束时重启 `pose6d_bridge` 即可生效，无需重建镜像。
+
+放置前发生运动、停止、点位或回读错误时保持吸盘开启并阻断后续动作；放置位关闭吸盘失败时不开始回程；确认 0 V 后回程失败则保持吸盘关闭并报告失败，不会误报完成。未吸到物体时继续在提升位关闭吸盘。所有段共用同一个驱动租约与停止机制，回初始和放置允许超出抓取工作区边界，未增加障碍物路径碰撞检测。浏览器断线不会跳过正在执行的自动流程，运动事件的 `tool_power` 携带本会话电源回读。
+
+网页只发送当前 observation/result/grasp/session ID、人工复核确认和有符号毫米步长，不接受浏览器提供任意目标位姿。`pose6d_bridge` 通过 `MotionRosPort` 读取 `/<arm>/get_current_pose`，检查采样路径的工作区，以 `/<arm>/task_control` 持有驱动租约，并通过 `/<arm>/execute_motion` 执行；准备段使用 MOVEJ_P、法向点动和接近提升使用 MOVEL、回初始与放置使用 MOVEJ。接近路径不做逐点 IK 或关节连续性预检，回初始与放置段使用固定关节目标，FK 仅用于核对 TCP 到位。只有 ROS Action 成功、驱动结果成功且 TCP 回读与目标位置/方向及停稳状态相符，才提交当前 `x`。准备按钮移动到法向线上 `+40 mm`；之后 `+` 沿法向远离物体，`−` 沿法向靠近，步长可调且距离允许跨过零变为负数。每次最多一个在途命令；页面切后台和浏览器断线不会停止已下发的动作，断线后 bridge 等待当前动作终态再释放会话。人工停止、工具/坐标变化或未知 Action 结果仍会停止或锁定会话，不自动重发。
 
 冻结 observation 不再按经过时间自动失效，已移除 `motion.observation_validity_sec`。离线制作 mask 后仍可使用同一观测，运动中也不因观测年龄中止；重新采集、更换 mask/工具、断线或显式关闭会话仍会清理相应审阅身份。场景改变时操作者需要重新采集。实时关节反馈、工具匹配、页面心跳和任务租约的检查继续有效。
 
