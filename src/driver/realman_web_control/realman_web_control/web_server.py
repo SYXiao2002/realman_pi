@@ -253,8 +253,8 @@ class WebControlServer:
         app.router.add_get("/api/calibration/preview/{path:.*}", self._calibration_preview)
         app.router.add_get("/ws", self._websocket)
         app.router.add_get("/models/{path:.*}", self._model_asset)
-        app.router.add_get("/6d_pose_history", self._pose6d_history)
-        app.router.add_get("/6d_pose_history/{path:.*}", self._pose6d_history)
+        app.router.add_route("*", "/6d_pose_history", self._pose6d_history)
+        app.router.add_route("*", "/6d_pose_history/{path:.*}", self._pose6d_history)
         app.router.add_get("/{path:.*}", self._static_asset)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
@@ -299,7 +299,12 @@ class WebControlServer:
         url = self.config.pose6d_history_url + request.rel_url.raw_path_qs
         response = None
         try:
-            async with self._history_session.get(url, allow_redirects=False) as upstream:
+            headers = {}
+            if request.headers.get("Content-Type"):
+                headers["Content-Type"] = request.headers["Content-Type"]
+            body = await request.read() if request.can_read_body else None
+            async with self._history_session.request(request.method, url, data=body, headers=headers,
+                                                     allow_redirects=False) as upstream:
                 headers = {key: value for key, value in upstream.headers.items()
                            if key.lower() in {"content-type", "content-length", "cache-control", "etag", "last-modified", "location", "content-encoding"}}
                 response = web.StreamResponse(status=upstream.status, headers=headers)

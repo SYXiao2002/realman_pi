@@ -299,6 +299,29 @@ def test_pose_history_proxy_preserves_prefix_query_and_binary_payload(tmp_path):
     asyncio.run(exercise())
 
 
+def test_pose_history_proxy_forwards_manual_review_post(tmp_path):
+    from dataclasses import replace
+
+    async def exercise():
+        upstream = web.Application()
+        async def review(request):
+            assert await request.json() == {"status": "correct"}
+            return web.json_response({"review_status": "correct"})
+        upstream.router.add_post('/6d_pose_history/api/records/123/review', review)
+        async with TestServer(upstream) as target:
+            server = _server(tmp_path)
+            server.config = replace(server.config, pose6d_history_url=str(target.make_url('')).rstrip('/'))
+            app = web.Application()
+            app.router.add_route('*', '/6d_pose_history/{path:.*}', server._pose6d_history)
+            async with TestClient(TestServer(app)) as client:
+                response = await client.post('/6d_pose_history/api/records/123/review',
+                                             json={"status": "correct"})
+                assert response.status == 200
+                assert await response.json() == {"review_status": "correct"}
+            await server._history_session.close()
+    asyncio.run(exercise())
+
+
 def test_pose_history_proxy_reports_unreachable_backend(tmp_path):
     from dataclasses import replace
 
