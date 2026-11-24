@@ -533,10 +533,17 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
     kind = message.get("type")
     allowed = {"type", "request_id"}
     result = {"type": kind, "request_id": _request_id(message)}
-    if kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer"):
+    if kind == "pose6d_capture":
+        if "object_id" in message:
+            allowed.add("object_id")
+        result["object_id"] = _string(message.get("object_id", ""), "object_id", maximum=128, allow_empty=True)
+    elif kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer"):
         allowed |= {"observation_id"}
         result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
         if kind == "pose6d_infer":
+            if "object_id" in message:
+                allowed.add("object_id")
+                result["object_id"] = _string(message["object_id"], "object_id", maximum=128)
             if ("instance_id" in message) == ("mask_png" in message):
                 raise ProtocolError("invalid_field", "infer requires exactly one of instance_id or mask_png", result["request_id"])
             if "instance_id" in message:

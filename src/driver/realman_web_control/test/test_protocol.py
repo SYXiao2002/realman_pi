@@ -124,6 +124,11 @@ def test_pose6d_motion_protocol_accepts_only_ids_review_and_signed_step():
 
 
 def test_pose6d_automatic_segmentation_selects_only_a_bridge_owned_instance():
+    capture = {"type": "pose6d_capture", "request_id": "c1", "object_id": "eu_plug_1124"}
+    assert parse_message(json.dumps(capture)) == capture
+    assert parse_message('{"type":"pose6d_capture","request_id":"c2"}') == {
+        "type": "pose6d_capture", "request_id": "c2", "object_id": "",
+    }
     segment = {"type": "pose6d_segment", "request_id": "s1", "observation_id": "o1"}
     assert parse_message(json.dumps(segment)) == segment
     preview = {"type": "pose6d_preview", "request_id": "p1", "observation_id": "o1",
@@ -131,11 +136,15 @@ def test_pose6d_automatic_segmentation_selects_only_a_bridge_owned_instance():
     assert parse_message(json.dumps(preview)) == preview
     infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
     assert parse_message(json.dumps(infer)) == infer
+    assert parse_message(json.dumps({**infer, "object_id": "eu_plug_1124"})) == {
+        **infer, "object_id": "eu_plug_1124"}
     for invalid in (
         {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1"},
         {**infer, "mask_png": "encoded"},
         {**preview, "mask_png": "encoded"},
         {**segment, "instance_id": "o1:0"},
+        {**infer, "object_id": ""},
+        {**infer, "object_id": ["eu_plug"]},
     ):
         with pytest.raises(ProtocolError):
             parse_message(json.dumps(invalid))
