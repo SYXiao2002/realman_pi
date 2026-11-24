@@ -9,7 +9,7 @@ description: 纯 Python/CUDA WebSocket 抓取服务、左右腕配置、右臂�
 
 `src/pose6d/pose6d/` 包含独立的 FoundationPose 单帧注册服务、二值 mask 和 RGB-D 数据校验、原始 OBJ 轮廓与深度筛查、观测绑定、吸盘几何和服务端点动状态机。算法服务的二进制 WebSocket 使用 `grasp_protocol` 的有界 MessagePack 编码；模型由 OBJ 文件的 SHA-256 标识。筛查阈值未校准时返回 `insufficient_evidence`，不会把网络分数当作概率。筛查通过也不能证明位姿正确。
 
-`config/docker/compose.pose6d.yaml` 和相邻 FoundationPose 仓库的 `docker/pose6d-server.Dockerfile` 定义独立 GPU 镜像，默认从相邻的 `FoundationPose` 目录读取构建源，并只读挂载权重和 `eu_plug` 网格。可通过 Compose 文件中的 `POSE6D_*` 变量调整来源；服务默认只绑定本机 WebSocket 8092 和历史 HTTP 8095 端口。算法服务、历史存储和查看页面均由 FoundationPose 仓库维护，线上固定 `debug=2`；本仓库仅保留 ROS 客户端和 `/6d_pose_history/` 同源代理。历史通过专用持久化 volume 保存，主页面和 `/6d_pose.html` 均提供入口。已用本地 BundleSDF CUDA 基础镜像和固定提交的 nvdiffrast 源码缓存构建，并以真实欧规插头 RGB-D 和 mask 完成容器 WebSocket 推理。默认基础镜像的构建尚未验证。
+`config/docker/compose.pose6d.yaml` 和相邻 FoundationPose 仓库的 `docker/pose6d-server.Dockerfile` 定义独立 GPU 镜像，默认从相邻的 `FoundationPose` 目录读取构建源，并只读挂载权重与已登记的 OBJ。当前注册 `eu_plug` 和 `eu_plug_1124`；`/6d_pose.html` 提供两个下拉框：“采集分割对象”固定为欧标插头；“解算 OBJ”从 bridge 配置加载可用模型。一次采集和自动分割后，可以保留同一 RGB-D、实例和 Mask，反复切换 OBJ 解算。每次解算请求独立携带 object ID，server 按 ID 和 OBJ SHA-256 加载对应网格，GPU 上只保留当前模型。可通过 Compose 文件中的 `POSE6D_*` 变量调整来源；服务默认只绑定本机 WebSocket 8092 和历史 HTTP 8095 端口。算法服务、历史存储和查看页面均由 FoundationPose 仓库维护；本仓库保留 ROS 客户端和 `/6d_pose_history/` 同源代理。新 `eu_plug_1124` OBJ 尚无吸盘接触标注，因此开放位姿计算/审阅，但禁用该物体的吸盘运动。历史通过专用持久化 volume 保存，主页面和 `/6d_pose.html` 均提供入口。
 
 ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载 RGB、上传单通道 8 位 PNG mask、单帧推理和相机系点云/OBJ/吸盘审阅。Mask 必须与下载 RGB 来自同一观测且分辨率一致；页面提醒操作者确认来源，系统不能从文件内容证明这一点。服务端预注册模型，请求传递模型 ID 与哈希。`pose6d_bridge` 在主 Compose 的 `pose6d` profile 中，参数位于 `config/ros/pose6d_bridge.yaml`。2026-11-10 已从真实 `/6d_pose.html` 页面完成 right wrist RGB-D 采集，RGB 与 Depth 为 848×530，frame 为 `camera_right_color_optical_frame`，标定状态为 `available`。
 
@@ -40,9 +40,12 @@ ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载
 运行步骤（机器人侧使用主 compose 的 host network，算法端口仅绑定宿主机 loopback）：
 
 ```bash
+./scripts/build_pose6d.sh
 docker compose --project-directory . -f config/docker/compose.pose6d.yaml up -d pose6d_server
 ./rm65 up
 ```
+
+`pose6d_runtime_base` pins the CUDA/Python wheels and compiled nvdiffrast in a tagged image. `./scripts/build_pose6d.sh` builds that base only when its dependency layers change, then builds the small server layer containing current FoundationPose code and web assets. It disables per-build provenance attestations for local images so the dependency image digest remains stable. Ordinary server changes no longer redownload Python packages or recompile nvdiffrast, even after BuildKit prunes intermediate cache.
 
 `./rm65 up`（含 `desktop`、`policy`）统一管理 `pose6d_bridge`，`down` 会先停止 bridge，`status`/`logs` 包含它。已有生产图时，也可单独使用 `docker compose --profile pose6d up -d pose6d_bridge`；FoundationPose 算法容器独立于 `rm65` 的启停。
 
