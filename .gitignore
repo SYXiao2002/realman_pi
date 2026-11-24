@@ -31,6 +31,7 @@ Log/
 !.agents/skills/realman-site-deploy/
 !.agents/skills/realman-site-deploy/**
 .codex/
+.cache/
 src/.agents/
 src/.codex/
 

@@ -288,6 +288,7 @@ services:
       - ./config:/opt/rm65_ws/config:ro
       - ./logs:/opt/rm65_ws/logs
       - ${POSE6D_MESH_DIR:-../FoundationPose/demo_data/eu-plug/mesh_eu-plug}:/models/eu_plug:ro
+      - ${POSE6D_1124_MESH_DIR:-../FoundationPose/demo_data/eu-plug-1124/mesh}:/models/eu_plug_1124:ro
     command: [ros2, run, pose6d_bridge, pose6d_bridge_node]
 
   # Independent data collector: it joins an existing ROS graph, subscribes to
