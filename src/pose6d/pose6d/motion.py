@@ -15,8 +15,6 @@ import numpy as np
 from .geometry import configured_transform, rigid, suction_pose
 from .jog import JogSession
 
-DEFAULT_PLACE_POSITION_M = (0.064173, -0.274147, 0.040462)
-
 
 def positive(config, key):
     value = config.get(key)
@@ -48,7 +46,8 @@ def validate_config(config, suction):
                 "lease_ttl_sec", "service_timeout_sec"):
         positive(config, key)
     for key in ("velocity_percent", "prepare_velocity_percent", "approach_velocity_percent",
-                "contact_velocity_percent", "lift_velocity_percent"):
+                "contact_velocity_percent", "lift_velocity_percent",
+                "home_velocity_percent", "place_velocity_percent", "return_velocity_percent"):
         if type(config.get(key)) is not int or not 1 <= config[key] <= 100:
             raise ValueError(f"configure {key} in 1..100")
     second_prepare = config.get("second_prepare_distance_m")
@@ -56,6 +55,10 @@ def validate_config(config, suction):
             or not 0 <= second_prepare < prepare_distance):
         raise ValueError("configure second_prepare_distance_m between zero and prepare_distance_m")
     positive(config, "lift_height_m")
+    joint_tolerance = config.get("joint_tolerance_deg", .25)
+    if (type(joint_tolerance) not in (int, float) or not math.isfinite(joint_tolerance)
+            or joint_tolerance <= 0):
+        raise ValueError("configure a positive joint_tolerance_deg")
     vacuum_timeout = config.get("vacuum_confirm_timeout_sec", 1.5)
     if (type(vacuum_timeout) not in (int, float) or not math.isfinite(vacuum_timeout)
             or vacuum_timeout <= 0):
@@ -63,9 +66,13 @@ def validate_config(config, suction):
     bounds = np.asarray(config.get("workspace_m"), dtype=float)
     if bounds.shape != (2, 3) or not np.isfinite(bounds).all() or not np.all(bounds[0] < bounds[1]):
         raise ValueError("configure measured workspace_m bounds")
-    place = np.asarray(config.get("place_position_m", DEFAULT_PLACE_POSITION_M), dtype=float)
-    if place.shape != (3,) or not np.isfinite(place).all():
-        raise ValueError("configure a finite BASE place_position_m xyz")
+    place = np.asarray(config.get("place_joint_degrees"), dtype=float)
+    if place.shape != (6,) or not np.isfinite(place).all():
+        raise ValueError("configure six finite place_joint_degrees")
+    if config.get("home_joint_degrees") is not None:
+        home = np.asarray(config["home_joint_degrees"], dtype=float)
+        if home.shape != (6,) or not np.isfinite(home).all():
+            raise ValueError("configure home_joint_degrees as null or six finite joint angles")
     for key in ("cup_diameter_m", "body_radius_m", "body_length_m"):
         positive(suction, key)
     if suction["body_radius_m"] < suction["cup_diameter_m"] / 2:
@@ -309,13 +316,27 @@ class MotionController:
             if holding is None:
                 raise ValueError("提升完成，但真空开关状态不可用或已超时；保持吸盘开启")
             if holding:
-                place_target = jog.begin_place(
-                    actual, self.config.get("place_position_m", DEFAULT_PLACE_POSITION_M))
-                self.reason = "真空开关确认已吸附，正在 MOVEJ_P 前往放置位"
+                configured_home = self.config.get("home_joint_degrees")
+                home_joints = (self.port.initial_joints() if configured_home is None else
+                               np.asarray(configured_home, dtype=float).copy())
+                home_pose = self.port.forward_kinematics(home_joints)
+                jog.begin_return_home(home_pose)
+                self.reason = "真空开关确认已吸附，正在 MOVEJ 回到初始姿态"
                 feedback(self.status())
-                # Placement is exempt from the grasp workspace limits.
-                actual = self._execute(actual, place_target, feedback, command="movej_p",
-                                       velocity_percent=self.config["velocity_percent"],
+                # Transit and placement are outside the grasp workspace limits.
+                actual = self._execute(actual, home_joints, feedback, command="movej",
+                                       velocity_percent=self.config["home_velocity_percent"],
+                                       check_path=False, finish=False)
+                jog.finish_return_home(actual)
+                self.reason = "初始姿态已确认到位，正在校验固定放置关节目标"
+                feedback(self.status())
+                self._guard()
+                place_joints = np.asarray(self.config["place_joint_degrees"], dtype=float)
+                jog.begin_place(actual, self.port.forward_kinematics(place_joints))
+                self.reason = "初始姿态已确认到位，正在 MOVEJ 前往放置位"
+                feedback(self.status())
+                actual = self._execute(actual, place_joints, feedback, command="movej",
+                                       velocity_percent=self.config["place_velocity_percent"],
                                        check_path=False, finish=False)
                 jog.finish_place(actual)
                 self.reason = "已到达放置位，正在关闭吸盘，确认工具端 0 V"
@@ -323,7 +344,16 @@ class MotionController:
                 self.reason = "真空开关确认未吸附，正在关闭吸盘，确认工具端 0 V"
             feedback(self.status())
             self._auto_tool_power(session_id, False, feedback)
-            self.reason = ("自动运动完成；物体已放置，吸盘已关闭（0 V）" if holding else
+            if holding:
+                actual = self.port.current()
+                jog.begin_return_after_place(actual)
+                self.reason = "吸盘已关闭（0 V），正在 MOVEJ 返回初始姿态"
+                feedback(self.status())
+                actual = self._execute(actual, home_joints, feedback, command="movej",
+                                       velocity_percent=self.config["return_velocity_percent"],
+                                       check_path=False, finish=False)
+                jog.finish_return_after_place(actual)
+            self.reason = ("自动运动完成；物体已放置、吸盘已关闭（0 V），已回到初始姿态" if holding else
                            "自动运动完成；未吸到物体，提升位吸盘已关闭（0 V）")
             feedback(self.status())
         except Exception:

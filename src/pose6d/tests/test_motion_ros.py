@@ -308,6 +308,76 @@ def test_motion_ros_port_accepts_integer_lease_ttl(monkeypatch):
     assert [request.ttl_sec for request in adapter.task.requests] == [6.0, 6.0]
 
 
+@pytest.mark.parametrize("readback_error", [0, .3])
+def test_movej_uses_six_joint_targets_and_requires_settled_joint_arrival(monkeypatch, readback_error):
+    import numpy as np
+    import threading
+
+    action = Action(Handle(goal_result()))
+    adapter, _stop = port(monkeypatch, action)
+    joints = np.array([95.045, 11.965, 106.228, -1.437, 54.787, 10.14])
+    adapter._settled_joints = lambda: np.deg2rad(joints + readback_error)
+    if readback_error:
+        with pytest.raises(ValueError, match="joint readback"):
+            adapter.execute(joints, "lease-token", threading.Event(), lambda _f: None, command="movej")
+    else:
+        adapter.execute(joints, "lease-token", threading.Event(), lambda _f: None, command="movej")
+    assert action.goal.command == ExecuteMotion.Goal.MOVEJ
+    assert list(action.goal.joint_degrees) == pytest.approx(joints)
+    assert action.goal.task_token == "lease-token"
+    assert adapter.action_uncertain() is False
+
+
+@pytest.mark.parametrize("joints", [[1] * 5, [float("nan")] * 6])
+def test_movej_rejects_invalid_joint_targets_before_submitting(monkeypatch, joints):
+    import threading
+
+    action = Action(Handle(goal_result()))
+    adapter, _stop = port(monkeypatch, action)
+    with pytest.raises(ValueError, match="six finite"):
+        adapter.execute(joints, "token", threading.Event(), lambda _f: None, command="movej")
+    assert action.goal is None
+
+
+@pytest.mark.parametrize("payload, success, valid", [
+    ('{"api2_status":0,"joint_degrees":[1,2,3,4,5,6]}', True, True),
+    ('{"api2_status":-2,"joint_degrees":[]}', False, False),
+    ('{"api2_status":0,"joint_degrees":[1,2]}', True, False),
+    ('invalid', True, False),
+])
+def test_initial_posture_query_validates_controller_reply(monkeypatch, payload, success, valid):
+    adapter, _stop = port(monkeypatch, Action())
+    adapter.init_pose = Client(Trigger.Response(success=success, message=payload))
+    if valid:
+        assert list(adapter.initial_joints()) == [1, 2, 3, 4, 5, 6]
+    else:
+        with pytest.raises(ValueError):
+            adapter.initial_joints()
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_fixed_joint_target_fk_uses_exact_configured_degrees(monkeypatch, success):
+    import numpy as np
+    from realman_msgs.srv import ForwardKinematics
+    from grasp_bridge.geometry import to_pose
+
+    adapter, _stop = port(monkeypatch, Action())
+    expected = np.diag([1., -1., -1., 1.])
+    expected[:3, 3] = [.064173, -.274147, .040462]
+    position, quaternion = to_pose(expected)
+    joints = [95.045, 11.965, 106.228, -1.437, 54.787, 10.14]
+    adapter.fk = Client(ForwardKinematics.Response(success=success, api2_status=0 if success else -2,
+        pose_position_m=position, pose_quaternion_wxyz=quaternion, message="FK unavailable"))
+    if success:
+        np.testing.assert_allclose(adapter.forward_kinematics(joints), expected)
+    else:
+        with pytest.raises(ValueError, match="forward kinematics failed"):
+            adapter.forward_kinematics(joints)
+    sent = adapter.fk.requests[0]
+    assert list(sent.joint_degrees) == joints
+    assert sent.reference_type == sent.BASE and sent.reference_name == "base"
+
+
 def test_motion_ros_port_quarantines_pending_goal_and_stops_without_retry(monkeypatch):
     action = Action(pending=True)
     adapter, stop = port(monkeypatch, action, timeout=.01)

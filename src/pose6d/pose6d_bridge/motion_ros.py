@@ -9,7 +9,7 @@ from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from realman_msgs.action import ExecuteMotion
-from realman_msgs.srv import GetCurrentPose, SelectFrame, SetToolPower, TaskControl
+from realman_msgs.srv import ForwardKinematics, GetCurrentPose, SelectFrame, SetToolPower, TaskControl
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -34,6 +34,8 @@ class MotionRosPort:
         self.max_joint_velocity_rad_sec = float(max_joint_velocity_rad_sec)
         self.group = ReentrantCallbackGroup()
         self.pose = node.create_client(GetCurrentPose, f"/{arm}/get_current_pose", callback_group=self.group)
+        self.init_pose = node.create_client(Trigger, f"/{arm}/get_init_pose", callback_group=self.group)
+        self.fk = node.create_client(ForwardKinematics, f"/{arm}/forward_kinematics", callback_group=self.group)
         self.task = node.create_client(TaskControl, f"/{arm}/task_control", callback_group=self.group)
         self.tool_power = node.create_client(SetToolPower, f"/{arm}/tool_power_control", callback_group=self.group)
         self.select_tool_client = node.create_client(SelectFrame, f"/{arm}/coordinates/select_tool", callback_group=self.group)
@@ -408,12 +410,39 @@ class MotionRosPort:
             raise ValueError("TCP readback does not match fresh stationary joint feedback")
         return rigid(from_pose(response.pose_position_m, response.pose_quaternion_wxyz))
 
+    @staticmethod
+    def _joint_vector(values):
+        joints = np.asarray(values, dtype=float)
+        if joints.shape != (6,) or not np.isfinite(joints).all():
+            raise ValueError("expected six finite joint angles in degrees")
+        return joints
+
+    def initial_joints(self):
+        response = self._service(self.init_pose, Trigger.Request())
+        try:
+            data = json.loads(response.message)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("controller initial posture response is invalid") from exc
+        if not response.success or not isinstance(data, dict) or data.get("api2_status") != 0:
+            raise ValueError("controller initial posture query failed: " + response.message)
+        return self._joint_vector(data.get("joint_degrees"))
+
+    def forward_kinematics(self, joints):
+        request = ForwardKinematics.Request()
+        request.reference_type, request.reference_name = request.BASE, "base"
+        request.joint_degrees = self._joint_vector(joints).tolist()
+        response = self._service(self.fk, request)
+        if not response.success or response.api2_status != 0:
+            raise ValueError("joint target forward kinematics failed: " + response.message)
+        return rigid(from_pose(response.pose_position_m, response.pose_quaternion_wxyz))
+
     def check_path(self, actual, target, session, guard):
         poses = list(samples(actual, target, self.config))
         screen_workspace(poses, self.config, self.suction, guard)
 
     def execute(self, target, token, cancel, feedback, *, command="movel", velocity_percent=None):
-        commands = {"movel": ExecuteMotion.Goal.MOVEL, "movej_p": ExecuteMotion.Goal.MOVEJ_P}
+        commands = {"movej": ExecuteMotion.Goal.MOVEJ,
+                    "movel": ExecuteMotion.Goal.MOVEL, "movej_p": ExecuteMotion.Goal.MOVEJ_P}
         if command not in commands:
             raise ValueError("unsupported motion command")
         label = command.upper()
@@ -422,7 +451,11 @@ class MotionRosPort:
         goal = ExecuteMotion.Goal()
         goal.command = commands[command]
         goal.reference_type, goal.reference_name = ExecuteMotion.Goal.BASE, "base"
-        goal.pose_position_m, goal.pose_quaternion_wxyz = to_pose(target)
+        joints = self._joint_vector(target) if command == "movej" else None
+        if joints is not None:
+            goal.joint_degrees = joints.tolist()
+        else:
+            goal.pose_position_m, goal.pose_quaternion_wxyz = to_pose(target)
         goal.velocity_percent = self.config["velocity_percent"] if velocity_percent is None else velocity_percent
         goal.blend_radius_percent, goal.connect = 0, False
         goal.timeout_sec, goal.task_token = float(self.config["timeout_sec"]), token
@@ -471,6 +504,10 @@ class MotionRosPort:
                         raise ValueError(f"{label} did not reach a confirmed success terminal state: " + result.message)
                     with self.goal_lock:
                         self.unknown_action = False
+                    if joints is not None:
+                        actual_joints = np.rad2deg(self._settled_joints())
+                        if np.max(np.abs(actual_joints - joints)) > self.config.get("joint_tolerance_deg", .25):
+                            raise ValueError("MOVEJ joint readback does not match the target")
                     return
                 time.sleep(.01)
             if not cancel_sent:

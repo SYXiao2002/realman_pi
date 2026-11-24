@@ -101,14 +101,23 @@ class JogSession:
         self.confirmed_m, self.pending_m, self.state = None, None, "lifted"
         del self.lift_target
 
-    def begin_place(self, actual_tcp, position_m):
+    def begin_return_home(self, home_pose):
         if self.state != "lifted":
-            raise ValueError("placement requires a confirmed vertical lift")
-        position = np.asarray(position_m, dtype=float)
-        if position.shape != (3,) or not np.isfinite(position).all():
-            raise ValueError("placement requires three finite BASE coordinates")
-        self.place_target = rigid(actual_tcp).copy()
-        self.place_target[:3, 3] = position
+            raise ValueError("return to initial posture requires a confirmed vertical lift")
+        self.home_target = rigid(home_pose).copy()
+        self.state = "returning_home"
+
+    def finish_return_home(self, actual_tcp):
+        if self.state != "returning_home":
+            raise ValueError("initial posture has no pending target")
+        self._check_target_pose(actual_tcp, self.home_target, "initial posture")
+        self.state = "at_home"
+
+    def begin_place(self, actual_tcp, target_pose):
+        if self.state != "at_home":
+            raise ValueError("placement requires confirmed arrival at the initial posture")
+        self._check_target_pose(actual_tcp, self.home_target, "initial posture")
+        self.place_target = rigid(target_pose).copy()
         self.state = "placing"
         return self.place_target.copy()
 
@@ -117,6 +126,18 @@ class JogSession:
             raise ValueError("placement has no pending target")
         self._check_target_pose(actual_tcp, self.place_target, "place pose")
         self.state = "placed"
+
+    def begin_return_after_place(self, actual_tcp):
+        if self.state != "placed":
+            raise ValueError("final return requires confirmed arrival at the place pose")
+        self._check_target_pose(actual_tcp, self.place_target, "place pose")
+        self.state = "returning_after_place"
+
+    def finish_return_after_place(self, actual_tcp):
+        if self.state != "returning_after_place":
+            raise ValueError("final return has no pending target")
+        self._check_target_pose(actual_tcp, self.home_target, "final initial posture")
+        self.state = "completed"
         del self.place_target
 
     def jog(self, step_m, actual_tcp):

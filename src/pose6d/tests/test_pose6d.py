@@ -85,6 +85,23 @@ def test_motion_uses_a_registered_tool_and_valid_contact_transform():
     configured_transform(motion["T_contact_tcp"])
 
 
+@pytest.mark.parametrize("key", ["home_velocity_percent", "place_velocity_percent", "return_velocity_percent"])
+@pytest.mark.parametrize("speed", [0, 101, 10.5])
+def test_transit_speed_configuration_rejects_invalid_percentages(key, speed):
+    controller, _port, _obs, config = motion_setup()
+    config[key] = speed
+    with pytest.raises(ValueError, match=key):
+        validate_config(config, controller.suction)
+
+
+@pytest.mark.parametrize("home", [[1, 2, 3], [float("nan")] * 6])
+def test_yaml_home_requires_six_finite_joint_angles(home):
+    controller, _port, _obs, config = motion_setup()
+    config["home_joint_degrees"] = home
+    with pytest.raises(ValueError, match="home_joint_degrees"):
+        validate_config(config, controller.suction)
+
+
 def test_contact_offset_must_fit_within_signed_travel_limit():
     root = Path(__file__).resolve().parents[3]
     settings = yaml.safe_load((root / "config/ros/pose6d_bridge.yaml").read_text())
@@ -209,9 +226,10 @@ def motion_setup(*, execute_error=None, unknown=False, holding=True, clock=time.
         "velocity_percent": 10, "prepare_distance_m": .04, "second_prepare_distance_m": .005,
         "lift_height_m": .05, "prepare_velocity_percent": 10, "approach_velocity_percent": 20,
         "contact_velocity_percent": 5, "lift_velocity_percent": 10,
+        "home_velocity_percent": 11, "place_velocity_percent": 12, "return_velocity_percent": 13,
         "timeout_sec": 2., "position_tolerance_m": .001,
         "angular_tolerance_rad": .01, "workspace_m": [[-1, -1, -1], [1, 1, 1]],
-        "place_position_m": [.064173, -.274147, .040462],
+        "place_joint_degrees": [95.045, 11.965, 106.228, -1.437, 54.787, 10.14],
         "cartesian_sample_step_m": .01, "angular_sample_step_rad": .1,
         "collision_margin_m": .001,
         "allow_partial_scene": True,
@@ -233,6 +251,13 @@ def motion_setup(*, execute_error=None, unknown=False, holding=True, clock=time.
             self.operations = []
             self.unknown = unknown
             self.holding = holding
+            self.home_joints = np.array([10., 12., 106., -1., 55., 10.])
+            self.home_pose = configured_transform({"xyz_m": [.25, .15, .4], "rpy_rad": [np.pi, 0, .4]})
+            self.place_joints = np.array(config["place_joint_degrees"])
+            self.place_pose = configured_transform({"xyz_m": [.064173, -.274147, .040462],
+                                                    "rpy_rad": [np.pi, 0, 1.8]})
+            self.joint_poses = {tuple(self.home_joints): self.home_pose,
+                                tuple(self.place_joints): self.place_pose}
 
         def context(self): return {"tool": "suction_tcp", "motion_allowed": True}
         def acquire(self, owner, ttl): self.busy = True; return "token"
@@ -242,6 +267,15 @@ def motion_setup(*, execute_error=None, unknown=False, holding=True, clock=time.
             if self.unknown: raise RuntimeError("command still unknown")
             self.busy = False; self.released.append(token)
         def current(self): return self.pose.copy()
+        def initial_joints(self):
+            self.operations.append(("initial_joints", None))
+            return self.home_joints.copy()
+        def forward_kinematics(self, joints):
+            if np.array_equal(joints, self.place_joints):
+                assert controller.status()["state"] == "at_home"
+                np.testing.assert_allclose(self.pose, self.home_pose)
+                self.operations.append(("place_fk", None))
+            return self.joint_poses[tuple(joints)].copy()
         def wait_vacuum_holding(self, cancel):
             assert not cancel.is_set()
             assert controller.status()["state"] == "lifted"
@@ -256,7 +290,7 @@ def motion_setup(*, execute_error=None, unknown=False, holding=True, clock=time.
             self.executed_targets.append(target.copy())
             self.velocities.append(velocity_percent)
             self.operations.append((command, velocity_percent))
-            self.pose = target.copy()
+            self.pose = self.joint_poses[tuple(target)].copy() if command == "movej" else target.copy()
         def set_tool_power(self, enabled, token):
             assert token == "token" and self.busy
             self.operations.append(("power", enabled))
@@ -295,8 +329,15 @@ def test_motion_controller_prepare_jog_crosses_zero_with_rotated_tcp():
     assert port.released == ["token"]
 
 
-def test_automatic_suction_uses_configured_approach_contact_and_base_vertical_lift():
+@pytest.mark.parametrize("home_source", ["controller", "yaml"])
+def test_automatic_suction_uses_configured_points_speeds_and_returns_after_release(home_source):
     controller, port, _obs, config = motion_setup()
+    home_joints = port.home_joints
+    if home_source == "yaml":
+        home_joints = np.array([8., 11., 105., -2., 54., 9.])
+        config["home_joint_degrees"] = home_joints.tolist()
+        port.joint_poses[tuple(home_joints)] = port.home_pose
+        port.initial_joints = lambda: pytest.fail("YAML home must override the controller posture")
     config["workspace_m"][0][1] = -.252385  # Placement lies outside the grasp workspace.
     check_path = port.check_path
 
@@ -314,22 +355,28 @@ def test_automatic_suction_uses_configured_approach_contact_and_base_vertical_li
     assert controller.status()["state"] == "ready"
 
     complete = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
-    assert complete["state"] == "placed"
+    assert complete["state"] == "completed"
     assert complete["confirmed_mm"] is None and complete["auto_suction_ready"] is False
-    assert port.commands == ["movej_p", "movel", "movel", "movel", "movej_p"]
-    assert port.velocities == [10, 20, 5, 10, 10]
-    assert port.operations == [("movej_p", 10), ("power", True), ("movel", 20),
-                               ("movel", 5), ("movel", 10), ("vacuum", True),
-                               ("movej_p", 10), ("power", False)]
+    assert port.commands == ["movej_p", "movel", "movel", "movel", "movej", "movej", "movej"]
+    assert port.velocities == [10, 20, 5, 10, 11, 12, 13]
+    assert port.operations == ([("movej_p", 10), ("power", True), ("movel", 20),
+                               ("movel", 5), ("movel", 10), ("vacuum", True)]
+                              + ([("initial_joints", None)] if home_source == "controller" else [])
+                              + [("movej", 11), ("place_fk", None), ("movej", 12),
+                                 ("power", False), ("movej", 13)])
     assert complete["tool_power"]["voltage_v"] == 0
     first, contact, lift = [target for _actual, target in port.targets[1:]]
-    place = port.executed_targets[-1]
+    place = port.place_pose
+    np.testing.assert_array_equal(port.executed_targets[-3], home_joints)
+    np.testing.assert_array_equal(port.executed_targets[-2], config["place_joint_degrees"])
+    np.testing.assert_array_equal(port.executed_targets[-1], home_joints)
     assert np.linalg.norm(first[:3, 3] - port.targets[0][1][:3, 3]) == pytest.approx(.035)
     assert np.linalg.norm(contact[:3, 3] - first[:3, 3]) == pytest.approx(.01)
     assert contact[2, 3] == pytest.approx(first[2, 3] - .01)
     np.testing.assert_allclose(lift[:3, 3] - contact[:3, 3], [0, 0, .05], atol=1e-9)
-    np.testing.assert_allclose(place[:3, 3], config["place_position_m"], atol=1e-9)
-    np.testing.assert_allclose(place[:3, :3], lift[:3, :3], atol=1e-9)
+    np.testing.assert_allclose(port.pose, port.home_pose, atol=1e-9)
+    assert not np.allclose(place[:3, :3], port.home_pose[:3, :3])
+    assert not np.allclose(place[:3, :3], lift[:3, :3])
     assert place[1, 3] < config["workspace_m"][0][1]
     with pytest.raises(ValueError, match="workspace"):
         screen_workspace([place], config, controller.suction)
@@ -349,6 +396,38 @@ def test_automatic_suction_without_object_turns_vacuum_off_at_lift_position():
     assert port.commands == ["movej_p", "movel", "movel", "movel"]
     assert port.operations[-2:] == [("vacuum", False), ("power", False)]
     assert len(port.targets) == 4
+
+
+@pytest.mark.parametrize("failure", ["action", "position", "orientation", "stop"])
+def test_final_return_requires_power_off_and_confirmed_arrival_before_completion(failure):
+    controller, port, _obs, _config = motion_setup()
+    events = []
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, events.append)
+    execute = port.execute
+
+    def fail_return(target, token, cancel, feedback, **kwargs):
+        returning = controller.status()["state"] == "returning_after_place"
+        if returning:
+            assert controller.status()["tool_power"]["voltage_v"] == 0
+            assert port.operations[-1] == ("power", False)
+            if failure == "action":
+                raise RuntimeError("final return action failed")
+            if failure == "stop":
+                controller.stop("client", prepared["session_id"])
+        execute(target, token, cancel, feedback, **kwargs)
+        if returning and failure == "position":
+            port.pose[0, 3] += .01
+        if returning and failure == "orientation":
+            port.pose[:3, :3] = port.pose[:3, :3] @ np.diag([-1, -1, 1])
+
+    port.execute = fail_return
+    with pytest.raises((RuntimeError, ValueError), match="final|canceled"):
+        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, events.append)
+    assert controller.status()["state"] == "blocked"
+    assert controller.status()["tool_power"]["voltage_v"] == 0
+    assert not any(event["state"] == "completed" for event in events)
+    assert [op for op in port.operations if op[0] == "power"] == [("power", True), ("power", False)]
 
 
 def test_automatic_suction_with_unknown_vacuum_state_keeps_power_on_and_blocks():
@@ -390,6 +469,47 @@ def test_automatic_suction_place_requires_confirmed_arrival_before_power_off(fai
     with pytest.raises((RuntimeError, ValueError), match="place|canceled"):
         controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
 
+    assert controller.status()["state"] == "blocked"
+    assert controller.status()["tool_power"]["voltage_v"] == 24
+    assert ("power", False) not in port.operations
+
+
+@pytest.mark.parametrize("failure", ["initial_query", "action", "position", "orientation", "place_fk", "stop"])
+def test_automatic_suction_requires_confirmed_initial_posture_before_placement(failure):
+    controller, port, _obs, _config = motion_setup()
+    feedback = lambda _event: None
+    prepared = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                   "grasp_id": "g1", "review_confirmed": True}, feedback)
+    execute = port.execute
+
+    def fail_home(target, token, cancel, callback, **kwargs):
+        returning = controller.status()["state"] == "returning_home"
+        if returning and failure == "action":
+            raise RuntimeError("home action failed")
+        if returning and failure == "stop":
+            controller.stop("client", prepared["session_id"])
+        execute(target, token, cancel, callback, **kwargs)
+        if returning and failure == "position":
+            port.pose[0, 3] += .01
+        if returning and failure == "orientation":
+            port.pose[:3, :3] = port.pose[:3, :3] @ np.diag([-1, -1, 1])
+
+    def fail_query(*_args):
+        raise ValueError("initial posture or placement FK unavailable")
+
+    port.execute = fail_home
+    if failure == "initial_query":
+        port.initial_joints = fail_query
+    if failure == "place_fk":
+        forward_kinematics = port.forward_kinematics
+        def fail_place_fk(joints):
+            if np.array_equal(joints, port.place_joints):
+                return fail_query()
+            return forward_kinematics(joints)
+        port.forward_kinematics = fail_place_fk
+    with pytest.raises((RuntimeError, ValueError), match="home|initial posture|canceled"):
+        controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, feedback)
+    assert port.commands.count("movej") <= 1
     assert controller.status()["state"] == "blocked"
     assert controller.status()["tool_power"]["voltage_v"] == 24
     assert ("power", False) not in port.operations
@@ -440,7 +560,8 @@ def test_automatic_suction_power_failure_blocks_without_retrying_or_claiming_suc
     assert status["auto_suction_ready"] is False
     assert status["tool_power"]["available"] is False
     assert "power response lost" in status["tool_power"]["message"]
-    assert port.commands == (["movej_p"] if fail_enabled else ["movej_p", "movel", "movel", "movel", "movej_p"])
+    assert port.commands == (["movej_p"] if fail_enabled else
+                             ["movej_p", "movel", "movel", "movel", "movej", "movej"])
 
 
 def test_automatic_suction_stop_during_lift_keeps_vacuum_on():
@@ -474,8 +595,8 @@ def test_automatic_suction_releases_power_after_lift_even_when_browser_disconnec
 
     port.execute = disconnect
     result = controller.auto_suction({"client_id": "client", "session_id": prepared["session_id"]}, lambda _event: None)
-    assert result["state"] == "placed" and result["tool_power"]["voltage_v"] == 0
-    assert port.operations[-1] == ("power", False)
+    assert result["state"] == "completed" and result["tool_power"]["voltage_v"] == 0
+    assert port.operations[-2:] == [("power", False), ("movej", 13)]
     controller.tick()
     assert port.released == ["token"]
 
