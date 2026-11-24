@@ -43,13 +43,13 @@ test("one EU capture and segmentation can solve repeatedly with different OBJ mo
   await page.evaluate(() => (window as any).poseSocket.emit({
     type: "pose6d_frames", arm: "r", available: false,
     pose6d_models: [
-      { object_id: "eu_plug", label: "欧规插头", default: true },
-      { object_id: "eu_plug_1124", label: "欧规插头 1124", default: false },
+      { object_id: "eu_plug", label: "欧规插头", default: false },
+      { object_id: "eu_plug_1124", label: "欧规插头 1124", default: true },
     ],
   }));
   await expect(page.locator("#capture-object option")).toHaveCount(1);
   await expect(page.locator("#capture-object")).toHaveValue("eu_plug");
-  await page.locator("#object").selectOption("eu_plug_1124");
+  await expect(page.locator("#object")).toHaveValue("eu_plug_1124");
   await page.locator("#capture").click();
   const capture = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_capture"));
   expect(capture.object_id).toBe("eu_plug");
