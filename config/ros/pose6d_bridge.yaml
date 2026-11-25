@@ -88,4 +88,7 @@ motion:
   # MOVEJ_P has no obstacle-path prediction here; review its full physical path before confirmation.
   allow_partial_scene: true
   lease_ttl_sec: 15.0
+  # Read-only TCP/FK/initial-posture queries may wait longer after a motion.
+  # Motion submission, tool power, stop and lease operations use service_timeout_sec.
+  read_service_timeout_sec: 8.0
   service_timeout_sec: 3.0
