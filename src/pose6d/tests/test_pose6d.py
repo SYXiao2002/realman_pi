@@ -102,6 +102,14 @@ def test_yaml_home_requires_six_finite_joint_angles(home):
         validate_config(config, controller.suction)
 
 
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), True])
+def test_read_service_timeout_requires_a_positive_finite_number(timeout):
+    controller, _port, _obs, config = motion_setup()
+    config["read_service_timeout_sec"] = timeout
+    with pytest.raises(ValueError, match="read_service_timeout_sec"):
+        validate_config(config, controller.suction)
+
+
 def test_contact_offset_must_fit_within_signed_travel_limit():
     root = Path(__file__).resolve().parents[3]
     settings = yaml.safe_load((root / "config/ros/pose6d_bridge.yaml").read_text())

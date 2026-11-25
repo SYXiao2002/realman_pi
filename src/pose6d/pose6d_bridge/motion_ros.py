@@ -192,21 +192,52 @@ class MotionRosPort:
             cutoff = time.monotonic() - max(2.0, self.settle_sec * 4)
             self.joint_samples = [sample for sample in self.joint_samples if sample[0] >= cutoff][-4096:]
 
-    def _wait_future(self, future, timeout, *, on_late=None):
-        deadline = time.monotonic() + timeout
+    def _wait_future(self, future, timeout, *, on_late=None, operation="ROS call", read_only=False):
+        started = time.monotonic()
+        deadline = started + timeout
         while time.monotonic() < deadline:
             if future.done():
                 return future.result()
             time.sleep(.005)
+        if future.done():
+            return future.result()
         if on_late is not None:
             future.add_done_callback(on_late)
-        raise TimeoutError("ROS service or action call timed out; outcome is unknown")
+        elapsed = time.monotonic() - started
+        detail = ("read-only response unavailable; no motion was submitted by this query"
+                  if read_only else "outcome is unknown")
+        raise TimeoutError(f"{operation} timed out after {timeout:g}s (elapsed {elapsed:.3f}s); {detail}")
 
-    def _service(self, client, request, *, on_late=None):
-        timeout = float(self.config["service_timeout_sec"])
-        if not client.wait_for_service(timeout_sec=timeout):
-            raise TimeoutError(f"service {getattr(client, 'srv_name', 'requested ROS service')} is unavailable")
+    def _service(self, client, request, *, on_late=None, read_only=False):
+        control_timeout = float(self.config["service_timeout_sec"])
+        timeout = (float(self.config.get("read_service_timeout_sec", control_timeout))
+                   if read_only else control_timeout)
+        name = getattr(client, "srv_name", None)
+        if not name:
+            name = next((f"/{self.arm}/{suffix}" for attr, suffix in (
+                ("pose", "get_current_pose"), ("fk", "forward_kinematics"), ("init_pose", "get_init_pose"),
+                ("task", "task_control"), ("tool_power", "tool_power_control"),
+                ("select_tool_client", "coordinates/select_tool"), ("stop_client", "stop"))
+                if client is getattr(self, attr, None)), "ROS service")
+        operation = f"ROS service {name}"
+        status_query = False
+        if client is self.task:
+            task_operation = next((label for label in ("ACQUIRE", "RENEW", "RELEASE", "STATUS")
+                                   if request.operation == getattr(TaskControl.Request, label)), "OTHER")
+            operation += f" ({task_operation})"
+            status_query = request.operation == TaskControl.Request.STATUS
+        if not client.wait_for_service(timeout_sec=control_timeout):
+            raise TimeoutError(f"{operation} unavailable after {control_timeout:g}s waiting for service discovery")
         future = client.call_async(request)
+        started = time.monotonic()
+
+        def wait():
+            response = self._wait_future(future, timeout, operation=operation, read_only=read_only or status_query)
+            elapsed = time.monotonic() - started
+            if read_only and elapsed > control_timeout:
+                self.node.get_logger().warning(f"slow {operation}: response received after {elapsed:.3f}s")
+            return response
+
         if on_late is not None:
             timed_out = {"value": False}
             lock = threading.Lock()
@@ -218,7 +249,7 @@ class MotionRosPort:
                     on_late(done)
 
             try:
-                return self._wait_future(future, timeout)
+                return wait()
             except TimeoutError:
                 if future.done():
                     return future.result()
@@ -226,7 +257,7 @@ class MotionRosPort:
                     timed_out["value"] = True
                 future.add_done_callback(completed)
                 raise
-        return self._wait_future(future, timeout)
+        return wait()
 
     def context(self):
         with self.lease_lock:
@@ -400,7 +431,7 @@ class MotionRosPort:
         self._settled_joints()
         request = GetCurrentPose.Request()
         request.reference_type, request.reference_name = GetCurrentPose.Request.BASE, "base"
-        response = self._service(self.pose, request)
+        response = self._service(self.pose, request, read_only=True)
         if not response.success or response.api2_status != 0:
             raise ValueError("BASE TCP readback failed: " + response.message)
         joints = np.asarray(response.current_joint_degrees, dtype=float)
@@ -418,7 +449,7 @@ class MotionRosPort:
         return joints
 
     def initial_joints(self):
-        response = self._service(self.init_pose, Trigger.Request())
+        response = self._service(self.init_pose, Trigger.Request(), read_only=True)
         try:
             data = json.loads(response.message)
         except (TypeError, ValueError) as exc:
@@ -431,7 +462,7 @@ class MotionRosPort:
         request = ForwardKinematics.Request()
         request.reference_type, request.reference_name = request.BASE, "base"
         request.joint_degrees = self._joint_vector(joints).tolist()
-        response = self._service(self.fk, request)
+        response = self._service(self.fk, request, read_only=True)
         if not response.success or response.api2_status != 0:
             raise ValueError("joint target forward kinematics failed: " + response.message)
         return rigid(from_pose(response.pose_position_m, response.pose_quaternion_wxyz))
@@ -447,7 +478,8 @@ class MotionRosPort:
             raise ValueError("unsupported motion command")
         label = command.upper()
         if not self.action.wait_for_server(timeout_sec=self.config["service_timeout_sec"]):
-            raise TimeoutError("execute_motion action is unavailable")
+            raise TimeoutError(f"ROS action /{self.arm}/execute_motion ({label}) unavailable after "
+                               f"{self.config['service_timeout_sec']:g}s waiting for action discovery")
         goal = ExecuteMotion.Goal()
         goal.command = commands[command]
         goal.reference_type, goal.reference_name = ExecuteMotion.Goal.BASE, "base"
@@ -463,7 +495,8 @@ class MotionRosPort:
             self.unknown_action = True
         future = self.action.send_goal_async(goal)
         try:
-            handle = self._wait_future(future, self.config["service_timeout_sec"])
+            handle = self._wait_future(future, self.config["service_timeout_sec"],
+                                       operation=f"ROS action /{self.arm}/execute_motion ({label}) goal acceptance")
         except Exception:
             if not future.done():
                 future.add_done_callback(self._cancel_late_goal)
@@ -483,7 +516,8 @@ class MotionRosPort:
         except Exception:
             self.interrupt()
             raise
-        deadline = time.monotonic() + self.config["timeout_sec"] + self.config["service_timeout_sec"]
+        result_started = time.monotonic()
+        deadline = result_started + self.config["timeout_sec"] + self.config["service_timeout_sec"]
         cancel_sent = False
         try:
             while time.monotonic() < deadline:
@@ -513,8 +547,12 @@ class MotionRosPort:
             if not cancel_sent:
                 handle.cancel_goal_async()
             result_future.add_done_callback(self._observe_late_result)
+            elapsed = time.monotonic() - result_started
             self.interrupt()
-            raise TimeoutError(f"{label} terminal outcome is unknown; retaining task lease")
+            raise TimeoutError(f"ROS action /{self.arm}/execute_motion ({label}) result timed out after "
+                               f"{self.config['timeout_sec'] + self.config['service_timeout_sec']:g}s "
+                               f"(elapsed {elapsed:.3f}s); "
+                               "terminal outcome is unknown; retaining task lease")
         finally:
             with self.goal_lock:
                 self.active_goal = None
@@ -554,9 +592,11 @@ class MotionRosPort:
             except Exception:
                 pass
         if not self.stop_client.wait_for_service(timeout_sec=self.config["service_timeout_sec"]):
-            raise TimeoutError("driver stop service is unavailable; motion outcome remains unknown")
+            raise TimeoutError(f"ROS service /{self.arm}/stop unavailable after "
+                               f"{self.config['service_timeout_sec']:g}s; motion outcome remains unknown")
         future = self.stop_client.call_async(Trigger.Request())
-        response = self._wait_future(future, self.config["service_timeout_sec"])
+        response = self._wait_future(future, self.config["service_timeout_sec"],
+                                     operation=f"ROS service /{self.arm}/stop")
         if not response.success:
             raise ValueError("driver stop was not confirmed: " + response.message)
 

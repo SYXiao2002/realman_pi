@@ -107,7 +107,7 @@ class Node:
         return SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=self.now_ns))
 
     def get_logger(self):
-        return SimpleNamespace(info=self.logs.append)
+        return SimpleNamespace(info=self.logs.append, warning=self.logs.append)
 
 
 def port(monkeypatch, action, timeout=.03, selectable_tool_names=()):
@@ -116,6 +116,90 @@ def port(monkeypatch, action, timeout=.03, selectable_tool_names=()):
     config = {"service_timeout_sec": timeout, "timeout_sec": .1, "velocity_percent": 7}
     return MotionRosPort(Node(stop), "r", config, {"cup_diameter_m": .01},
                          selectable_tool_names=selectable_tool_names), stop
+
+
+def delayed_client(monkeypatch, response, delay):
+    timer = {"now": 0.0}
+    monkeypatch.setattr("pose6d_bridge.motion_ros.time.monotonic", lambda: timer["now"])
+    monkeypatch.setattr("pose6d_bridge.motion_ros.time.sleep",
+                        lambda seconds: timer.update(now=timer["now"] + seconds))
+
+    class DelayedFuture(Future):
+        def done(self):
+            return timer["now"] >= delay
+
+        def result(self):
+            assert self.done()
+            return response
+
+    client = Client(response)
+    def call(request):
+        client.requests.append(request)
+        return DelayedFuture()
+    client.call_async = call
+    return client, timer
+
+
+@pytest.mark.parametrize("query", ["pose", "fk", "init_pose"])
+def test_read_queries_accept_delayed_reply_with_separate_timeout_without_resubmitting(monkeypatch, query):
+    import numpy as np
+    adapter, _stop = port(monkeypatch, Action(), timeout=3)
+    adapter.config["read_service_timeout_sec"] = 8
+    adapter._settled_joints = lambda: np.zeros(6)
+    response = SimpleNamespace(success=True, api2_status=0, current_joint_degrees=[0.] * 6,
+        pose_position_m=[0., 0., 0.], pose_quaternion_wxyz=[1., 0., 0., 0.],
+        message='{"api2_status":0,"joint_degrees":[0,0,0,0,0,0]}')
+    client, timer = delayed_client(monkeypatch, response, delay=4)
+    setattr(adapter, query, client)
+    if query == "pose":
+        adapter.context = lambda: None
+        np.testing.assert_allclose(adapter.current(), np.eye(4))
+    elif query == "fk":
+        np.testing.assert_allclose(adapter.forward_kinematics([0] * 6), np.eye(4))
+    else:
+        np.testing.assert_array_equal(adapter.initial_joints(), [0] * 6)
+    assert 4 <= timer["now"] < 8
+    assert len(client.requests) == 1
+    assert any("slow ROS service /r/" in message for message in adapter.node.logs)
+
+
+@pytest.mark.parametrize("budget, delay, succeeds", [(8, 9, False), (4, 4, True)])
+def test_read_timeout_names_endpoint_and_budget_and_accepts_reply_at_deadline(monkeypatch, budget, delay, succeeds):
+    adapter, _stop = port(monkeypatch, Action(), timeout=3)
+    adapter.config["read_service_timeout_sec"] = budget
+    response = Trigger.Response(success=True, message='{"api2_status":0,"joint_degrees":[0,0,0,0,0,0]}')
+    adapter.init_pose, _timer = delayed_client(monkeypatch, response, delay)
+    if succeeds:
+        assert list(adapter.initial_joints()) == [0] * 6
+    else:
+        with pytest.raises(TimeoutError, match=r"/r/get_init_pose.*after 8s.*elapsed.*read-only response unavailable"):
+            adapter.initial_joints()
+    assert len(adapter.init_pose.requests) == 1
+
+
+@pytest.mark.parametrize("operation", ["power", "status", "renew", "acquire"])
+def test_read_budget_does_not_extend_control_deadlines_or_retry_commands(monkeypatch, operation):
+    adapter, _stop = port(monkeypatch, Action(), timeout=3)
+    adapter.config["read_service_timeout_sec"] = 8
+    client, timer = delayed_client(monkeypatch, SimpleNamespace(success=True), delay=4)
+    if operation == "power":
+        adapter.tool_power = client
+        call = lambda: adapter.set_tool_power(True, "private-token")
+        endpoint = "/r/tool_power_control"
+    else:
+        adapter.task = client
+        call = {"status": lambda: adapter._task_status("private-token"),
+                "renew": lambda: adapter.renew("private-token", 15),
+                "acquire": lambda: adapter.acquire("owner", 15)}[operation]
+        endpoint = f"/r/task_control ({operation.upper()})"
+    with pytest.raises(TimeoutError) as error:
+        call()
+    assert endpoint in str(error.value)
+    assert "after 3s" in str(error.value) and "private-token" not in str(error.value)
+    assert 3 <= timer["now"] < 4
+    assert len(client.requests) == 1
+    if operation == "acquire":
+        assert adapter.unknown_lease is True
 
 
 def test_motion_ros_port_selects_only_idle_configured_tool(monkeypatch):
@@ -384,7 +468,8 @@ def test_motion_ros_port_quarantines_pending_goal_and_stops_without_retry(monkey
     import numpy as np
     import threading
     target = np.eye(4)
-    with pytest.raises(TimeoutError, match="unknown"):
+    adapter.config["read_service_timeout_sec"] = 8
+    with pytest.raises(TimeoutError, match=r"/r/execute_motion \(MOVEL\) goal acceptance.*after 0.01s.*unknown"):
         adapter.execute(target, "lease-token", threading.Event(), lambda _f: None)
     assert adapter.action_uncertain() is True
     assert len(stop.requests) == 1 and len(action.goal.pose_position_m) == 3

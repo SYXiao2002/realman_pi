@@ -45,6 +45,8 @@ def validate_config(config, suction):
                 "collision_margin_m",
                 "lease_ttl_sec", "service_timeout_sec"):
         positive(config, key)
+    if "read_service_timeout_sec" in config:
+        positive(config, "read_service_timeout_sec")
     for key in ("velocity_percent", "prepare_velocity_percent", "approach_velocity_percent",
                 "contact_velocity_percent", "lift_velocity_percent",
                 "home_velocity_percent", "place_velocity_percent", "return_velocity_percent"):
