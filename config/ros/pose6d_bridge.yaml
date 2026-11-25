@@ -54,7 +54,7 @@ motion:
   contact_offset_m: 0.005   # automatic suction advances 5 mm into the estimated surface
   max_step_m: 0.001
   velocity_percent: 10
-  prepare_distance_m: 0.04
+  prepare_distance_m: 0.02
   second_prepare_distance_m: 0.01
   lift_height_m: 0.1
   # Wait for post-lift IO updates; require two samples and allow vacuum to build.
