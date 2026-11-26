@@ -750,9 +750,11 @@ class PoseBridge(Node):
             contact, normal = suction_pose(T_camera_object, grasp["contact_region"])
             prepared = tcp_target(contact, normal, prepare_distance, np.eye(4))
             try:
-                prepared_tcp = tcp_target(contact, normal, prepare_distance,
-                                          configured_transform(self.motion_config["T_contact_tcp"]))
+                contact_tcp = configured_transform(self.motion_config["T_contact_tcp"])
+                suction_tcp = tcp_target(contact, normal, -contact_offset, contact_tcp)
+                prepared_tcp = tcp_target(contact, normal, prepare_distance, contact_tcp)
             except (KeyError, ValueError, TypeError):
+                suction_tcp = None
                 prepared_tcp = None
             assessment = assess_prepare_pose(obs["T_base_camera"], prepared, prepared_tcp,
                                              self.motion_config, self.settings["suction"])
@@ -761,6 +763,8 @@ class PoseBridge(Node):
                            "contact_region": grasp["contact_region"],
                            "T_camera_contact": contact.tolist(), "normal_camera": normal.tolist(),
                            "tangent_camera": (T_camera_object[:3, :3] @ np.asarray(grasp["contact_region"]["tangent_ref_obj"])).tolist(),
+                           "tool_name": self.motion_config.get("tool_name", "tcpsuck"),
+                           "T_camera_suction_tcp": suction_tcp.tolist() if suction_tcp is not None else None,
                            "T_camera_prepare_contact": prepared.tolist(),
                            "T_camera_prepare_tcp": prepared_tcp.tolist() if prepared_tcp is not None else None,
                            **assessment})
