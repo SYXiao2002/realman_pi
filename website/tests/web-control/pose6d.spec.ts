@@ -240,7 +240,8 @@ test("capture, upload and pose review keep motion disabled without calibration",
   await expect(page.locator("#score-preview")).toBeHidden();
   await expect(page.locator("#score-preview-image")).not.toHaveAttribute("src");
   await expect(page.locator("#grasp")).toBeDisabled();
-  await expect(page.locator("#pose")).toHaveText("—");
+  await expect(page.locator("#tcp-target")).toContainText("解算完成并选择吸取方式后显示目标 TCP");
+  await expect(page.locator("#pose")).toHaveCount(0);
   await page.locator("#capture").click();
   await expect(page.locator("#download")).toBeHidden();
   await expect(page.locator("#infer")).toBeDisabled();
@@ -265,12 +266,19 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
     cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
     grasps: [{ grasp_id: "g1", status: "reliable", radius_m: .007, vertical_down_angle_deg: 0,
       workspace_valid: true, workspace_reason: null, T_camera_contact: pose,
-      tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]] }],
+      tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]],
+      tool_name: "tcpsuck", T_camera_suction_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .2], [0, 0, 0, 1]],
+      T_camera_prepare_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .16], [0, 0, 0, 1]] }],
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
     motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50,
       home_joint_degrees: [9.76, 11.964, 106.229, -1.437, 54.787, 10.141],
       place_joint_degrees: [95.045, 11.965, 106.228, -1.437, 54.787, 10.14] } });
   await expect(page.locator("#auto-path")).toContainText("40 → 5 → -5 mm");
+  await expect(page.locator("#tcp-target")).toContainText("g1 · tcpsuck");
+  await expect(page.locator("#tcp-target")).toContainText("吸取位（接触偏移 −5.0 mm）");
+  await expect(page.locator("#tcp-target")).toContainText("XYZ (r/base_link)  110.0, 220.0, 500.0 mm");
+  await expect(page.locator("#tcp-target")).toContainText("准备位（+40.0 mm）");
+  await expect(page.locator("#tcp-target")).toContainText("XYZ (r/base_link)  110.0, 220.0, 460.0 mm");
   await page.evaluate(() => {
     const frames = { type: "pose6d_frames", arm: "r", available: true,
       tool_name: "tcpsuck", T_base_tcp: [[1, 0, 0, .15], [0, 1, 0, .2], [0, 0, 1, .35], [0, 0, 0, 1]],
