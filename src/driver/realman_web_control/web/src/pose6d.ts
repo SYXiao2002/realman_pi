@@ -10,7 +10,7 @@ const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML = `<div class="pose-page"><header class="pose-header"><h1>6D 位姿与吸盘</h1><span id="connection">未连接</span><a href="/6d_pose_history/">6D 历史</a><a href="/">控制台</a></header>
 <main class="pose-main"><div class="pose-toolbar"><label>采集分割对象<select id="capture-object"><option value="eu_plug">欧标插头</option></select></label><button id="capture" class="button primary">采集并自动分割</button><a id="download" class="button secondary" hidden>下载 RGB</a><label>手工 Mask<input id="mask" type="file" accept="image/png" disabled></label><label>解算 OBJ<select id="object"><option value="eu_plug">欧规插头</option></select></label><button id="infer" class="button primary" disabled>解算所选实例</button></div>
 <a id="history-result" href="/6d_pose_history/" target="_blank" rel="noopener" hidden>查看本次历史</a><div id="state" class="pose-status" role="status">等待采集</div><section class="pose-detections"><div class="pose-detection-head"><h2>检测与分割</h2><p id="vision-timings">等待采集</p></div><div id="instance-list" class="pose-instance-list" aria-live="polite"></div></section><div class="pose-workspace"><div><div class="pose-images"><figure><img id="rgb" alt="采集 RGB"><figcaption>RGB</figcaption></figure><figure><img id="depth" alt="对齐深度"><figcaption>Depth</figcaption></figure><figure class="pose-instance-image"><img id="instances-overview" alt="全部实例 ID 与检测框总览"><figcaption>实例总览 · #编号对应上方选择列表</figcaption></figure><figure class="pose-instance-image"><img id="overlay" alt="所选 SAM 实例、手工 Mask 或解算结果预览"><figcaption id="overlay-caption">所选实例 / 解算结果</figcaption></figure><figure id="score-preview" class="pose-score-image" hidden><figcaption>vis_score · 最高分候选 · RGB / Depth 对比</figcaption><a id="score-preview-link" target="_blank" rel="noopener" title="打开完整 vis_score 图"><img id="score-preview-image" alt="vis_score 最高分候选，含候选 ID、分数与 RGB / Depth 对比" hidden></a><p id="score-preview-status" role="status"></p></figure></div><canvas id="viewer" class="pose-viewer" aria-label="RGB-D 点云、模型、选中吸取方式、坐标系、准备位与配置工作区"></canvas><div class="pose-legend"><label><input id="show-tangent" type="checkbox" checked>切向参考 t（青）</label><label><input id="show-camera" type="checkbox" checked>相机坐标系</label><label><input id="show-tool" type="checkbox" checked>当前 TCP</label><label><input id="show-prepare" type="checkbox" checked><span id="prepare-legend">准备位 +40 mm（紫）</span></label><label><input id="show-workspace" type="checkbox" checked>配置工作区</label><button id="fit-view" class="button secondary">显示全部</button><small>坐标轴 X 红 / Y 绿 / Z 蓝；橙色为朝外法向 n，接触系 +Z = −n。</small><small id="frames-state">采集后显示当前 TCP；相机坐标系为冻结采集帧。</small><small id="workspace-state">等待配置工作区。</small></div></div>
-<aside class="pose-side"><section><h2>观测</h2><p id="observation">尚未采集</p></section><section><h2>几何验证</h2><p id="warning">尚未解算</p><pre id="metrics" class="pose-metrics"></pre></section><section><h2>吸盘与运动</h2><div id="vacuum-status" aria-label="吸盘状态"></div><div class="tool-power-control"><label><input id="tool-power" type="checkbox" disabled><span>右臂工具端 24V</span></label><span id="tool-power-state" role="status">等待电源状态</span></div><div class="pose-controls"><label class="wide">控制器 TCP<select id="controller-tool"><option value="tcpsuck">吸盘 · tcpsuck</option><option value="tcpgrip">夹爪 · tcpgrip</option></select></label><button id="apply-tool" class="button secondary wide">切换 TCP</button><p id="tool-state" class="wide">等待控制器工具状态</p><label class="wide">吸取方式<select id="grasp" disabled></select></label><label>当前 x / mm<input id="distance" type="text" value="—" readonly></label><label>单次步长 / mm<input id="step" type="number" min="0.1" max="500" step="0.1" value="1"></label><label class="wide review"><input id="review" type="checkbox" disabled><span>已复核位姿、告警、完整运动路径与吸盘方向；路径未做障碍物碰撞检测</span></label><button id="prepare" class="button secondary wide" disabled>移动到 +40 mm 准备位</button><div class="step-buttons wide"><button id="minus" class="button secondary" title="靠近物体" aria-label="靠近物体" disabled>−</button><button id="plus" class="button secondary" title="远离物体" aria-label="远离物体" disabled>+</button></div><small id="auto-vacuum" class="wide">提升后读取真空开关：已吸附则 MOVEJ 回初始姿态，确认到位后 MOVEJ 放置并关闭吸盘，再 MOVEJ 回初始姿态；未吸附则在提升位直接关闭。</small><button id="auto-suction" class="button primary wide" disabled>自动接近并提升</button><small id="auto-path" class="wide">自动路径：40 → 5 → 0 mm，BASE +Z 提升 50 mm</small><button id="stop-motion" class="button secondary wide" disabled>停止 / 关闭运动会话</button><p id="motion" class="wide">运动未就绪</p><small id="cup-info" class="wide">吸盘尺寸由配置提供；细线圈表示人工标注接触区域。</small></div></section><section><h2>物体位姿</h2><pre id="pose" class="pose-metrics">—</pre></section></aside></div></main></div>`;
+<aside class="pose-side"><section><h2>观测</h2><p id="observation">尚未采集</p></section><section><h2>几何验证</h2><p id="warning">尚未解算</p><pre id="metrics" class="pose-metrics"></pre></section><section><h2>吸盘与运动</h2><div id="vacuum-status" aria-label="吸盘状态"></div><div class="tool-power-control"><label><input id="tool-power" type="checkbox" disabled><span>右臂工具端 24V</span></label><span id="tool-power-state" role="status">等待电源状态</span></div><div class="pose-controls"><label class="wide">控制器 TCP<select id="controller-tool"><option value="tcpsuck">吸盘 · tcpsuck</option><option value="tcpgrip">夹爪 · tcpgrip</option></select></label><button id="apply-tool" class="button secondary wide">切换 TCP</button><p id="tool-state" class="wide">等待控制器工具状态</p><label class="wide">吸取方式<select id="grasp" disabled></select></label><div class="tcp-target-panel wide"><h2>吸取 TCP 目标</h2><pre id="tcp-target" class="pose-metrics">选择吸取方式后显示</pre><small id="tcp-target-note">显示所选吸取方式的目标 TCP；吸取位与准备位姿态以 BASE 坐标系表示。</small></div><label>当前 x / mm<input id="distance" type="text" value="—" readonly></label><label>单次步长 / mm<input id="step" type="number" min="0.1" max="500" step="0.1" value="1"></label><label class="wide review"><input id="review" type="checkbox" disabled><span>已复核位姿、告警、完整运动路径与吸盘方向；路径未做障碍物碰撞检测</span></label><button id="prepare" class="button secondary wide" disabled>移动到 +40 mm 准备位</button><div class="step-buttons wide"><button id="minus" class="button secondary" title="靠近物体" aria-label="靠近物体" disabled>−</button><button id="plus" class="button secondary" title="远离物体" aria-label="远离物体" disabled>+</button></div><small id="auto-vacuum" class="wide">提升后读取真空开关：已吸附则 MOVEJ 回初始姿态，确认到位后 MOVEJ 放置并关闭吸盘，再 MOVEJ 回初始姿态；未吸附则在提升位直接关闭。</small><button id="auto-suction" class="button primary wide" disabled>自动接近并提升</button><small id="auto-path" class="wide">自动路径：40 → 5 → 0 mm，BASE +Z 提升 50 mm</small><button id="stop-motion" class="button secondary wide" disabled>停止 / 关闭运动会话</button><p id="motion" class="wide">运动未就绪</p><small id="cup-info" class="wide">吸盘尺寸由配置提供；细线圈表示人工标注接触区域。</small></div></section></aside></div></main></div>`;
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const vacuumIndicators = new VacuumIndicators(el("vacuum-status"));
 const canvas = el<HTMLCanvasElement>("viewer"), renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -143,7 +143,7 @@ function draw(result: Message) {
   });
   showLayers(); fitView();
 }
-function highlight() { const id = el<HTMLSelectElement>("grasp").value; el<HTMLInputElement>("review").checked = false; groups.forEach((g, i) => g.userData.ring.material.color.set(grasps[i].grasp_id === id ? 0xe96d42 : 0x2f7585)); showLayers(); update(); }
+function highlight() { const id = el<HTMLSelectElement>("grasp").value; el<HTMLInputElement>("review").checked = false; groups.forEach((g, i) => g.userData.ring.material.color.set(grasps[i].grasp_id === id ? 0xe96d42 : 0x2f7585)); showLayers(); updateTcpTarget(); update(); }
 function graspOptions(candidates: Message[]) {
   return candidates.map((grasp, index) => ({ grasp, index })).sort((a, b) => {
     const eligibility = Number(b.grasp.workspace_valid === true) - Number(a.grasp.workspace_valid === true);
@@ -167,11 +167,51 @@ let instances: Message[] = [], selectedInstance = "";
 let modelChoicesKey = "", maskPreview = "", maskPreviewCaption = "所选实例 / 解算结果";
 let motionReady = false, motionState = "review", motionSession = "", motionPending = "", stopPending = "";
 let autoSuctionReady = false, prepareDistanceMm = 40, secondPrepareDistanceMm = 5, liftHeightMm = 50;
+let contactOffsetMm = 0, poseBaseFrame = "BASE";
 let placeJointDegrees: number[] = [];
 let toolPowerAvailable = false, toolPowerVoltage: number | null = null;
 let toolPowerSetPending = "", toolPowerSetRequested: boolean | null = null;
 let toolPowerStatusPending = "", toolPowerError = "";
 const state = (text: string, error = false) => { el("state").textContent = text; el("state").dataset.error = String(error); };
+function formatPose(pose: THREE.Matrix4, frameName: string) {
+  const position = new THREE.Vector3().setFromMatrixPosition(pose).multiplyScalar(1000);
+  const rpy = new THREE.Euler().setFromRotationMatrix(pose, "ZYX");
+  const degrees = [rpy.x, rpy.y, rpy.z].map(value => THREE.MathUtils.radToDeg(value));
+  return `XYZ (${frameName})  ${position.toArray().map(value => value.toFixed(1)).join(", ")} mm\nRPY (${frameName})  ${degrees.map(value => value.toFixed(1)).join(", ")}°`;
+}
+function updateTcpTarget() {
+  const selected = grasps.find(grasp => grasp.grasp_id === el<HTMLSelectElement>("grasp").value);
+  const output = el("tcp-target");
+  const note = el("tcp-target-note");
+  if (!selected) {
+    output.textContent = "解算完成并选择吸取方式后显示目标 TCP。";
+    note.textContent = "吸取位已计入配置的接触偏移；准备位按配置的预备距离计算。";
+    return;
+  }
+  if (!Array.isArray(selected.T_camera_suction_tcp)) {
+    output.textContent = "当前吸取方式没有有效的 T_contact_tcp 配置。";
+    note.textContent = "请检查 pose6d_bridge.yaml 中的运动工具与 T_contact_tcp 配置。";
+    return;
+  }
+  const frameName = frozenBaseCamera ? poseBaseFrame : "相机";
+  const toDisplayFrame = (value: number[][]) => {
+    const pose = matrix(value);
+    return frozenBaseCamera ? frozenBaseCamera.clone().multiply(pose) : pose;
+  };
+  const suctionPose = toDisplayFrame(selected.T_camera_suction_tcp);
+  const preparePose = Array.isArray(selected.T_camera_prepare_tcp)
+    ? toDisplayFrame(selected.T_camera_prepare_tcp) : null;
+  const lines = [
+    `${selected.grasp_id} · ${selected.tool_name || "tcpsuck"}`,
+    `吸取位（接触偏移 −${contactOffsetMm.toFixed(1)} mm）`,
+    formatPose(suctionPose, frameName),
+  ];
+  if (preparePose) lines.push(`准备位（+${prepareDistanceMm.toFixed(1)} mm）`, formatPose(preparePose, frameName));
+  output.textContent = lines.join("\n");
+  note.textContent = frozenBaseCamera
+    ? `按采集时的 T_base_camera 换算到 ${frameName}；目标取自当前吸取方式的 ${selected.tool_name || "tcpsuck"} 运动路径。`
+    : "缺少采集时的手眼变换，当前显示相机坐标系下的目标 TCP。";
+}
 function clearScorePreview() {
   el("score-preview").hidden = true;
   const image = el<HTMLImageElement>("score-preview-image");
@@ -195,7 +235,7 @@ function showScorePreview(message: Message) {
   image.onerror = () => { image.hidden = true; status.textContent = "本次结果的最高分候选图暂不可用"; };
   image.src = `${root}/preview/score`;
 }
-function clearReview() { clearScorePreview(); el<HTMLAnchorElement>("history-result").hidden = true; clearScene(); groups = []; preparationGroups = []; tangentArrows = []; grasps = []; resultId = ""; motionReady = false; motionState = "review"; motionSession = ""; motionPending = ""; stopPending = ""; autoSuctionReady = false; const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(); select.disabled = true; el<HTMLInputElement>("review").checked = false; el<HTMLInputElement>("review").disabled = true; el("warning").textContent = "尚未解算"; el("metrics").textContent = ""; el("pose").textContent = "—"; el("motion").textContent = "运动未就绪"; el<HTMLInputElement>("distance").value = "—"; }
+function clearReview() { clearScorePreview(); el<HTMLAnchorElement>("history-result").hidden = true; clearScene(); groups = []; preparationGroups = []; tangentArrows = []; grasps = []; resultId = ""; motionReady = false; motionState = "review"; motionSession = ""; motionPending = ""; stopPending = ""; autoSuctionReady = false; const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(); select.disabled = true; el<HTMLInputElement>("review").checked = false; el<HTMLInputElement>("review").disabled = true; el("warning").textContent = "尚未解算"; el("metrics").textContent = ""; el("motion").textContent = "运动未就绪"; el<HTMLInputElement>("distance").value = "—"; updateTcpTarget(); }
 function clearObservation() { maskPreview = ""; maskPreviewCaption = "所选实例 / 解算结果"; ++maskRevision; observation = ""; mask = ""; instances = []; selectedInstance = ""; frozenBaseCamera = null; updateFrames(); clearReview(); el<HTMLInputElement>("mask").value = ""; el("instance-list").replaceChildren(); el("vision-timings").textContent = "等待采集"; for (const id of ["rgb", "depth", "instances-overview", "overlay"]) el<HTMLImageElement>(id).removeAttribute("src"); el<HTMLAnchorElement>("download").hidden = true; el("observation").textContent = "尚未采集"; }
 function receiveModelChoices(message: Message) {
   if (!Array.isArray(message.pose6d_models)) return;
@@ -364,7 +404,7 @@ function connect() {
     if (msg.type === "pose6d_error" || msg.type === "error") state(msg.message, true);
     else if (msg.type === "pose6d_capture") {
       clearObservation(); observation = msg.observation_id; el<HTMLImageElement>("rgb").src = msg.rgb; el<HTMLImageElement>("depth").src = msg.depth;
-      frozenBaseCamera = msg.T_base_camera ? matrix(msg.T_base_camera) : null; receiveWorkspace(msg); updateFrames(); fitView();
+      frozenBaseCamera = msg.T_base_camera ? matrix(msg.T_base_camera) : null; poseBaseFrame = msg.base_frame || "BASE"; receiveWorkspace(msg); updateFrames(); fitView();
       const download = el<HTMLAnchorElement>("download"); download.href = msg.rgb; download.download = `rgb-${observation}.png`; download.hidden = false;
       const objectLabel = el<HTMLSelectElement>("capture-object").selectedOptions[0]?.textContent || msg.object_id;
       el("observation").textContent = `${objectLabel} · ${msg.profile} · ${msg.width}×${msg.height} · ${msg.camera_frame} · ${msg.calibration}`;
@@ -404,11 +444,12 @@ function connect() {
       showScorePreview(msg);
       if (msg.mask_source === "sam2") el("vision-timings").textContent += ` · FoundationPose 输入 ${msg.instance_id}`;
       if (msg.T_base_camera) frozenBaseCamera = matrix(msg.T_base_camera);
+      poseBaseFrame = msg.base_frame || poseBaseFrame;
       receiveWorkspace(msg);
       const waypoints = msg.motion_waypoints || {};
       prepareDistanceMm = Number(waypoints.prepare_distance_mm ?? 40);
       secondPrepareDistanceMm = Number(waypoints.second_prepare_distance_mm ?? 5);
-      const contactOffsetMm = Number(waypoints.contact_offset_mm ?? 0);
+      contactOffsetMm = Number(waypoints.contact_offset_mm ?? 0);
       liftHeightMm = Number(waypoints.lift_height_mm ?? 50);
       placeJointDegrees = Array.isArray(waypoints.place_joint_degrees) && waypoints.place_joint_degrees.length === 6
         && waypoints.place_joint_degrees.every(Number.isFinite) ? waypoints.place_joint_degrees : [];
@@ -428,7 +469,7 @@ function connect() {
       el<HTMLInputElement>("review").disabled = !msg.grasps.some((g: Message) => g.workspace_valid === true) || !motionReady;
       if (msg.overlay) { el<HTMLImageElement>("overlay").src = msg.overlay; el("overlay-caption").textContent = selectedInstance ? `#${instances.find(item => item.instance_id === selectedInstance)?.detection_id} · 解算结果` : "解算结果"; }
       el("warning").textContent = `${msg.screening.status}${msg.screening.warning ? ` · ${msg.screening.warning}` : ""}`;
-      el("metrics").textContent = JSON.stringify(msg.screening.metrics, null, 2); el("pose").textContent = JSON.stringify(msg.T_camera_object, null, 2);
+      el("metrics").textContent = JSON.stringify(msg.screening.metrics, null, 2);
       el("motion").textContent = msg.motion_reason;
       el("cup-info").textContent = msg.suction_available === false
         ? "该模型尚未标注吸盘接触区域；当前仅提供 6D 位姿计算与审阅，运动控制已禁用。"
