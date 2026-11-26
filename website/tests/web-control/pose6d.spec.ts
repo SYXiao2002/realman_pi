@@ -269,6 +269,7 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]],
       tool_name: "tcpsuck", T_camera_suction_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .2], [0, 0, 0, 1]],
       analytic_ik: { checked: true, reachable: true, valid_solution_count: 4, reason: null },
+      suction_collision: { status: "clear" },
       tcp_targets: { frame: "r/base_link", suction: { xyz_mm: [110, 220, 500], rpy_deg: [0, 0, 0] },
         prepare: { xyz_mm: [110, 220, 460], rpy_deg: [0, 0, 0] } },
       T_camera_prepare_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .16], [0, 0, 0, 1]] }],
@@ -492,8 +493,8 @@ test("only selected suction method and its reference geometry are rendered", asy
     grasp("outside", .2, 0, false, "准备位 TCP 或吸盘本体超出 workspace")]);
   await expect(page.locator("#grasp")).toHaveValue("g1");
   await expect(page.locator("#grasp option")).toHaveText([
-    "g1 · reliable · 向下偏角 5.0° · 解析 IK 未完成检查", "g2 · reliable · 向下偏角 10.0° · 解析 IK 未完成检查",
-    "outside · reliable · 向下偏角 0.0° · 解析 IK 未完成检查 · 警告：准备位 TCP 或吸盘本体超出 workspace",
+    "g1 · reliable · 向下偏角 5.0° · 解析 IK 未完成检查 · 吸取路径未检查", "g2 · reliable · 向下偏角 10.0° · 解析 IK 未完成检查 · 吸取路径未检查",
+    "outside · reliable · 向下偏角 0.0° · 解析 IK 未完成检查 · 吸取路径未检查 · 警告：准备位 TCP 或吸盘本体超出 workspace",
   ]);
   await expect(page.locator('#grasp option[value="outside"]')).toHaveAttribute("disabled", "");
   expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(true);
@@ -551,6 +552,54 @@ test("suction choices display backend analytic IK and TCP values without new req
     await expect(page.locator("#tcp-target")).toContainText("RPY (r/base_link)  10.0, 20.0, 30.0°");
   }
   expect(await page.evaluate(() => (window as any).poseSocket.sent.length)).toBe(before);
+});
+
+test("suction collision is displayed without intercepting reviewed motion", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_capture", request_id: capture.request_id, observation_id: "collision-review",
+    rgb: png, depth: png, width: 1, height: 1,
+  });
+  await completeSegment(page, "collision-review");
+  await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
+  await page.locator("#infer").click();
+  const request = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_result", request_id: request.request_id, observation_id: "collision-review", result_id: "collision-result",
+    T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
+    cloud: { xyz_m: [], rgb: [] }, screening: { status: "pass_screening", metrics: {} }, motion_ready: true,
+    grasps: ["collision", "clear", "unknown"].map((status, index) => ({
+      grasp_id: status, status: "reliable", radius_m: .005, vertical_down_angle_deg: index,
+      T_camera_contact: pose, workspace_valid: true,
+      analytic_ik: { checked: true, reachable: true, valid_solution_count: 8 },
+      suction_collision: { status, start_distance_m: .01, end_distance_m: .04, length_m: .03, diameter_m: .01 },
+      tcp_targets: { frame: "r/base_link", suction: { xyz_mm: [0, 0, 200], rpy_deg: [0, 0, 0] } },
+    })),
+  });
+  await expect(page.locator("#grasp")).toHaveValue("collision");
+  await expect(page.locator('#grasp option[value="collision"]')).not.toHaveAttribute("disabled", "");
+  await expect(page.locator('#grasp option[value="collision"]')).toContainText("吸取路径上有物体");
+  await expect(page.locator('#grasp option[value="unknown"]')).not.toHaveAttribute("disabled", "");
+  await page.locator("#review").check();
+  await expect(page.locator("#prepare")).toBeEnabled();
+  const before = await page.evaluate(() => (window as any).poseSocket.sent.length);
+  await page.locator("#grasp").selectOption("unknown");
+  await expect(page.locator("#tcp-target")).toContainText("吸取路径无法判断");
+  await page.locator("#review").check();
+  await expect(page.locator("#prepare")).toBeEnabled();
+  await page.locator("#grasp").selectOption("collision");
+  await page.locator("#review").check();
+  await expect(page.locator("#tcp-target")).toContainText("吸取路径上有物体");
+  await expect(page.locator("#prepare")).toBeEnabled();
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.length)).toBe(before);
+  await page.locator("#prepare").click();
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.at(-1))).toMatchObject({
+    type: "pose6d_prepare", grasp_id: "collision", review_confirmed: true,
+  });
 });
 
 test("automatic SAM instances show timings and send the selected instance to FoundationPose", async ({ page }) => {
