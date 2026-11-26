@@ -36,6 +36,13 @@ models:
     suction_enabled: true
 cloud_stride: 4
 
+# Read-only RM65-B analytic solve_all check of the suction TCP (including
+# contact_offset_m). BASE uses the frozen capture transform; flange-to-tool
+# comes from realman_coordinates.yaml. Timeout/unavailable => unknown, not no IK.
+analytic_ik:
+  service: /rm65b_analytic_ik/solve_all
+  timeout_sec: 2.0
+
 # Operator supplied cup diameter; annotation contact-region radii stay separate.
 suction:
   cup_diameter_m: 0.010
