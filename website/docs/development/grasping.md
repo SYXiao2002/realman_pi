@@ -15,6 +15,14 @@ ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载
 
 3D 预览以冻结的采集相机坐标系为原点；坐标轴按 X 红、Y 绿、Z 蓝显示。橙色箭头为朝外表面法向 `n`，青色箭头为标注原始切向参考 `tangent_ref_obj` 经物体旋转后的方向，接触系红色 X 轴为该参考在切平面上的归一化投影，+Z 为进给方向 `-n`。吸取方式下拉框选中哪个，就只显示该方式的吸盘、接触区域、法向、切向参考、坐标轴与标签；其他候选隐藏。紫色吸盘显示所选方式沿朝外法向偏移 40 mm 的准备位，并显示对应接触/TCP 坐标系。其 `T_camera_prepare_contact`、`T_camera_prepare_tcp` 由后端使用运动相同的坐标变换计算；后端同时计算准备位进给轴与 BASE 竖直向下 `-Z` 的有方向夹角，并用 TCP 和吸盘本体包络检查准备位 workspace。下拉框先列 workspace 合格项并按角度升序，未通过或无法判定的候选保留为灰色禁用项，并显示警告原因；角度与判定由后端提供。浏览器选择图层和吸取方式不发送动作。
 
+每次 6D 解算完成，bridge 按物体位姿和吸盘接触标注生成各吸取方式，再以 `T_contact_tcp` 和 `-motion.contact_offset_m` 计算最终吸取 TCP。它使用冻结的 `T_base_camera` 将 TCP 转到当前机械臂自身的 BASE，并调用 `/rm65b_analytic_ik/solve_all`。工具变换使用 `realman_coordinates.yaml` 中当前运动工具的法兰→TCP 配置；它与接触系→TCP 的 `T_contact_tcp` 含义不同。此检查不要求机器人在线。
+
+解析节点来自 `rm65b-swik` 的固定版本，源码随 ROS 包 `src/kinematics/rm65b_analytic_ik/` 纳入构建，来源见其中的 `UPSTREAM.md`。节点调用原库 `IKSolver.solve_all()`，依据 `config/ros/rm65b_analytic_ik.yaml` 中的 RM65-B MDH、关节限位与残差容差返回全部合法分支。目标平移单位为米，内部 RPY 与返回关节角为弧度；模型 YAML 的 MDH 数值沿用上游毫米/度格式，由加载器转换。
+
+结果的每个 `grasps[]` 携带 `analytic_ik: {checked, reachable, valid_solution_count, reason}`。下拉框和所选 TCP 面板分别显示“有解析 IK（N 解）”“无解析 IK（原因）”或“解析 IK 未完成检查（原因）”。`OUT_OF_REACH` 和 `JOINT_LIMIT` 表示无解析 IK；缺少采集手眼变换、TCP 配置、服务不可用、超时、非法输入或数值失败时 `checked=false`、`reachable=null`，不会当作无解。服务名和等待上限由 `pose6d_bridge.yaml` 的 `analytic_ik` 配置。吸取位/准备位的 `tcp_targets` 同时包含后端算好的 frame、XYZ 毫米值和 RPY 度值，前端仅格式化展示，选择吸取方式不会发起 IK 请求或运动。
+
+解析 IK 标记用于展示，候选保留并沿用原有 workspace 排序、禁用与人工复核规则。它只说明最终吸取 TCP 的解析可解性，不代表准备位、接近/提升路径、障碍物或关节连续性已验证；当前求解模型仅适用于 RM65-B。
+
 `pose6d_frames` 每 0.2 秒广播当前控制器工具的 BASE 位姿 `T_base_tcp` 和当前相机位姿 `T_base_camera_live`，从新鲜法兰 TF、已匹配的活动工具及手眼标定计算。页面以采集时 `T_base_camera` 的逆矩阵把实时坐标轴放入冻结场景，机械臂移动时点云/物体保持固定，当前 TCP 和相机坐标轴更新。反馈丢失、TF 过旧或工具不匹配时隐藏实时轴并显示原因；页面超过 1.5 秒未收到遥测也隐藏实时轴。“显示全部”重新取景以包含可见工作区、相机原点、物体、所选吸取方式的准备位和当前 TCP。
 
 “配置工作区”与切向参考、相机、当前 TCP、准备位使用同一排 checkbox，可随时显示或隐藏。线框盒直接来自运行中 bridge 的 `motion.workspace_m`（`config/ros/pose6d_bridge.yaml` 及本地覆盖），以 `base_frame` 为坐标系、单位米；页面标明 BASE frame 及 XYZ 毫米范围。采集、推理和遥测事件均携带这两个字段。盒体用采集时 `T_base_camera` 的逆矩阵放入冻结场景，跟随实时相机移动不会改变其位置；缺少采集手眼变换或有效范围时不绘制，实时工具遥测暂时丢失不影响已有工作区显示。该范围约束运动中的 TCP 和吸盘扫掠体；显示开关只控制绘图。
@@ -69,6 +77,19 @@ docker compose --project-directory . -f config/docker/compose.pose6d.yaml up -d 
 `pose6d_runtime_base` pins the CUDA/Python wheels and compiled nvdiffrast in a tagged image. `./scripts/build_pose6d.sh` builds that base only when its dependency layers change, then builds the small server layer containing current FoundationPose code and web assets. It disables per-build provenance attestations for local images so the dependency image digest remains stable. Ordinary server changes no longer redownload Python packages or recompile nvdiffrast, even after BuildKit prunes intermediate cache.
 
 `./rm65 up`（含 `desktop`、`policy`）统一管理 `pose6d_bridge`，`down` 会先停止 bridge，`status`/`logs` 包含它。已有生产图时，也可单独使用 `docker compose --profile pose6d up -d pose6d_bridge`；FoundationPose 算法容器独立于 `rm65` 的启停。
+
+`pose6d_bridge` 容器现在通过 `pose6d_bridge.launch.py` 同时启动位姿 bridge 和解析 IK 节点。新增 ROS 接口/包和网页资源后需重建主 ROS 镜像，再重建 `pose6d_bridge` 及提供 Web 页面的容器（独立 `realman_web_control` 或开启 Web 的 bringup）。宿主机可在工作区根目录构建与启动：
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-up-to pose6d_bridge
+source install/setup.bash
+ros2 launch pose6d_bridge pose6d_bridge.launch.py
+# 仅启动只读 IK 服务（无需相机/控制器）：
+ros2 run rm65b_analytic_ik analytic_ik_node
+```
+
+运行 bridge 的 launch 时不再额外启动第二个同名 IK 服务。可通过 `ros2 service type /rm65b_analytic_ik/solve_all` 确认类型为 `realman_msgs/srv/SolveAnalyticIk`；在页面完成一次解算后检查各候选的三种状态。离线回归使用 `python3 -m pytest src/kinematics/rm65b_analytic_ik/test src/pose6d/tests` 和 `cd website && npm run test:web-control -- pose6d.spec.ts`，覆盖 FK→IK、工具变换、ROS 调用、超时和候选切换展示。
 
 打开 `http://<robot-host>:8765/6d_pose.html`。若算法尚未就绪，检查 `config/docker/compose.pose6d.yaml` 服务日志和 `config/ros/pose6d_bridge.yaml` 的 `ws_uri`。首次 Docker 构建可按前面的 FoundationPose 基础镜像/本地缓存说明指定 `POSE6D_BASE_IMAGE`、`POSE6D_USE_PREINSTALLED_PYTORCH3D` 和 `POSE6D_NVDIFFRAST_SOURCE`。
 
