@@ -268,6 +268,9 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
       workspace_valid: true, workspace_reason: null, T_camera_contact: pose,
       tangent_camera: [1, .1, 0], T_camera_prepare_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .16], [0, 0, 0, 1]],
       tool_name: "tcpsuck", T_camera_suction_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .2], [0, 0, 0, 1]],
+      analytic_ik: { checked: true, reachable: true, valid_solution_count: 4, reason: null },
+      tcp_targets: { frame: "r/base_link", suction: { xyz_mm: [110, 220, 500], rpy_deg: [0, 0, 0] },
+        prepare: { xyz_mm: [110, 220, 460], rpy_deg: [0, 0, 0] } },
       T_camera_prepare_tcp: [[1, 0, 0, .01], [0, 1, 0, .02], [0, 0, 1, .16], [0, 0, 0, 1]] }],
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "运动参数已配置",
     motion_waypoints: { prepare_distance_mm: 40, second_prepare_distance_mm: 5, contact_offset_mm: 5, lift_height_mm: 50,
@@ -275,6 +278,8 @@ test("reviewed suction motion sends only signed steps and displays confirmed dis
       place_joint_degrees: [95.045, 11.965, 106.228, -1.437, 54.787, 10.14] } });
   await expect(page.locator("#auto-path")).toContainText("40 → 5 → -5 mm");
   await expect(page.locator("#tcp-target")).toContainText("g1 · tcpsuck");
+  await expect(page.locator("#grasp option")).toContainText("有解析 IK（4 解）");
+  await expect(page.locator("#tcp-target")).toContainText("有解析 IK（4 解）");
   await expect(page.locator("#tcp-target")).toContainText("吸取位（接触偏移 −5.0 mm）");
   await expect(page.locator("#tcp-target")).toContainText("XYZ (r/base_link)  110.0, 220.0, 500.0 mm");
   await expect(page.locator("#tcp-target")).toContainText("准备位（+40.0 mm）");
@@ -487,8 +492,8 @@ test("only selected suction method and its reference geometry are rendered", asy
     grasp("outside", .2, 0, false, "准备位 TCP 或吸盘本体超出 workspace")]);
   await expect(page.locator("#grasp")).toHaveValue("g1");
   await expect(page.locator("#grasp option")).toHaveText([
-    "g1 · reliable · 向下偏角 5.0°", "g2 · reliable · 向下偏角 10.0°",
-    "outside · reliable · 向下偏角 0.0° · 警告：准备位 TCP 或吸盘本体超出 workspace",
+    "g1 · reliable · 向下偏角 5.0° · 解析 IK 未完成检查", "g2 · reliable · 向下偏角 10.0° · 解析 IK 未完成检查",
+    "outside · reliable · 向下偏角 0.0° · 解析 IK 未完成检查 · 警告：准备位 TCP 或吸盘本体超出 workspace",
   ]);
   await expect(page.locator('#grasp option[value="outside"]')).toHaveAttribute("disabled", "");
   expect((await page.locator("#viewer").screenshot()).equals(single)).toBe(true);
@@ -503,6 +508,49 @@ test("only selected suction method and its reference geometry are rendered", asy
   await page.locator("#fit-view").click();
   expect((await page.locator("#viewer").screenshot()).equals(second)).toBe(false);
   expect(await page.evaluate(() => (window as any).poseSocket.sent.some((request: any) => request.type === "pose6d_prepare" || request.type === "pose6d_jog"))).toBe(false);
+});
+
+test("suction choices display backend analytic IK and TCP values without new requests", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_capture", request_id: capture.request_id, observation_id: "ik-review",
+    rgb: png, depth: png, profile: "right_wrist", width: 1, height: 1,
+  });
+  await completeSegment(page, "ik-review");
+  await page.locator("#mask").setInputFiles({ name: "mask.png", mimeType: "image/png", buffer: Buffer.from(png.split(",")[1], "base64") });
+  await page.locator("#infer").click();
+  const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
+  const states = [
+    { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+    { checked: true, reachable: false, valid_solution_count: 0, reason: "JOINT_LIMIT" },
+    { checked: false, reachable: null, valid_solution_count: null, reason: "SERVICE_TIMEOUT" },
+  ];
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_result", request_id: infer.request_id, observation_id: "ik-review", result_id: "ik-result",
+    T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
+    cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
+    grasps: states.map((analytic_ik, index) => ({
+      grasp_id: `ik-${index}`, status: "reliable", radius_m: .007, workspace_valid: true,
+      T_camera_contact: pose, T_camera_suction_tcp: pose, analytic_ik,
+      // Display values are authoritative even if the scene transform differs.
+      tcp_targets: { frame: "r/base_link", suction: { xyz_mm: [987.6, 123.4, 567.8], rpy_deg: [10, 20, 30] } },
+    })),
+    screening: { status: "pass_screening", metrics: {} }, motion_ready: true,
+  });
+  const labels = ["有解析 IK（8 解）", "无解析 IK（JOINT_LIMIT）", "解析 IK 未完成检查（SERVICE_TIMEOUT）"];
+  const before = await page.evaluate(() => (window as any).poseSocket.sent.length);
+  for (let index = 0; index < states.length; index++) {
+    await expect(page.locator(`#grasp option[value="ik-${index}"]`)).toContainText(labels[index]);
+    await page.locator("#grasp").selectOption(`ik-${index}`);
+    await expect(page.locator("#tcp-target")).toContainText(labels[index]);
+    await expect(page.locator("#tcp-target")).toContainText("XYZ (r/base_link)  987.6, 123.4, 567.8 mm");
+    await expect(page.locator("#tcp-target")).toContainText("RPY (r/base_link)  10.0, 20.0, 30.0°");
+  }
+  expect(await page.evaluate(() => (window as any).poseSocket.sent.length)).toBe(before);
 });
 
 test("automatic SAM instances show timings and send the selected instance to FoundationPose", async ({ page }) => {
