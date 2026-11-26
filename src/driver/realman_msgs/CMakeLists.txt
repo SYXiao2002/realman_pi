@@ -21,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetCurrentPose.srv"
   "srv/ForwardKinematics.srv"
   "srv/SolveIk.srv"
+  "srv/SolveAnalyticIk.srv"
   "srv/RecoverMotion.srv"
   "srv/TaskControl.srv"
   "srv/TaskGripperCommand.srv"

@@ -1,0 +1,14 @@
+# RM65-B only. Row-major homogeneous transforms, translations in metres.
+# Target TCP expressed in the arm's own BASE (not world/work/camera).
+float64[16] target_base_tcp
+# Fixed transform from flange to the target tool TCP (not contact to TCP).
+float64[16] flange_tcp
+---
+# success means the check completed; reachable=false then means no analytic IK.
+bool success
+bool reachable
+uint32 valid_solution_count
+# Empty on success with solutions; otherwise solver/error code.
+string reason
+# All legal branches, flattened in groups of six joint angles in radians.
+float64[] solutions_rad
