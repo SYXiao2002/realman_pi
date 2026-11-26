@@ -34,6 +34,7 @@ from pose6d.motion import MotionController
 from pose6d.observation import ObservationStore
 from pose6d.scoring import assess_prepare_pose
 from .motion_ros import MotionRosPort
+from .analytic_ik_ros import AnalyticIkRosPort, tcp_targets
 
 WEB_EVENT_LIMIT = 8 * 1024 * 1024
 VISION_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -103,6 +104,9 @@ class PoseBridge(Node):
         self.selectable_tool_names = {self.profile["tool_name"], self.motion_config["tool_name"]}
         if not self.selectable_tool_names.issubset(coordinate_arm["tools"]):
             raise ValueError("pose6d tool choices must be registered in realman_coordinates.yaml")
+        tool_pose = coordinate_arm["tools"][self.motion_config["tool_name"]]["pose"]
+        self.ik_flange_tcp = from_pose(tool_pose["xyz_m"], tool_pose["quaternion_wxyz"])
+        self.analytic_ik_port = AnalyticIkRosPort(self, self.settings["analytic_ik"])
         self.tf = Buffer(cache_time=Duration(seconds=60))
         self.listener = TransformListener(self.tf, self)
         self.events = self.create_publisher(String, "~/events", 10)
@@ -758,12 +762,16 @@ class PoseBridge(Node):
                 prepared_tcp = None
             assessment = assess_prepare_pose(obs["T_base_camera"], prepared, prepared_tcp,
                                              self.motion_config, self.settings["suction"])
+            analytic_ik = self.analytic_ik_port.check(obs["T_base_camera"], suction_tcp, self.ik_flange_tcp)
             grasps.append({"grasp_id": grasp["grasp_id"], "status": grasp["status"],
                            "radius_m": grasp["contact_region"]["radius_m"],
                            "contact_region": grasp["contact_region"],
                            "T_camera_contact": contact.tolist(), "normal_camera": normal.tolist(),
                            "tangent_camera": (T_camera_object[:3, :3] @ np.asarray(grasp["contact_region"]["tangent_ref_obj"])).tolist(),
                            "tool_name": self.motion_config.get("tool_name", "tcpsuck"),
+                           "analytic_ik": analytic_ik,
+                           "tcp_targets": tcp_targets(obs["T_base_camera"], suction_tcp, prepared_tcp,
+                                                      self.profile["base_frame"]),
                            "T_camera_suction_tcp": suction_tcp.tolist() if suction_tcp is not None else None,
                            "T_camera_prepare_contact": prepared.tolist(),
                            "T_camera_prepare_tcp": prepared_tcp.tolist() if prepared_tcp is not None else None,

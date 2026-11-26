@@ -188,6 +188,80 @@ def test_oversized_web_event_returns_correlated_error():
     assert event["client_id"] == "client" and event["request_id"] == "request"
 
 
+def test_infer_checks_each_suction_tcp_after_contact_offset(tmp_path, monkeypatch):
+    from pose6d_bridge.analytic_ik_ros import AnalyticIkRosPort
+    from rm65b_analytic_ik import IKSolver, forward_kinematics
+    from rm65b_analytic_ik.conversions import xyzrpy_to_matrix
+    from rm65b_analytic_ik.ros_node import solve_request
+    from realman_msgs.srv import SolveAnalyticIk
+    from rclpy.task import Future
+
+    solver = IKSolver()
+    tool_xyzrpy = [.03, -.02, .14, .2, -.1, .8]
+    flange_tcp = xyzrpy_to_matrix(tool_xyzrpy)
+    base_object = forward_kinematics([.2, -.3, .8, .5, .7, -1.2], solver.config, tool_xyzrpy)
+    base_camera = xyzrpy_to_matrix([.1, .2, .3, .3, -.2, .4])
+    camera_object = np.linalg.inv(base_camera) @ base_object
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((8, 8, 3), np.uint8), depth_m=np.ones((8, 8), np.float32),
+                       K=np.eye(3), timestamp_ns=1, camera_frame="camera", object_id="eu_plug",
+                       T_base_camera=base_camera)
+    mesh = tmp_path / "object.obj"
+    mesh.write_text("v 0 0 0\n")
+    requests = []
+
+    def solve(request):
+        requests.append(request)
+        future = Future()
+        future.set_result(solve_request(solver, request, SolveAnalyticIk.Response()))
+        return future
+
+    port = AnalyticIkRosPort.__new__(AnalyticIkRosPort)
+    port.client = SimpleNamespace(wait_for_service=lambda **_: True, call_async=solve)
+    port.timeout = .1
+
+    class BackendSocket:
+        request = None
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def send(self, payload):
+            self.request = unpackb(payload)
+        def recv(self, timeout=None):
+            if self.request is None:
+                return packb({"type": "hello", "ready": True, "models": {"eu_plug": {"model_sha256": "hash"}}})
+            return packb({"type": "result", **{key: self.request[key] for key in
+                          ("request_id", "observation_id", "object_id", "model_sha256")},
+                          "T_camera_object": camera_object.tolist(), "score": 1.,
+                          "screening": {"status": "pass_screening", "metrics": {}}})
+
+    monkeypatch.setattr("websockets.sync.client.connect", lambda *_args, **_kwargs: BackendSocket())
+    annotation = {"grasps": [{"grasp_id": name, "status": "reliable", "contact_region": {
+        "center_obj": [x, 0, 0], "normal_obj": [0, 0, -1], "tangent_ref_obj": [1, 0, 0], "radius_m": .005}}
+        for name, x in (("reachable", 0), ("unreachable", 10))]}
+    bridge = SimpleNamespace(
+        store=store, default_object_id="eu_plug", observation_owner="owner",
+        models={"eu_plug": {"model_sha256": "hash", "annotation": annotation, "mesh_path": mesh}},
+        settings={"ws_uri": "ws://test", "connect_timeout_sec": 1, "inference_timeout_sec": 1,
+                  "suction": {"cup_diameter_m": .01}}, profile={"base_frame": "r/base_link"},
+        motion_config={"tool_name": "tcpsuck", "T_contact_tcp": np.eye(4), "contact_offset_m": .005},
+        analytic_ik_port=port, ik_flange_tcp=flange_tcp,
+        cloud=lambda _: {"xyz_m": [], "rgb": []}, motion=SimpleNamespace(load=lambda *_: (False, "review")),
+    )
+    _, png = cv2.imencode(".png", np.ones((8, 8), np.uint8) * 255)
+    result = PoseBridge.infer(bridge, {"observation_id": oid, "mask_png": base64.b64encode(png).decode()})
+    assert len(requests) == 2
+    expected = base_object.copy()
+    expected[:3, 3] += base_object[:3, 2] * .005
+    np.testing.assert_allclose(np.asarray(requests[0].target_base_tcp).reshape(4, 4), expected, atol=1e-8)
+    np.testing.assert_allclose(np.asarray(requests[0].flange_tcp).reshape(4, 4), flange_tcp)
+    assert result["grasps"][0]["analytic_ik"]["reachable"] is True
+    assert result["grasps"][1]["analytic_ik"] == {
+        "checked": True, "reachable": False, "valid_solution_count": 0, "reason": "OUT_OF_REACH"}
+    np.testing.assert_allclose(result["grasps"][0]["tcp_targets"]["suction"]["xyz_mm"], expected[:3, 3] * 1000)
+
+
 def test_other_client_cannot_infer_another_clients_observation():
     events = []
     busy = threading.Lock()
