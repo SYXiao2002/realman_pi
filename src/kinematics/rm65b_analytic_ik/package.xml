@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm65b_analytic_ik</name><version>0.1.0</version>
+  <description>RM65-B analytic solve_all service, vendored from rm65b-swik.</description>
+  <maintainer email="maintainer@example.com">RealMan maintainers</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <exec_depend>rclpy</exec_depend><exec_depend>realman_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-numpy</exec_depend><exec_depend>python3-yaml</exec_depend>
+  <test_depend>python3-pytest</test_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

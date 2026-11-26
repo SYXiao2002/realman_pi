@@ -1,0 +1,32 @@
+# Vendored rm65b-swik model; inputs/outputs use metres and radians. The MDH
+# rows and joint limits below retain upstream's mm/degree storage convention.
+# Used only for read-only analytic IK, never written to the controller.
+robot:
+  name: "RealMan RM65-B"
+
+# Craig modified DH: T_i = Rx(alpha_i) Tx(a_i) Rz(q_i + offset_i) Tz(d_i).
+# Lengths are stored in mm and angles in degrees as published by RealMan.
+mdh_parameters:
+  J1: [0.0,   0.0, 240.5,   0.0]
+  J2: [0.0,  90.0,   0.0,  90.0]
+  J3: [256.0, 0.0,   0.0,  90.0]
+  J4: [0.0,  90.0, 210.0,   0.0]
+  J5: [0.0, -90.0,   0.0,   0.0]
+  J6: [0.0,  90.0, 144.0,   0.0]
+
+joint_limits:  # degrees
+  J1: [-178.0, 178.0]
+  J2: [-130.0, 130.0]
+  J3: [-135.0, 135.0]
+  J4: [-178.0, 178.0]
+  J5: [-128.0, 128.0]
+  J6: [-360.0, 360.0]
+
+units:
+  length: "m"
+  angle: "rad"
+
+tolerances:
+  position: 1.0e-6
+  orientation: 1.0e-6
+  trigonometric_bound: 1.0e-9
