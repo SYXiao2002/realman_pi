@@ -10,7 +10,7 @@ const app = document.querySelector<HTMLElement>("#app")!;
 app.innerHTML = `<div class="pose-page"><header class="pose-header"><h1>6D 位姿与吸盘</h1><span id="connection">未连接</span><a href="/6d_pose_history/">6D 历史</a><a href="/">控制台</a></header>
 <main class="pose-main"><div class="pose-toolbar"><label>采集分割对象<select id="capture-object"><option value="eu_plug">欧标插头</option></select></label><button id="capture" class="button primary">采集并自动分割</button><a id="download" class="button secondary" hidden>下载 RGB</a><label>手工 Mask<input id="mask" type="file" accept="image/png" disabled></label><label>解算 OBJ<select id="object"><option value="eu_plug">欧规插头</option></select></label><button id="infer" class="button primary" disabled>解算所选实例</button></div>
 <a id="history-result" href="/6d_pose_history/" target="_blank" rel="noopener" hidden>查看本次历史</a><div id="state" class="pose-status" role="status">等待采集</div><section class="pose-detections"><div class="pose-detection-head"><h2>检测与分割</h2><p id="vision-timings">等待采集</p></div><div id="instance-list" class="pose-instance-list" aria-live="polite"></div></section><div class="pose-workspace"><div><div class="pose-images"><figure><img id="rgb" alt="采集 RGB"><figcaption>RGB</figcaption></figure><figure><img id="depth" alt="对齐深度"><figcaption>Depth</figcaption></figure><figure class="pose-instance-image"><img id="instances-overview" alt="全部实例 ID 与检测框总览"><figcaption>实例总览 · #编号对应上方选择列表</figcaption></figure><figure class="pose-instance-image"><img id="overlay" alt="所选 SAM 实例、手工 Mask 或解算结果预览"><figcaption id="overlay-caption">所选实例 / 解算结果</figcaption></figure><figure id="score-preview" class="pose-score-image" hidden><figcaption>vis_score · 最高分候选 · RGB / Depth 对比</figcaption><a id="score-preview-link" target="_blank" rel="noopener" title="打开完整 vis_score 图"><img id="score-preview-image" alt="vis_score 最高分候选，含候选 ID、分数与 RGB / Depth 对比" hidden></a><p id="score-preview-status" role="status"></p></figure></div><canvas id="viewer" class="pose-viewer" aria-label="RGB-D 点云、模型、选中吸取方式、坐标系、准备位与配置工作区"></canvas><div class="pose-legend"><label><input id="show-tangent" type="checkbox" checked>切向参考 t（青）</label><label><input id="show-camera" type="checkbox" checked>相机坐标系</label><label><input id="show-tool" type="checkbox" checked>当前 TCP</label><label><input id="show-prepare" type="checkbox" checked><span id="prepare-legend">准备位 +40 mm（紫）</span></label><label><input id="show-workspace" type="checkbox" checked>配置工作区</label><button id="fit-view" class="button secondary">显示全部</button><small>坐标轴 X 红 / Y 绿 / Z 蓝；橙色为朝外法向 n，接触系 +Z = −n。</small><small id="frames-state">采集后显示当前 TCP；相机坐标系为冻结采集帧。</small><small id="workspace-state">等待配置工作区。</small></div></div>
-<aside class="pose-side"><section><h2>观测</h2><p id="observation">尚未采集</p></section><section><h2>几何验证</h2><p id="warning">尚未解算</p><pre id="metrics" class="pose-metrics"></pre></section><section><h2>吸盘与运动</h2><div id="vacuum-status" aria-label="吸盘状态"></div><div class="tool-power-control"><label><input id="tool-power" type="checkbox" disabled><span>右臂工具端 24V</span></label><span id="tool-power-state" role="status">等待电源状态</span></div><div class="pose-controls"><label class="wide">控制器 TCP<select id="controller-tool"><option value="tcpsuck">吸盘 · tcpsuck</option><option value="tcpgrip">夹爪 · tcpgrip</option></select></label><button id="apply-tool" class="button secondary wide">切换 TCP</button><p id="tool-state" class="wide">等待控制器工具状态</p><label class="wide">吸取方式<select id="grasp" disabled></select></label><div class="tcp-target-panel wide"><h2>吸取 TCP 目标</h2><pre id="tcp-target" class="pose-metrics">选择吸取方式后显示</pre><small id="tcp-target-note">显示所选吸取方式的目标 TCP；吸取位与准备位姿态以 BASE 坐标系表示。</small></div><label>当前 x / mm<input id="distance" type="text" value="—" readonly></label><label>单次步长 / mm<input id="step" type="number" min="0.1" max="500" step="0.1" value="1"></label><label class="wide review"><input id="review" type="checkbox" disabled><span>已复核位姿、告警、完整运动路径与吸盘方向；路径未做障碍物碰撞检测</span></label><button id="prepare" class="button secondary wide" disabled>移动到 +40 mm 准备位</button><div class="step-buttons wide"><button id="minus" class="button secondary" title="靠近物体" aria-label="靠近物体" disabled>−</button><button id="plus" class="button secondary" title="远离物体" aria-label="远离物体" disabled>+</button></div><small id="auto-vacuum" class="wide">提升后读取真空开关：已吸附则 MOVEJ 回初始姿态，确认到位后 MOVEJ 放置并关闭吸盘，再 MOVEJ 回初始姿态；未吸附则在提升位直接关闭。</small><button id="auto-suction" class="button primary wide" disabled>自动接近并提升</button><small id="auto-path" class="wide">自动路径：40 → 5 → 0 mm，BASE +Z 提升 50 mm</small><button id="stop-motion" class="button secondary wide" disabled>停止 / 关闭运动会话</button><p id="motion" class="wide">运动未就绪</p><small id="cup-info" class="wide">吸盘尺寸由配置提供；细线圈表示人工标注接触区域。</small></div></section></aside></div></main></div>`;
+<aside class="pose-side"><section><h2>观测</h2><p id="observation">尚未采集</p></section><section><h2>几何验证</h2><p id="warning">尚未解算</p><pre id="metrics" class="pose-metrics"></pre></section><section><h2>吸盘与运动</h2><div id="vacuum-status" aria-label="吸盘状态"></div><div class="tool-power-control"><label><input id="tool-power" type="checkbox" disabled><span>右臂工具端 24V</span></label><span id="tool-power-state" role="status">等待电源状态</span></div><div class="pose-controls"><label class="wide">控制器 TCP<select id="controller-tool"><option value="tcpsuck">吸盘 · tcpsuck</option><option value="tcpgrip">夹爪 · tcpgrip</option></select></label><button id="apply-tool" class="button secondary wide">切换 TCP</button><p id="tool-state" class="wide">等待控制器工具状态</p><label class="wide">吸取方式<select id="grasp" disabled></select></label><div class="tcp-target-panel wide"><h2>吸取 TCP 目标</h2><pre id="tcp-target" class="pose-metrics">选择吸取方式后显示</pre><small id="tcp-target-note">显示所选吸取方式的目标 TCP；吸取位与准备位姿态以 BASE 坐标系表示。</small></div><label>当前 x / mm<input id="distance" type="text" value="—" readonly></label><label>单次步长 / mm<input id="step" type="number" min="0.1" max="500" step="0.1" value="1"></label><label class="wide review"><input id="review" type="checkbox" disabled><span>已复核位姿、告警、完整运动路径与吸盘方向；当前位到准备位、提升与回程未做障碍检测</span></label><button id="prepare" class="button secondary wide" disabled>移动到 +40 mm 准备位</button><div class="step-buttons wide"><button id="minus" class="button secondary" title="靠近物体" aria-label="靠近物体" disabled>−</button><button id="plus" class="button secondary" title="远离物体" aria-label="远离物体" disabled>+</button></div><small id="auto-vacuum" class="wide">提升后读取真空开关：已吸附则 MOVEJ 回初始姿态，确认到位后 MOVEJ 放置并关闭吸盘，再 MOVEJ 回初始姿态；未吸附则在提升位直接关闭。</small><button id="auto-suction" class="button primary wide" disabled>自动接近并提升</button><small id="auto-path" class="wide">自动路径：40 → 5 → 0 mm，BASE +Z 提升 50 mm</small><button id="stop-motion" class="button secondary wide" disabled>停止 / 关闭运动会话</button><p id="motion" class="wide">运动未就绪</p><small id="cup-info" class="wide">吸盘尺寸由配置提供；细线圈表示人工标注接触区域。</small></div></section></aside></div></main></div>`;
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const vacuumIndicators = new VacuumIndicators(el("vacuum-status"));
 const canvas = el<HTMLCanvasElement>("viewer"), renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -151,6 +151,13 @@ function analyticIkLabel(grasp: Message) {
   if (ik.reachable === false) return `无解析 IK${ik.reason ? `（${ik.reason}）` : ""}`;
   return "解析 IK 未完成检查";
 }
+function suctionCollisionLabel(grasp: Message) {
+  const collision = grasp.suction_collision;
+  if (collision?.status === "collision") return "吸取路径上有物体";
+  if (collision?.status === "clear") return "吸取路径未发现物体";
+  if (collision?.status === "unknown") return "吸取路径无法判断（深度缺失、遮挡或数据无效）";
+  return "吸取路径未检查";
+}
 function graspOptions(candidates: Message[]) {
   return candidates.map((grasp, index) => ({ grasp, index })).sort((a, b) => {
     const eligibility = Number(b.grasp.workspace_valid === true) - Number(a.grasp.workspace_valid === true);
@@ -162,9 +169,9 @@ function graspOptions(candidates: Message[]) {
     const angle = Number.isFinite(grasp.vertical_down_angle_deg)
       ? `向下偏角 ${Number(grasp.vertical_down_angle_deg).toFixed(1)}°` : "角度未知";
     const reason = grasp.workspace_valid === true ? "" : ` · 警告：${grasp.workspace_reason || "workspace 未通过或无法判定"}`;
-    const option = new Option(`${grasp.grasp_id} · ${grasp.status} · ${angle} · ${analyticIkLabel(grasp)}${reason}`, grasp.grasp_id);
+    const option = new Option(`${grasp.grasp_id} · ${grasp.status} · ${angle} · ${analyticIkLabel(grasp)} · ${suctionCollisionLabel(grasp)}${reason}`, grasp.grasp_id);
     option.disabled = grasp.workspace_valid !== true;
-    option.title = `${analyticIkLabel(grasp)} · ${grasp.workspace_valid === true ? `${angle} · workspace 合格`
+    option.title = `${analyticIkLabel(grasp)} · ${suctionCollisionLabel(grasp)} · ${grasp.workspace_valid === true ? `${angle} · workspace 合格`
       : grasp.workspace_reason || "workspace 未通过或无法判定"}`;
     return option;
   });
@@ -194,7 +201,7 @@ function updateTcpTarget() {
   }
   const targets = selected.tcp_targets;
   if (!targets?.suction) {
-    output.textContent = `${analyticIkLabel(selected)}\n当前吸取方式没有后端提供的目标 TCP 展示数据。`;
+    output.textContent = `${analyticIkLabel(selected)}\n${suctionCollisionLabel(selected)}\n当前吸取方式没有后端提供的目标 TCP 展示数据。`;
     note.textContent = "目标 TCP 坐标与解析 IK 状态由后端提供。";
     return;
   }
@@ -202,6 +209,7 @@ function updateTcpTarget() {
   const lines = [
     `${selected.grasp_id} · ${selected.tool_name || "tcpsuck"}`,
     analyticIkLabel(selected),
+    suctionCollisionLabel(selected),
     `吸取位（接触偏移 −${contactOffsetMm.toFixed(1)} mm）`,
     formatPose(targets.suction, frameName),
   ];
