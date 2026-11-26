@@ -23,6 +23,14 @@ ROS 包 `pose6d_bridge` 和 `/6d_pose.html` 实现采集、冻结观测、下载
 
 解析 IK 标记用于展示，候选保留并沿用原有 workspace 排序、禁用与人工复核规则。它只说明最终吸取 TCP 的解析可解性，不代表准备位、接近/提升路径、障碍物或关节连续性已验证；当前求解模型仅适用于 RM65-B。
 
+确认 `analytic_ik.checked=true` 且 `reachable=true` 后，bridge 调用 `pose6d.suction_collision.check_suction_path()` 检查法向吸取走廊；无解析 IK 或 IK 未完成时直接返回 `skipped`，不处理深度。包络为从标注接触点沿朝外法向的 **10–40 mm 区间**，即长度 30 mm 的圆柱，两端包含在内；起止距离取 `pose6d_bridge.yaml` 的 `suction_collision.start_distance_m/end_distance_m`，直径复用当前工具的 `suction.cup_diameter_m`（当前 10 mm）。它独立于 `motion.prepare_distance_m`，不额外叠加吸盘本体长度、接杆或半径膨胀，也不扩展到负距离接触压入段。
+
+检测将圆柱包围盒投影到冻结深度图，只对局部区域的原始分辨率深度反投影并连续判断点是否位于圆柱内；不使用网页降采样点云，不逐点采样运动路径，不增加 GPU 或 ROS 点云调用。**碰撞判断完全不读取 Mask，也不按目标身份排除点**：目标自身、其他物体和箱壁在 10–40 mm 区间内都参与检测；距接触点不足 10 mm 的部分通过几何起点排除。因此 Mask 缺失、漏分或误分不会直接改变本次碰撞结果；用于 FoundationPose 的 Mask 仍会影响上游位姿估计。碰撞像素的 8 邻域连通区域达到 `minimum_cluster_pixels` 时返回 `collision`，减少孤立噪声误报。旧的 `length_m/contact_tolerance_m` 配置已由起止距离替代。
+
+结果附在 `grasps[].suction_collision`，状态为 `collision`、`clear`、`unknown` 或 `skipped`。页面下拉框、提示及所选 TCP 面板显示“吸取路径上有物体”“吸取路径未发现物体”“吸取路径无法判断”或“吸取路径未检查”，前端只展示后端判定。碰撞标记与解析 IK 标记一样，仅供复核，不影响候选排序、禁用规则、运动就绪或后端执行。工作区和原有人工复核门禁继续生效。
+
+无碰撞命中时，检测还计算穿过这段 30 mm 圆柱的相机射线与其远边界：深度测量位于远边界之后（允许独立的 `depth_tolerance_m`，当前 2 mm），才算获得对应方向的可见证据。覆盖比例低于 `minimum_observed_fraction`、走廊出画面/在相机后方、ROI 超过 `maximum_roi_pixels` 或输入无效时返回 `unknown`；不会将深度缺失或前景遮挡直接视为畅通。此结果仅描述冻结观测中这段圆柱走廊，不包含接触点外最初 10 mm、当前位到准备位、提升、回程、全臂或遮挡后实体的碰撞判断。`elapsed_ms` 记录每个已检查候选的后端耗时；`collision_pixels` 为命中总数，不再提供依赖 Mask 的目标/环境分类计数。
+
 `pose6d_frames` 每 0.2 秒广播当前控制器工具的 BASE 位姿 `T_base_tcp` 和当前相机位姿 `T_base_camera_live`，从新鲜法兰 TF、已匹配的活动工具及手眼标定计算。页面以采集时 `T_base_camera` 的逆矩阵把实时坐标轴放入冻结场景，机械臂移动时点云/物体保持固定，当前 TCP 和相机坐标轴更新。反馈丢失、TF 过旧或工具不匹配时隐藏实时轴并显示原因；页面超过 1.5 秒未收到遥测也隐藏实时轴。“显示全部”重新取景以包含可见工作区、相机原点、物体、所选吸取方式的准备位和当前 TCP。
 
 “配置工作区”与切向参考、相机、当前 TCP、准备位使用同一排 checkbox，可随时显示或隐藏。线框盒直接来自运行中 bridge 的 `motion.workspace_m`（`config/ros/pose6d_bridge.yaml` 及本地覆盖），以 `base_frame` 为坐标系、单位米；页面标明 BASE frame 及 XYZ 毫米范围。采集、推理和遥测事件均携带这两个字段。盒体用采集时 `T_base_camera` 的逆矩阵放入冻结场景，跟随实时相机移动不会改变其位置；缺少采集手眼变换或有效范围时不绘制，实时工具遥测暂时丢失不影响已有工作区显示。该范围约束运动中的 TCP 和吸盘扫掠体；显示开关只控制绘图。
@@ -64,7 +72,7 @@ ROS 等待分开配置：`motion.read_service_timeout_sec: 8.0` 用于 `/r/get_c
 
 用户提供的吸盘直径已登记为 **10 mm**，用于渲染吸盘圆盘和扫掠几何。右臂控制器工具 `tcpsuck` 的法兰偏移与方向由 `config/ros/realman_coordinates.yaml` 定义，现场调整安装尺寸后应以该文件和控制器匹配回读为准；`T_contact_tcp` 为单位变换，因为选中的 `tcpsuck` TCP 原点就是吸盘接触点。运动配置已启用，实时坐标状态回报当前工具为 `tcpsuck` 且与配置匹配。该状态只验证软件和控制器坐标一致；实机吸盘接触点/法线、外接头包络、运动边界和接触行为尚未完成验证。`T_contact_tcp` 仍可用接触系中的 TCP 原点 `xyz_m` 和 `[roll, pitch, yaw]` `rpy_rad` 配置；角度单位为弧度，按 `Rz(yaw) Ry(pitch) Rx(roll)` 转成内部矩阵。不要用 10 mm 直径推导 TCP 或安全压入行程。运动配置用同目录 `pose6d_bridge.local.yaml` 深合并，保存后重启桥；缺少运动参数时采集、解算和可视化仍可使用。
 
-运动路径不进行点云或其他障碍物碰撞检测，因为腕部深度点云可能包含吸盘自身。工作区检查不能证明全臂或路径没有碰撞；配置 `allow_partial_scene: true` 表示接受此限制，操作者须逐次检查整个运动路径和筛查告警。负 `x` 表示相对估计表面继续向内的目标位置，不是测得的吸盘压缩量；系统没有力控或接触力限制。
+推理后会对法向 10–40 mm 区间的圆柱走廊进行上述深度碰撞标记，运动执行不增加碰撞拦截；接触点外最初 10 mm、当前位到准备位、提升、回程及全臂没有障碍物碰撞检查。工作区检查和走廊标记不能证明整个运动路径没有碰撞；配置 `allow_partial_scene: true` 表示接受此限制，操作者须逐次检查整个运动路径和筛查告警。负 `x` 表示相对估计表面继续向内的目标位置，不是测得的吸盘压缩量；系统没有力控或接触力限制。
 
 运行步骤（机器人侧使用主 compose 的 host network，算法端口仅绑定宿主机 loopback）：
 

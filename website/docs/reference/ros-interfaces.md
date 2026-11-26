@@ -153,6 +153,8 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 
 `grasps[].tcp_targets` 由 bridge 提供 `{frame, suction: {xyz_mm, rpy_deg}, prepare: {xyz_mm, rpy_deg}}`，用于 TCP 数值展示；缺少目标时对应项为 `null`。有采集手眼变换时使用 BASE，否则使用相机系。解析节点与 bridge 由 `ros2 launch pose6d_bridge pose6d_bridge.launch.py` 一起启动，模型参数来自 `config/ros/rm65b_analytic_ik.yaml`，可通过节点参数 `config_path` 指定其他文件。`REALMAN_CONFIG_ROOT` 生效时从其 `ros/` 子目录加载模型。
 
+`grasps[].suction_collision` 在解析 IK 确认可达后由 bridge 本地计算，不增加 ROS 服务。字段包括 `status`（`collision/clear/unknown/skipped`）、`reason`、`elapsed_ms`；有效检测还提供相对接触点的 `start_distance_m/end_distance_m`（当前 0.01/0.04）、实际圆柱 `length_m/diameter_m`（当前 0.03/0.01）、`collision_pixels`、`largest_cluster_pixels`、`roi_pixels` 和可见证据比例 `observed_fraction`。`collision` 在页面标记“吸取路径上有物体”；碰撞与未知状态都只展示，候选保留原 workspace 与人工复核规则，运动入口不增加拦截。包络覆盖相机系标注接触点外沿法向的 10–40 mm，两端包含，直径复用当前吸盘工具配置。检测不读取 Mask，目标自身也参与；不再提供旧的目标/环境分类计数。缺少深度、遮挡或走廊不在视野内时不能解释为无障碍。
+
 ## TF 与描述
 
 `world → <arm>/world → <arm>/base_link → <arm>/link_1 … <arm>/link_6`，另有每臂 `<arm>/robot_description`（transient-local）。工作/工具坐标见 `config/ros/realman_coordinates.yaml`（`l/work/cell`、`l/work/pikabase` 等）。详见[完整 TF 树](../architecture/tf-tree)。
