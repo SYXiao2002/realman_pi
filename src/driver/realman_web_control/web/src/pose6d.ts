@@ -144,6 +144,13 @@ function draw(result: Message) {
   showLayers(); fitView();
 }
 function highlight() { const id = el<HTMLSelectElement>("grasp").value; el<HTMLInputElement>("review").checked = false; groups.forEach((g, i) => g.userData.ring.material.color.set(grasps[i].grasp_id === id ? 0xe96d42 : 0x2f7585)); showLayers(); updateTcpTarget(); update(); }
+function analyticIkLabel(grasp: Message) {
+  const ik = grasp.analytic_ik;
+  if (ik?.checked !== true) return `解析 IK 未完成检查${ik?.reason ? `（${ik.reason}）` : ""}`;
+  if (ik.reachable === true) return `有解析 IK（${ik.valid_solution_count} 解）`;
+  if (ik.reachable === false) return `无解析 IK${ik.reason ? `（${ik.reason}）` : ""}`;
+  return "解析 IK 未完成检查";
+}
 function graspOptions(candidates: Message[]) {
   return candidates.map((grasp, index) => ({ grasp, index })).sort((a, b) => {
     const eligibility = Number(b.grasp.workspace_valid === true) - Number(a.grasp.workspace_valid === true);
@@ -155,10 +162,10 @@ function graspOptions(candidates: Message[]) {
     const angle = Number.isFinite(grasp.vertical_down_angle_deg)
       ? `向下偏角 ${Number(grasp.vertical_down_angle_deg).toFixed(1)}°` : "角度未知";
     const reason = grasp.workspace_valid === true ? "" : ` · 警告：${grasp.workspace_reason || "workspace 未通过或无法判定"}`;
-    const option = new Option(`${grasp.grasp_id} · ${grasp.status} · ${angle}${reason}`, grasp.grasp_id);
+    const option = new Option(`${grasp.grasp_id} · ${grasp.status} · ${angle} · ${analyticIkLabel(grasp)}${reason}`, grasp.grasp_id);
     option.disabled = grasp.workspace_valid !== true;
-    option.title = grasp.workspace_valid === true ? `${angle} · workspace 合格`
-      : grasp.workspace_reason || "workspace 未通过或无法判定";
+    option.title = `${analyticIkLabel(grasp)} · ${grasp.workspace_valid === true ? `${angle} · workspace 合格`
+      : grasp.workspace_reason || "workspace 未通过或无法判定"}`;
     return option;
   });
 }
@@ -167,17 +174,14 @@ let instances: Message[] = [], selectedInstance = "";
 let modelChoicesKey = "", maskPreview = "", maskPreviewCaption = "所选实例 / 解算结果";
 let motionReady = false, motionState = "review", motionSession = "", motionPending = "", stopPending = "";
 let autoSuctionReady = false, prepareDistanceMm = 40, secondPrepareDistanceMm = 5, liftHeightMm = 50;
-let contactOffsetMm = 0, poseBaseFrame = "BASE";
+let contactOffsetMm = 0;
 let placeJointDegrees: number[] = [];
 let toolPowerAvailable = false, toolPowerVoltage: number | null = null;
 let toolPowerSetPending = "", toolPowerSetRequested: boolean | null = null;
 let toolPowerStatusPending = "", toolPowerError = "";
 const state = (text: string, error = false) => { el("state").textContent = text; el("state").dataset.error = String(error); };
-function formatPose(pose: THREE.Matrix4, frameName: string) {
-  const position = new THREE.Vector3().setFromMatrixPosition(pose).multiplyScalar(1000);
-  const rpy = new THREE.Euler().setFromRotationMatrix(pose, "ZYX");
-  const degrees = [rpy.x, rpy.y, rpy.z].map(value => THREE.MathUtils.radToDeg(value));
-  return `XYZ (${frameName})  ${position.toArray().map(value => value.toFixed(1)).join(", ")} mm\nRPY (${frameName})  ${degrees.map(value => value.toFixed(1)).join(", ")}°`;
+function formatPose(pose: Message, frameName: string) {
+  return `XYZ (${frameName})  ${pose.xyz_mm.map((value: number) => value.toFixed(1)).join(", ")} mm\nRPY (${frameName})  ${pose.rpy_deg.map((value: number) => value.toFixed(1)).join(", ")}°`;
 }
 function updateTcpTarget() {
   const selected = grasps.find(grasp => grasp.grasp_id === el<HTMLSelectElement>("grasp").value);
@@ -188,29 +192,25 @@ function updateTcpTarget() {
     note.textContent = "吸取位已计入配置的接触偏移；准备位按配置的预备距离计算。";
     return;
   }
-  if (!Array.isArray(selected.T_camera_suction_tcp)) {
-    output.textContent = "当前吸取方式没有有效的 T_contact_tcp 配置。";
-    note.textContent = "请检查 pose6d_bridge.yaml 中的运动工具与 T_contact_tcp 配置。";
+  const targets = selected.tcp_targets;
+  if (!targets?.suction) {
+    output.textContent = `${analyticIkLabel(selected)}\n当前吸取方式没有后端提供的目标 TCP 展示数据。`;
+    note.textContent = "目标 TCP 坐标与解析 IK 状态由后端提供。";
     return;
   }
-  const frameName = frozenBaseCamera ? poseBaseFrame : "相机";
-  const toDisplayFrame = (value: number[][]) => {
-    const pose = matrix(value);
-    return frozenBaseCamera ? frozenBaseCamera.clone().multiply(pose) : pose;
-  };
-  const suctionPose = toDisplayFrame(selected.T_camera_suction_tcp);
-  const preparePose = Array.isArray(selected.T_camera_prepare_tcp)
-    ? toDisplayFrame(selected.T_camera_prepare_tcp) : null;
+  const frameName = targets.frame;
   const lines = [
     `${selected.grasp_id} · ${selected.tool_name || "tcpsuck"}`,
+    analyticIkLabel(selected),
     `吸取位（接触偏移 −${contactOffsetMm.toFixed(1)} mm）`,
-    formatPose(suctionPose, frameName),
+    formatPose(targets.suction, frameName),
   ];
-  if (preparePose) lines.push(`准备位（+${prepareDistanceMm.toFixed(1)} mm）`, formatPose(preparePose, frameName));
+  if (targets.prepare) lines.push(`准备位（+${prepareDistanceMm.toFixed(1)} mm）`, formatPose(targets.prepare, frameName));
   output.textContent = lines.join("\n");
   note.textContent = frozenBaseCamera
     ? `按采集时的 T_base_camera 换算到 ${frameName}；目标取自当前吸取方式的 ${selected.tool_name || "tcpsuck"} 运动路径。`
     : "缺少采集时的手眼变换，当前显示相机坐标系下的目标 TCP。";
+  note.textContent += "解析 IK 检查针对吸取位，结果由 ROS 节点提供。";
 }
 function clearScorePreview() {
   el("score-preview").hidden = true;
@@ -404,7 +404,7 @@ function connect() {
     if (msg.type === "pose6d_error" || msg.type === "error") state(msg.message, true);
     else if (msg.type === "pose6d_capture") {
       clearObservation(); observation = msg.observation_id; el<HTMLImageElement>("rgb").src = msg.rgb; el<HTMLImageElement>("depth").src = msg.depth;
-      frozenBaseCamera = msg.T_base_camera ? matrix(msg.T_base_camera) : null; poseBaseFrame = msg.base_frame || "BASE"; receiveWorkspace(msg); updateFrames(); fitView();
+      frozenBaseCamera = msg.T_base_camera ? matrix(msg.T_base_camera) : null; receiveWorkspace(msg); updateFrames(); fitView();
       const download = el<HTMLAnchorElement>("download"); download.href = msg.rgb; download.download = `rgb-${observation}.png`; download.hidden = false;
       const objectLabel = el<HTMLSelectElement>("capture-object").selectedOptions[0]?.textContent || msg.object_id;
       el("observation").textContent = `${objectLabel} · ${msg.profile} · ${msg.width}×${msg.height} · ${msg.camera_frame} · ${msg.calibration}`;
@@ -444,7 +444,6 @@ function connect() {
       showScorePreview(msg);
       if (msg.mask_source === "sam2") el("vision-timings").textContent += ` · FoundationPose 输入 ${msg.instance_id}`;
       if (msg.T_base_camera) frozenBaseCamera = matrix(msg.T_base_camera);
-      poseBaseFrame = msg.base_frame || poseBaseFrame;
       receiveWorkspace(msg);
       const waypoints = msg.motion_waypoints || {};
       prepareDistanceMm = Number(waypoints.prepare_distance_mm ?? 40);
