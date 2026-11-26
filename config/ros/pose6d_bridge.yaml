@@ -43,6 +43,18 @@ analytic_ik:
   service: /rm65b_analytic_ik/solve_all
   timeout_sec: 2.0
 
+# After confirmed analytic IK, inspect 10–40 mm outward from the annotated
+# contact point: a 30 mm cylinder, diameter from suction.cup_diameter_m.
+# All depth points count, including the target; no Mask-based exclusions.
+# Independent of prepare_distance_m; no rod/body extension or radius inflation.
+suction_collision:
+  start_distance_m: 0.010
+  end_distance_m: 0.040
+  depth_tolerance_m: 0.002   # visibility tolerance; does not enlarge the cylinder
+  minimum_cluster_pixels: 3 # adjacent full-resolution pixels suppress isolated noise
+  minimum_observed_fraction: 0.8 # missing/occluded corridor => unknown display status
+  maximum_roi_pixels: 100000     # cap processing cost for near-camera/huge projections
+
 # Operator supplied cup diameter; annotation contact-region radii stay separate.
 suction:
   cup_diameter_m: 0.010

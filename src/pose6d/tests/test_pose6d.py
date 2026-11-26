@@ -317,6 +317,15 @@ def motion_setup(*, execute_error=None, unknown=False, holding=True, clock=time.
     return controller, port, obs, config
 
 
+@pytest.mark.parametrize("status", ["collision", "unknown", "skipped"])
+def test_collision_markers_do_not_intercept_reviewed_motion(status):
+    controller, port, _obs, _config = motion_setup()
+    controller.review[2][0]["suction_collision"] = {"status": status}
+    result = controller.prepare({"client_id": "client", "observation_id": "obs", "result_id": "result",
+                                 "grasp_id": "g1", "review_confirmed": True}, lambda _event: None)
+    assert result["state"] == "ready" and port.commands == ["movej_p"]
+
+
 def test_motion_controller_prepare_jog_crosses_zero_with_rotated_tcp():
     controller, port, _obs, _config = motion_setup()
     feedback = lambda _event: None

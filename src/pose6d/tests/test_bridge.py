@@ -259,6 +259,8 @@ def test_infer_checks_each_suction_tcp_after_contact_offset(tmp_path, monkeypatc
     assert result["grasps"][0]["analytic_ik"]["reachable"] is True
     assert result["grasps"][1]["analytic_ik"] == {
         "checked": True, "reachable": False, "valid_solution_count": 0, "reason": "OUT_OF_REACH"}
+    assert result["grasps"][1]["suction_collision"]["status"] == "skipped"
+    assert result["grasps"][0]["suction_collision"]["status"] == "unknown"  # Off-screen synthetic target.
     np.testing.assert_allclose(result["grasps"][0]["tcp_targets"]["suction"]["xyz_mm"], expected[:3, 3] * 1000)
 
 

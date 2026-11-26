@@ -33,6 +33,7 @@ from pose6d.geometry import configured_transform, suction_pose, tcp_target
 from pose6d.motion import MotionController
 from pose6d.observation import ObservationStore
 from pose6d.scoring import assess_prepare_pose
+from pose6d.suction_collision import check_suction_path
 from .motion_ros import MotionRosPort
 from .analytic_ik_ros import AnalyticIkRosPort, tcp_targets
 
@@ -763,6 +764,8 @@ class PoseBridge(Node):
             assessment = assess_prepare_pose(obs["T_base_camera"], prepared, prepared_tcp,
                                              self.motion_config, self.settings["suction"])
             analytic_ik = self.analytic_ik_port.check(obs["T_base_camera"], suction_tcp, self.ik_flange_tcp)
+            collision = check_suction_path(obs, contact, analytic_ik,
+                                           self.settings["suction"], self.settings.get("suction_collision"))
             grasps.append({"grasp_id": grasp["grasp_id"], "status": grasp["status"],
                            "radius_m": grasp["contact_region"]["radius_m"],
                            "contact_region": grasp["contact_region"],
@@ -770,6 +773,7 @@ class PoseBridge(Node):
                            "tangent_camera": (T_camera_object[:3, :3] @ np.asarray(grasp["contact_region"]["tangent_ref_obj"])).tolist(),
                            "tool_name": self.motion_config.get("tool_name", "tcpsuck"),
                            "analytic_ik": analytic_ik,
+                           "suction_collision": collision,
                            "tcp_targets": tcp_targets(obs["T_base_camera"], suction_tcp, prepared_tcp,
                                                       self.profile["base_frame"]),
                            "T_camera_suction_tcp": suction_tcp.tolist() if suction_tcp is not None else None,
