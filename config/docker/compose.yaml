@@ -289,7 +289,7 @@ services:
       - ./logs:/opt/rm65_ws/logs
       - ${POSE6D_MESH_DIR:-../FoundationPose/demo_data/eu-plug/mesh_eu-plug}:/models/eu_plug:ro
       - ${POSE6D_1124_MESH_DIR:-../FoundationPose/demo_data/eu-plug-1124/mesh}:/models/eu_plug_1124:ro
-    command: [ros2, run, pose6d_bridge, pose6d_bridge_node]
+    command: [ros2, launch, pose6d_bridge, pose6d_bridge.launch.py]
 
   # Independent data collector: it joins an existing ROS graph, subscribes to
   # driver outputs, and exposes only recording controls on loopback port 8770.
