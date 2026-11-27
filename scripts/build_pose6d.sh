@@ -18,6 +18,13 @@ base_image="${build_settings[0]}"
 use_preinstalled_pytorch3d="${build_settings[1]}"
 source_spec="${POSE6D_NVDIFFRAST_SOURCE:-${build_settings[2]}}"
 reference_root="${build_settings[3]}"
+wapr_root="${POSE6D_WAPR_REPO:-$ROOT/../WAPR}"
+if [[ ! -f "$wapr_root/wapr/estimator.py" ]]; then
+  echo "POSE6D_WAPR_REPO must point to the WAPR source checkout: $wapr_root" >&2
+  exit 2
+fi
+wapr_root="$(cd "$wapr_root" && pwd)"
+export POSE6D_WAPR_REPO="$wapr_root"
 
 # Resolve the default pinned Git source to a persistent local build context.
 # This avoids a fresh TLS Git clone on every base check and keeps the source
@@ -68,4 +75,8 @@ if [[ "$image_label" != "$runtime_fingerprint" ]]; then
 else
   echo "Pose6D dependency image is current; reusing ${POSE6D_RUNTIME_IMAGE:-realman-pose6d-runtime:local}"
 fi
-"${compose[@]}" build --provenance=false pose6d_server
+(cd "$ROOT" && docker buildx bake \
+  -f "$ROOT/docker-compose.yml" -f "$ROOT/config/docker/compose.pose6d.yaml" \
+  --allow network.host --allow fs.read=../FoundationPose \
+  --allow "fs.read=$source_dir" --allow "fs.read=$wapr_root" \
+  --load --provenance=false pose6d_server)

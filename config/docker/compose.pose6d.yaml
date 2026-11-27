@@ -24,8 +24,10 @@ services:
       context: ${POSE6D_REFERENCE_REPO:-../FoundationPose}
       dockerfile: docker/pose6d-server.Dockerfile
       target: pose6d_server
+      network: host
       additional_contexts:
         nvdiffrast_source: ${POSE6D_NVDIFFRAST_SOURCE:-https://github.com/NVlabs/nvdiffrast.git#253ac4fcea7de5f396371124af597e6cc957bfae}
+        wapr_source: ${POSE6D_WAPR_REPO:-../WAPR}
       args:
         POSE6D_BASE_IMAGE: ${POSE6D_BASE_IMAGE:-nvcr.io/nvidian/bundlesdf@sha256:534a24c4fb89c89ba3aefbbaef97dce9b693656e27f46bf55ebb85e45c2842dd}
         POSE6D_RUNTIME_IMAGE: ${POSE6D_RUNTIME_IMAGE:-realman-pose6d-runtime:local}
@@ -34,9 +36,17 @@ services:
       - --host
       - 0.0.0.0
       - --model
-      - eu_plug=/models/eu_plug/TexturedMeshSimplified.obj
-      - --model
       - eu_plug_1124=/models/eu_plug_1124/eu-plug-1124mtl.obj
+      - --model
+      - eu_plug=/models/eu_plug/TexturedMeshSimplified.obj
+      - --algorithms
+      - foundationpose,wapr
+      - --default-algorithm
+      - foundationpose
+      - --wapr-backend
+      - ${POSE6D_WAPR_BACKEND:-torch}
+    environment:
+      WAPR_CACHE_DIR: /var/cache/wapr
     ports:
       - '${POSE6D_BIND_HOST:-127.0.0.1}:${POSE6D_WS_PORT:-8092}:8092'
       - '${POSE6D_HISTORY_BIND_HOST:-127.0.0.1}:${POSE6D_HISTORY_HTTP_PORT:-8095}:8095'
@@ -45,6 +55,7 @@ services:
       - ${POSE6D_WEIGHTS_DIR:-../FoundationPose/weights}:/opt/pose6d/reference/weights:ro
       - ${POSE6D_MESH_DIR:-../FoundationPose/demo_data/eu-plug/mesh_eu-plug}:/models/eu_plug:ro
       - ${POSE6D_1124_MESH_DIR:-../FoundationPose/demo_data/eu-plug-1124/mesh}:/models/eu_plug_1124:ro
+      - ${POSE6D_WAPR_CACHE_DIR:-../../.cache/wapr}:/var/cache/wapr:rw
     read_only: true
     tmpfs: [/tmp:size=1g]
     stop_grace_period: 65s
