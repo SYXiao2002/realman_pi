@@ -21,6 +21,22 @@ from pose6d.feedback import settled_joints
 from pose6d.path import samples, screen_workspace
 
 
+class MotionExecutionError(ValueError):
+    """A submitted motion command never reached a confirmed success terminal state.
+
+    Carries the controller/SDK API2 status code (``api2_status``) and the command
+    label so callers can surface the precise failure reason — for example the
+    inverse-kinematics error returned while executing ``rm_movej_p`` — instead of
+    only a generic message. Subclasses ``ValueError`` so existing ``except
+    ValueError`` handlers keep working unchanged.
+    """
+
+    def __init__(self, message, *, api2_status=0, command=""):
+        super().__init__(message)
+        self.api2_status = int(api2_status)
+        self.command = command
+
+
 class MotionRosPort:
     """ROS calls used by MotionController. All waits run on its worker thread."""
 
@@ -535,7 +551,12 @@ class MotionRosPort:
                             or result.terminal_state != ExecuteMotion.Result.SUCCEEDED or result.api2_status != 0):
                         with self.goal_lock:
                             self.unknown_action = False
-                        raise ValueError(f"{label} did not reach a confirmed success terminal state: " + result.message)
+                        api2_detail = (f" (API2 status {result.api2_status})"
+                                       if result.api2_status != 0 else "")
+                        raise MotionExecutionError(
+                            f"{label} did not reach a confirmed success terminal state"
+                            f"{api2_detail}: {result.message}",
+                            api2_status=result.api2_status, command=label)
                     with self.goal_lock:
                         self.unknown_action = False
                     if joints is not None:

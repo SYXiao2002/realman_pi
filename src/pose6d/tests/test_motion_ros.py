@@ -13,7 +13,7 @@ from realman_msgs.action import ExecuteMotion
 from realman_msgs.srv import SetToolPower
 from std_srvs.srv import Trigger
 
-from pose6d_bridge.motion_ros import MotionRosPort
+from pose6d_bridge.motion_ros import MotionExecutionError, MotionRosPort
 
 
 class Future:
@@ -480,11 +480,38 @@ def test_motion_ros_port_quarantines_pending_goal_and_stops_without_retry(monkey
 
 
 def test_motion_ros_port_rejects_action_without_success_status(monkeypatch):
-    action = Action(Handle(goal_result(GoalStatus.STATUS_ABORTED, success=False,
-                                       terminal=ExecuteMotion.Result.ABORTED)))
+    wrapped = goal_result(GoalStatus.STATUS_ABORTED, success=False,
+                          terminal=ExecuteMotion.Result.TIMEOUT)
+    wrapped.result.message = (
+        "motion timed out and stopped; motion timeout: observed_active=False "
+        "trajectory_active=False completion_event=None; pose proof unavailable"
+    )
+    action = Action(Handle(wrapped))
     adapter, _stop = port(monkeypatch, action)
     import numpy as np
     import threading
-    with pytest.raises(ValueError, match="confirmed success"):
+    with pytest.raises(MotionExecutionError, match="confirmed success") as error:
         adapter.execute(np.eye(4), "lease-token", threading.Event(), lambda _f: None, command="movej_p")
+    assert error.value.api2_status == 0
+    assert "API2 status 0" not in str(error.value)
+    assert "motion timed out and stopped" in str(error.value)
+    assert adapter.action_uncertain() is False
+
+
+def test_motion_ros_port_surfaces_api2_status_on_movej_p_failure(monkeypatch):
+    result = ExecuteMotion.Result()
+    result.success, result.terminal_state, result.api2_status = False, ExecuteMotion.Result.ABORTED, -32
+    result.message = "motion submission failed with API2 status -32"
+    action = Action(Handle(SimpleNamespace(status=GoalStatus.STATUS_ABORTED, result=result)))
+    adapter, _stop = port(monkeypatch, action)
+    import numpy as np
+    import threading
+    with pytest.raises(MotionExecutionError) as error:
+        adapter.execute(np.eye(4), "lease-token", threading.Event(), lambda _f: None, command="movej_p")
+    # The numeric controller code must survive as structured data, not only text,
+    # so the browser can explain why the inverse kinematics failed.
+    assert error.value.api2_status == -32
+    assert error.value.command == "MOVEJ_P"
+    assert isinstance(error.value, ValueError)
+    assert "-32" in str(error.value)
     assert adapter.action_uncertain() is False

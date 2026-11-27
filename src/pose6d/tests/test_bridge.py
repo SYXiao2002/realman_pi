@@ -63,6 +63,7 @@ def test_capture_freezes_aligned_rgbd_without_hand_eye():
     assert event["object_id"] == "eu_plug_1124"
     assert event["model_sha256"] == "1124-hash"
     assert event["object_label"] == "欧规插头 1124"
+    np.testing.assert_array_equal(frozen["joint_positions_rad"], np.zeros(6))
     assert np.all(frozen["rgb"] == [30, 20, 10])
     assert np.allclose(frozen["depth_m"], 1)
 
@@ -93,6 +94,16 @@ def observation():
                        depth_m=np.ones((8, 8), dtype=np.float32), K=np.eye(3),
                        timestamp_ns=1, camera_frame="camera")
     return store, oid
+
+
+@pytest.mark.parametrize("joints", [[0] * 5, [float("nan")] * 6])
+def test_observation_store_rejects_invalid_ik_joint_reference(joints):
+    with pytest.raises(ValueError, match="joint_positions_rad"):
+        ObservationStore().freeze(
+            rgb=np.zeros((8, 8, 3), dtype=np.uint8),
+            depth_m=np.ones((8, 8), dtype=np.float32), K=np.eye(3),
+            timestamp_ns=1, camera_frame="camera", joint_positions_rad=joints,
+        )
 
 
 @pytest.mark.parametrize("shape", [(7, 8), (8, 8, 3)])
@@ -189,36 +200,30 @@ def test_oversized_web_event_returns_correlated_error():
 
 
 def test_infer_checks_each_suction_tcp_after_contact_offset(tmp_path, monkeypatch):
-    from pose6d_bridge.analytic_ik_ros import AnalyticIkRosPort
-    from rm65b_analytic_ik import IKSolver, forward_kinematics
-    from rm65b_analytic_ik.conversions import xyzrpy_to_matrix
-    from rm65b_analytic_ik.ros_node import solve_request
-    from realman_msgs.srv import SolveAnalyticIk
-    from rclpy.task import Future
-
-    solver = IKSolver()
-    tool_xyzrpy = [.03, -.02, .14, .2, -.1, .8]
-    flange_tcp = xyzrpy_to_matrix(tool_xyzrpy)
-    base_object = forward_kinematics([.2, -.3, .8, .5, .7, -1.2], solver.config, tool_xyzrpy)
-    base_camera = xyzrpy_to_matrix([.1, .2, .3, .3, -.2, .4])
-    camera_object = np.linalg.inv(base_camera) @ base_object
+    base_camera = np.eye(4)
+    base_camera[:3, 3] = [.4, -.2, .3]
+    camera_object = np.eye(4)
+    camera_object[:3, 3] = [.1, .2, .3]
+    flange_tcp = np.eye(4)
+    flange_tcp[2, 3] = .14
     store = ObservationStore()
     oid = store.freeze(rgb=np.zeros((8, 8, 3), np.uint8), depth_m=np.ones((8, 8), np.float32),
                        K=np.eye(3), timestamp_ns=1, camera_frame="camera", object_id="eu_plug",
-                       T_base_camera=base_camera)
+                       T_base_camera=base_camera,
+                       joint_positions_rad=np.deg2rad([10, -20, 30, -40, 50, -60]))
     mesh = tmp_path / "object.obj"
     mesh.write_text("v 0 0 0\n")
-    requests = []
+    calls = []
 
-    def solve(request):
-        requests.append(request)
-        future = Future()
-        future.set_result(solve_request(solver, request, SolveAnalyticIk.Response()))
-        return future
+    class FakeIkPort:
+        def check(self, T_base_camera, T_camera_tcp, T_flange_tcp, q_ref_degrees=None):
+            calls.append((T_base_camera.copy(), T_camera_tcp.copy(), T_flange_tcp.copy(), q_ref_degrees))
+            if len(calls) == 1:
+                return {"checked": True, "reachable": True, "valid_solution_count": 8, "reason": None}
+            return {"checked": True, "reachable": False, "valid_solution_count": 0,
+                    "reason": "SDK_NO_SOLUTION"}
 
-    port = AnalyticIkRosPort.__new__(AnalyticIkRosPort)
-    port.client = SimpleNamespace(wait_for_service=lambda **_: True, call_async=solve)
-    port.timeout = .1
+    port = FakeIkPort()
 
     class BackendSocket:
         request = None
@@ -251,17 +256,27 @@ def test_infer_checks_each_suction_tcp_after_contact_offset(tmp_path, monkeypatc
     )
     _, png = cv2.imencode(".png", np.ones((8, 8), np.uint8) * 255)
     result = PoseBridge.infer(bridge, {"observation_id": oid, "mask_png": base64.b64encode(png).decode()})
-    assert len(requests) == 2
-    expected = base_object.copy()
-    expected[:3, 3] += base_object[:3, 2] * .005
-    np.testing.assert_allclose(np.asarray(requests[0].target_base_tcp).reshape(4, 4), expected, atol=1e-8)
-    np.testing.assert_allclose(np.asarray(requests[0].flange_tcp).reshape(4, 4), flange_tcp)
+    assert len(calls) == 4
+    expected_camera_tcp = np.eye(4)
+    expected_camera_tcp[:3, 3] = [.1, .2, .305]
+    np.testing.assert_allclose(calls[0][0], base_camera)
+    np.testing.assert_allclose(calls[0][1], expected_camera_tcp, atol=1e-8)
+    np.testing.assert_allclose(calls[0][2], flange_tcp)
+    np.testing.assert_allclose(calls[0][3], [10, -20, 30, -40, 50, -60], atol=1e-8)
+    np.testing.assert_allclose(calls[1][0], base_camera)
+    np.testing.assert_allclose(calls[1][1], result["grasps"][0]["T_camera_prepare_tcp"], atol=1e-8)
+    np.testing.assert_allclose(calls[1][2], flange_tcp)
+    np.testing.assert_allclose(calls[1][3], [10, -20, 30, -40, 50, -60], atol=1e-8)
+    expected_base_tcp = base_camera @ expected_camera_tcp
+    np.testing.assert_allclose(result["grasps"][0]["tcp_targets"]["suction"]["xyz_mm"],
+                               expected_base_tcp[:3, 3] * 1000)
     assert result["grasps"][0]["analytic_ik"]["reachable"] is True
+    assert result["grasps"][0]["pregrasp_ik"]["reachable"] is False
     assert result["grasps"][1]["analytic_ik"] == {
-        "checked": True, "reachable": False, "valid_solution_count": 0, "reason": "OUT_OF_REACH"}
+        "checked": True, "reachable": False, "valid_solution_count": 0, "reason": "SDK_NO_SOLUTION"}
+    assert result["grasps"][1]["pregrasp_ik"]["reachable"] is False
     assert result["grasps"][1]["suction_collision"]["status"] == "skipped"
     assert result["grasps"][0]["suction_collision"]["status"] == "unknown"  # Off-screen synthetic target.
-    np.testing.assert_allclose(result["grasps"][0]["tcp_targets"]["suction"]["xyz_mm"], expected[:3, 3] * 1000)
 
 
 def test_other_client_cannot_infer_another_clients_observation():
@@ -431,3 +446,39 @@ def test_live_tool_frame_uses_active_tool_and_rotated_flange():
     assert events[-1]["available"] is False
     assert events[-1]["workspace_m"] == bridge.motion_config["workspace_m"]
     assert "T_base_tcp" not in events[-1]
+
+
+def test_motion_error_event_surfaces_api2_status_for_browser():
+    from pose6d_bridge.motion_ros import MotionExecutionError
+
+    def failing_prepare(*_args, **_kwargs):
+        raise MotionExecutionError(
+            "MOVEJ_P did not reach a confirmed success terminal state (API2 status -32): "
+            "motion submission failed with API2 status -32", api2_status=-32, command="MOVEJ_P")
+
+    events = []
+    bridge = SimpleNamespace(
+        motion=SimpleNamespace(prepare=failing_prepare, status=lambda: {"state": "blocked", "busy": False}),
+        get_logger=lambda: SimpleNamespace(warning=lambda _: None),
+        emit=lambda client, request, event: events.append((client, request, event)))
+    PoseBridge.run_motion_command(bridge, {"type": "prepare", "client_id": "c", "request_id": "r"})
+    payload = events[-1][2]
+    assert payload["type"] == "pose6d_error"
+    # The numeric controller code must reach the browser as structured data so the
+    # frontend can explain why the inverse kinematics failed, not just relay text.
+    assert payload["api2_status"] == -32
+    assert payload["api2_command"] == "MOVEJ_P"
+    assert payload["motion"] == {"state": "blocked", "busy": False}
+
+
+def test_motion_error_event_omits_api2_status_when_zero():
+    events = []
+    bridge = SimpleNamespace(
+        motion=SimpleNamespace(prepare=lambda *_a, **_k: (_ for _ in ()).throw(ValueError("session stopped")),
+                               status=lambda: {"state": "review", "busy": False}),
+        get_logger=lambda: SimpleNamespace(warning=lambda _: None),
+        emit=lambda client, request, event: events.append((client, request, event)))
+    PoseBridge.run_motion_command(bridge, {"type": "prepare", "client_id": "c", "request_id": "r"})
+    payload = events[-1][2]
+    assert payload["type"] == "pose6d_error" and payload["message"] == "session stopped"
+    assert "api2_status" not in payload

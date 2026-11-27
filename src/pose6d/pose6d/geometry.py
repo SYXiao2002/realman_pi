@@ -17,6 +17,20 @@ def rigid(value):
     return matrix
 
 
+def matrix_to_xyzrpy(value, tolerance=1e-6):
+    """Return [x, y, z, roll, pitch, yaw] using Rz(yaw) Ry(pitch) Rx(roll)."""
+    matrix = rigid(value)
+    rotation = matrix[:3, :3]
+    pitch = float(np.arcsin(np.clip(-rotation[2, 0], -1.0, 1.0)))
+    if abs(np.cos(pitch)) > tolerance:
+        roll = float(np.arctan2(rotation[2, 1], rotation[2, 2]))
+        yaw = float(np.arctan2(rotation[1, 0], rotation[0, 0]))
+    else:
+        roll = 0.0
+        yaw = float(np.arctan2(-rotation[0, 1], rotation[1, 1]))
+    return (float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3]), roll, pitch, yaw)
+
+
 def configured_transform(value):
     """Read a rigid transform matrix or an operator-facing xyz/RPY mapping."""
     if not isinstance(value, dict):

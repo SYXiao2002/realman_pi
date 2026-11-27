@@ -16,7 +16,7 @@ class ObservationStore:
         self._generation = 0
 
     def freeze(self, *, rgb, depth_m, K, timestamp_ns, camera_frame, T_base_camera=None,
-               captured_at=None, object_id=None):
+               captured_at=None, object_id=None, joint_positions_rad=None):
         rgb = np.asarray(rgb)
         depth = np.asarray(depth_m)
         K = np.asarray(K, dtype=np.float64)
@@ -30,6 +30,11 @@ class ObservationStore:
         if type(timestamp_ns) is not int or timestamp_ns <= 0 or not isinstance(camera_frame, str) or not camera_frame:
             raise ValueError("capture timestamp and camera frame are required")
         transform = None if T_base_camera is None else rigid(T_base_camera).copy()
+        if joint_positions_rad is not None:
+            joint_positions_rad = np.asarray(joint_positions_rad, dtype=np.float64)
+            if joint_positions_rad.shape != (6,) or not np.isfinite(joint_positions_rad).all():
+                raise ValueError("joint_positions_rad must contain six finite radians")
+            joint_positions_rad = tuple(float(value) for value in joint_positions_rad)
         captured_at = time.monotonic() if captured_at is None else float(captured_at)
         if not np.isfinite(captured_at):
             raise ValueError("capture monotonic time must be finite")
@@ -43,6 +48,7 @@ class ObservationStore:
             self._observation = {"observation_id": uuid.uuid4().hex, "rgb": arrays[0], "depth_m": arrays[1],
                                  "K": arrays[2], "timestamp_ns": timestamp_ns, "camera_frame": camera_frame,
                                  "T_base_camera": transform, "captured_at": captured_at,
+                                 "joint_positions_rad": joint_positions_rad,
                                  "object_id": object_id,
                                  "mask": None, "result": None, "instances": {}, "vision": None,
                                  "selected_instance_id": None}

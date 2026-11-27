@@ -35,7 +35,7 @@ from pose6d.observation import ObservationStore
 from pose6d.scoring import assess_prepare_pose
 from pose6d.suction_collision import check_suction_path
 from .motion_ros import MotionRosPort
-from .analytic_ik_ros import AnalyticIkRosPort, tcp_targets
+from .native_ik import NativeIkSdkPort, tcp_targets
 
 WEB_EVENT_LIMIT = 8 * 1024 * 1024
 VISION_LOG_MAX_BYTES = 10 * 1024 * 1024
@@ -117,7 +117,7 @@ class PoseBridge(Node):
             raise ValueError("pose6d tool choices must be registered in realman_coordinates.yaml")
         tool_pose = coordinate_arm["tools"][self.motion_config["tool_name"]]["pose"]
         self.ik_flange_tcp = from_pose(tool_pose["xyz_m"], tool_pose["quaternion_wxyz"])
-        self.analytic_ik_port = AnalyticIkRosPort(self, self.settings["analytic_ik"])
+        self.analytic_ik_port = NativeIkSdkPort(logger=self.get_logger())
         self.tf = Buffer(cache_time=Duration(seconds=60))
         self.listener = TransformListener(self.tf, self)
         self.events = self.create_publisher(String, "~/events", 10)
@@ -352,8 +352,14 @@ class PoseBridge(Node):
             self.emit(client, request_id, result)
         except Exception as exc:
             self.get_logger().warning(f"pose6d motion {kind} failed: {exc}")
-            self.emit(client, request_id, {"type": "pose6d_error", "message": str(exc),
-                                           "motion": self.motion.status()})
+            payload = {"type": "pose6d_error", "message": str(exc), "motion": self.motion.status()}
+            # Surface the controller/SDK API2 code so the browser can explain the
+            # precise failure reason (for example an inverse-kinematics error).
+            api2_status = getattr(exc, "api2_status", 0)
+            if isinstance(api2_status, int) and api2_status != 0:
+                payload["api2_status"] = api2_status
+                payload["api2_command"] = getattr(exc, "command", "") or kind
+            self.emit(client, request_id, payload)
 
     def mark_disconnected(self, client):
         clear_observation = False
@@ -413,6 +419,9 @@ class PoseBridge(Node):
                     raise ValueError(f"waiting for sensor input: missing {', '.join(missing)}")
                 if not GraspBridge.stopped(self, streams["joints"], now):
                     raise ValueError("arm is moving or joint feedback is stale")
+                joint_positions_rad = np.asarray(streams["joints"][-1].position, dtype=np.float64)
+                if joint_positions_rad.shape != (6,) or not np.isfinite(joint_positions_rad).all():
+                    raise ValueError("joint feedback must contain six finite radians")
                 color = streams["color"][-1]
                 stamp = stamp_ns(color)
                 if stamp < not_before:
@@ -435,7 +444,8 @@ class PoseBridge(Node):
                 rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
                 base_camera, detail = self.base_camera(stamp)
                 oid = self.store.freeze(rgb=rgb, depth_m=aligned, K=cm.K, timestamp_ns=stamp,
-                                        camera_frame=cm.frame, T_base_camera=base_camera, object_id=object_id)
+                                        camera_frame=cm.frame, T_base_camera=base_camera, object_id=object_id,
+                                        joint_positions_rad=joint_positions_rad)
                 depth_display = cv2.applyColorMap(cv2.convertScaleAbs(aligned, alpha=255 / 1.0), cv2.COLORMAP_TURBO)
                 depth_display[aligned == 0] = 0
                 return {"type": "pose6d_capture", "observation_id": oid, "timestamp_ns": str(stamp),
@@ -731,6 +741,7 @@ class PoseBridge(Node):
         obs = self.store.get(oid)
         generation, request = self.store.request(oid, object_id=object_id,
                                                 model_sha256=model["model_sha256"], algorithm=algorithm)
+        started = time.perf_counter()
         with connect(self.settings["ws_uri"], open_timeout=self.settings["connect_timeout_sec"],
                      max_size=MAX_MESSAGE_BYTES, compression=None) as ws:
             hello = unpackb(ws.recv(timeout=self.settings["connect_timeout_sec"]))
@@ -747,6 +758,7 @@ class PoseBridge(Node):
                 raise ValueError("backend model identity mismatch")
             ws.send(packb(request))
             result = unpackb(ws.recv(timeout=self.settings["inference_timeout_sec"]))
+        algorithm_round_trip_ms = (time.perf_counter() - started) * 1000.0
         if result.get("type") != "result":
             raise ValueError(result.get("message", "backend inference failed"))
         if result.get("algorithm", "foundationpose") != algorithm:
@@ -789,7 +801,13 @@ class PoseBridge(Node):
                 prepared_tcp = None
             assessment = assess_prepare_pose(obs["T_base_camera"], prepared, prepared_tcp,
                                              self.motion_config, self.settings["suction"])
-            analytic_ik = self.analytic_ik_port.check(obs["T_base_camera"], suction_tcp, self.ik_flange_tcp)
+            joint_positions_rad = obs.get("joint_positions_rad")
+            q_ref_degrees = (np.rad2deg(joint_positions_rad).tolist()
+                             if joint_positions_rad is not None else None)
+            analytic_ik = self.analytic_ik_port.check(
+                obs["T_base_camera"], suction_tcp, self.ik_flange_tcp, q_ref_degrees)
+            pregrasp_ik = self.analytic_ik_port.check(
+                obs["T_base_camera"], prepared_tcp, self.ik_flange_tcp, q_ref_degrees)
             collision = check_suction_path(obs, contact, analytic_ik,
                                            self.settings["suction"], self.settings.get("suction_collision"))
             grasps.append({"grasp_id": grasp["grasp_id"], "status": grasp["status"],
@@ -799,6 +817,7 @@ class PoseBridge(Node):
                            "tangent_camera": (T_camera_object[:3, :3] @ np.asarray(grasp["contact_region"]["tangent_ref_obj"])).tolist(),
                            "tool_name": self.motion_config.get("tool_name", "tcpsuck"),
                            "analytic_ik": analytic_ik,
+                           "pregrasp_ik": pregrasp_ik,
                            "suction_collision": collision,
                            "tcp_targets": tcp_targets(obs["T_base_camera"], suction_tcp, prepared_tcp,
                                                       self.profile["base_frame"]),
@@ -815,11 +834,19 @@ class PoseBridge(Node):
         else:
             ready = False
             motion_reason = "该物体尚无吸盘接触标注，已禁用运动"
+        # Mirror the yolo/sam timing breakdown so the web UI can show how long the
+        # pose algorithm (FoundationPose/WAPR) itself took, next to the vision stages.
+        service_timings = result.get("timings")
+        algorithm_timings = {"algorithm": algorithm, "round_trip_ms": algorithm_round_trip_ms}
+        if isinstance(service_timings, dict):
+            algorithm_timings.update({key: value for key, value in service_timings.items()
+                                      if key.endswith("_ms") and isinstance(value, (int, float))
+                                      and not isinstance(value, bool)})
         return {"type": "pose6d_result", "observation_id": oid, "result_id": result_id,
                 "algorithm": algorithm, "algorithm_label": algorithms[algorithm].get("label", algorithm),
                 "instance_id": obs.get("selected_instance_id"),
                 "mask_source": "sam2" if obs.get("selected_instance_id") else "manual",
-                "vision_timings": obs.get("vision"),
+                "vision_timings": obs.get("vision"), "algorithm_timings": algorithm_timings,
                 "history_id": result.get("history_id"), "history_path": result.get("history_path"),
                 "archive_status": result.get("archive_status"), "archive_error": result.get("archive_error"),
                 "T_camera_object": result["T_camera_object"],
