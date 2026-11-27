@@ -42,7 +42,7 @@ services:
       - --algorithms
       - foundationpose,wapr
       - --default-algorithm
-      - foundationpose
+      - wapr
       - --wapr-backend
       - ${POSE6D_WAPR_BACKEND:-torch}
     environment:
