@@ -23,6 +23,63 @@ async function completeSegment(page: any, observationId: string) {
   return request;
 }
 
+test("WAPR is selectable for a frozen SAM instance and reports its own score type", async ({ page }) => {
+  await page.route("**/6d_pose_history/api/records/123/preview/score", route => route.fulfill({
+    status: 200, contentType: "image/png",
+    body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64"),
+  }));
+  await page.goto("6d_pose.html");
+  await page.evaluate(() => (window as any).poseSocket.emit({
+    type: "pose6d_frames", arm: "r", available: false,
+    pose6d_algorithms: [
+      { algorithm: "foundationpose", label: "FoundationPose", default: true },
+      { algorithm: "wapr", label: "WAPR", default: false },
+    ],
+  }));
+  await expect(page.locator("#algorithm option")).toHaveCount(2);
+  await page.locator("#algorithm").selectOption("wapr");
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.find((message: any) => message.type === "pose6d_capture"));
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_capture", request_id: capture.request_id, observation_id: "obs-wapr",
+    object_id: "eu_plug", rgb: png, depth: png, profile: "right_wrist",
+    width: 1, height: 1, camera_frame: "camera", calibration: "available",
+  });
+  const segment = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instances", request_id: segment.request_id, observation_id: "obs-wapr", status: "ok",
+    timings: {}, detections: [{ instance_id: "obs-wapr:0", detection_id: "0", class_name: "eu",
+      confidence: .9, bbox: [0, 0, 1, 1], status: "ok", sam_score: .95,
+      sam_predict_ms: 1, valid_depth_pixels: 4, mask_pixels: 4 }],
+  });
+  await page.locator("#instance-list button").click();
+  const preview = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate((event) => (window as any).poseSocket.emit(event), {
+    type: "pose6d_instance_preview", request_id: preview.request_id, observation_id: "obs-wapr",
+    instance_id: "obs-wapr:0", preview: png, mask_pixels: 4, valid_depth_pixels: 4,
+  });
+  await page.locator("#infer").click();
+  const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(infer).toMatchObject({ type: "pose6d_infer", algorithm: "wapr", instance_id: "obs-wapr:0" });
+  await page.evaluate(({ event, png }) => (window as any).poseSocket.emit({
+    type: "pose6d_result", request_id: event.request_id, observation_id: "obs-wapr", result_id: "r-wapr",
+    algorithm: "wapr", algorithm_label: "WAPR", score: .4312, score_type: "wapr_score_6d",
+    score_preview_available: true, history_id: "123", archive_status: "complete",
+    object_id: "eu_plug", suction_available: false,
+    T_camera_object: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]],
+    mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
+    cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] }, grasps: [],
+    screening: { status: "insufficient_evidence", metrics: {} }, motion_ready: false,
+    motion_reason: "未配置吸盘标注", overlay: png,
+  }), { event: infer, png });
+  await expect(page.locator("#pose-score")).toContainText("WAPR · wapr_score_6d: 0.4312");
+  await expect(page.locator("#score-preview-caption")).toContainText("最高分候选");
+  await expect(page.locator("#score-preview-image")).toHaveAttribute("src", "/6d_pose_history/api/records/123/preview/score");
+  await expect(page.locator("#score-preview-link")).toHaveAttribute("href", "/6d_pose_history/api/records/123/files/vis_score.png");
+  await expect(page.locator("#prepare")).toBeDisabled();
+});
+
 test("controller TCP selection invalidates old pose review and reports readback", async ({ page }) => {
   await page.goto("6d_pose.html");
   await page.locator("#controller-tool").selectOption("tcpsuck");
