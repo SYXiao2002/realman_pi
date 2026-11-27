@@ -136,6 +136,10 @@ def test_pose6d_automatic_segmentation_selects_only_a_bridge_owned_instance():
     assert parse_message(json.dumps(preview)) == preview
     infer = {"type": "pose6d_infer", "request_id": "i1", "observation_id": "o1", "instance_id": "o1:0"}
     assert parse_message(json.dumps(infer)) == infer
+    wapr = {**infer, "algorithm": "wapr"}
+    assert parse_message(json.dumps(wapr)) == wapr
+    with pytest.raises(ProtocolError, match="algorithm"):
+        parse_message(json.dumps({**infer, "algorithm": "unknown"}))
     assert parse_message(json.dumps({**infer, "object_id": "eu_plug_1124"})) == {
         **infer, "object_id": "eu_plug_1124"}
     for invalid in (

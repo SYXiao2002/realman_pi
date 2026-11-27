@@ -541,6 +541,12 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
         allowed |= {"observation_id"}
         result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
         if kind == "pose6d_infer":
+            if "algorithm" in message:
+                allowed.add("algorithm")
+                algorithm = _string(message["algorithm"], "algorithm", maximum=32)
+                if algorithm not in ("foundationpose", "wapr"):
+                    raise ProtocolError("invalid_field", "unsupported 6D pose algorithm", result["request_id"])
+                result["algorithm"] = algorithm
             if "object_id" in message:
                 allowed.add("object_id")
                 result["object_id"] = _string(message["object_id"], "object_id", maximum=128)
