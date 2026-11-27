@@ -98,6 +98,16 @@ class PoseBridge(Node):
         if self.default_object_id not in self.models:
             raise ValueError("default_object_id must exist in configured pose6d models")
         self.settings["object_id"] = self.default_object_id
+        configured_algorithms = self.settings.get("algorithms", {
+            "foundationpose": {"label": "FoundationPose"}})
+        if (not isinstance(configured_algorithms, dict) or not configured_algorithms
+                or set(configured_algorithms) - {"foundationpose", "wapr"}
+                or any(not isinstance(spec, dict) for spec in configured_algorithms.values())):
+            raise ValueError("pose6d algorithms must map foundationpose and/or wapr to labels")
+        self.algorithms = configured_algorithms
+        self.default_algorithm = self.settings.get("default_algorithm", "foundationpose")
+        if self.default_algorithm not in self.algorithms:
+            raise ValueError("default_algorithm must exist in configured pose6d algorithms")
         self.mesh_hash = self.models[self.default_object_id]["model_sha256"]
         self.mesh_dir = self.models[self.default_object_id]["mesh_dir"]
         self.annotation = self.models[self.default_object_id]["annotation"]
@@ -139,6 +149,9 @@ class PoseBridge(Node):
         event = {"type": "pose6d_frames", "arm": self.profile["arm"],
                  "base_frame": self.profile["base_frame"],
                  "workspace_m": self.motion_config.get("workspace_m"), "available": False,
+                 "pose6d_algorithms": [{"algorithm": algorithm, "label": spec.get("label", algorithm),
+                                         "default": algorithm == getattr(self, "default_algorithm", "foundationpose")}
+                                        for algorithm, spec in getattr(self, "algorithms", {}).items()],
                  "pose6d_models": [{"object_id": object_id, "label": model.get("label", object_id),
                                     "mesh_file": model.get("mesh_file"),
                                     "default": object_id == default_object_id}
@@ -687,6 +700,10 @@ class PoseBridge(Node):
 
         oid = command["observation_id"]
         obs = self.store.get(oid)
+        algorithm = command.get("algorithm", getattr(self, "default_algorithm", "foundationpose"))
+        algorithms = getattr(self, "algorithms", {"foundationpose": {"label": "FoundationPose"}})
+        if algorithm not in algorithms:
+            raise ValueError("unknown 6D pose algorithm selection")
         object_id = command.get("object_id") or obs.get("object_id") or getattr(self, "default_object_id", "")
         models = getattr(self, "models", None)
         model = models.get(object_id) if isinstance(models, dict) else {
@@ -712,7 +729,8 @@ class PoseBridge(Node):
                 raise ValueError("mask must be a single-channel 8-bit PNG")
             self.store.set_mask(oid, mask)
         obs = self.store.get(oid)
-        generation, request = self.store.request(oid, object_id=object_id, model_sha256=model["model_sha256"])
+        generation, request = self.store.request(oid, object_id=object_id,
+                                                model_sha256=model["model_sha256"], algorithm=algorithm)
         with connect(self.settings["ws_uri"], open_timeout=self.settings["connect_timeout_sec"],
                      max_size=MAX_MESSAGE_BYTES, compression=None) as ws:
             hello = unpackb(ws.recv(timeout=self.settings["connect_timeout_sec"]))
@@ -720,13 +738,21 @@ class PoseBridge(Node):
             registered_hash = (registered_models.get(object_id, {}).get("model_sha256")
                                if isinstance(registered_models, dict) else
                                hello.get("model_sha256") if hello.get("object_id") == object_id else None)
+            advertised_algorithms = hello.get("algorithms")
             if (hello.get("type") != "hello" or not hello.get("ready")
+                    or hello.get("service") not in (None, "pose6d")
+                    or (isinstance(advertised_algorithms, list) and algorithm not in advertised_algorithms)
+                    or (algorithm == "wapr" and not isinstance(advertised_algorithms, list))
                     or registered_hash != model["model_sha256"]):
                 raise ValueError("backend model identity mismatch")
             ws.send(packb(request))
             result = unpackb(ws.recv(timeout=self.settings["inference_timeout_sec"]))
         if result.get("type") != "result":
             raise ValueError(result.get("message", "backend inference failed"))
+        if result.get("algorithm", "foundationpose") != algorithm:
+            raise ValueError("backend algorithm identity mismatch")
+        if algorithm == "wapr" and result.get("score_type") != "wapr_score_6d":
+            raise ValueError("WAPR backend returned an incompatible score")
         self.store.accept_result(generation, request, result)
         obs = self.store.get(oid)
         T_camera_object = np.asarray(result["T_camera_object"])
@@ -790,6 +816,7 @@ class PoseBridge(Node):
             ready = False
             motion_reason = "该物体尚无吸盘接触标注，已禁用运动"
         return {"type": "pose6d_result", "observation_id": oid, "result_id": result_id,
+                "algorithm": algorithm, "algorithm_label": algorithms[algorithm].get("label", algorithm),
                 "instance_id": obs.get("selected_instance_id"),
                 "mask_source": "sam2" if obs.get("selected_instance_id") else "manual",
                 "vision_timings": obs.get("vision"),
@@ -799,7 +826,9 @@ class PoseBridge(Node):
                 "T_base_camera": obs["T_base_camera"].tolist() if obs["T_base_camera"] is not None else None,
                 "base_frame": self.profile["base_frame"],
                 "workspace_m": self.motion_config.get("workspace_m"),
-                "score": result["score"], "screening": screen, "grasps": grasps,
+                "score": result["score"], "score_type": result.get("score_type", "foundationpose_best_score"),
+                "score_preview_available": result.get("score_preview_available", algorithm == "foundationpose"),
+                "screening": screen, "grasps": grasps,
                 "object_id": object_id, "object_label": model.get("label", object_id),
                 "suction_available": annotation is not None and model.get("suction_enabled", True),
                 "motion_waypoints": {"prepare_distance_mm": prepare_distance * 1000,

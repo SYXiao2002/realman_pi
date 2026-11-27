@@ -203,6 +203,23 @@ def test_selected_sam_instance_is_the_exact_foundationpose_mask_and_is_observati
         store.select_instance(oid, "another-observation:0")
 
 
+def test_wapr_request_preserves_selected_instance_and_rejects_wrong_backend_result():
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((4, 4, 3), np.uint8), depth_m=np.ones((4, 4), np.float32),
+                       K=np.eye(3), timestamp_ns=1, camera_frame="optical")
+    mask = np.zeros((4, 4), np.uint8)
+    mask[1:3, 1:3] = 1
+    store.set_instances(oid, {f"{oid}:0": {"status": "ok", "mask": mask}}, {})
+    store.select_instance(oid, f"{oid}:0")
+    generation, request = store.request(oid, object_id="eu_plug", model_sha256="mesh", algorithm="wapr")
+    assert request["algorithm"] == "wapr"
+    np.testing.assert_array_equal(request["mask"], mask)
+    result = {key: request[key] for key in ("request_id", "observation_id", "object_id", "model_sha256")}
+    result.update(type="result", algorithm="foundationpose", T_camera_object=np.eye(4).tolist())
+    with pytest.raises(ValueError, match="algorithm"):
+        store.accept_result(generation, request, result)
+
+
 def test_observation_store_clear_invalidates_cached_instances():
     store = ObservationStore()
     oid = store.freeze(rgb=np.zeros((4, 4, 3), np.uint8), depth_m=np.ones((4, 4), np.float32),

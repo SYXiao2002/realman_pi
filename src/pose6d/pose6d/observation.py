@@ -122,7 +122,7 @@ class ObservationStore:
             obs["mask"], obs["result"] = mask, None
             obs["selected_instance_id"] = None
 
-    def request(self, observation_id, *, object_id, model_sha256):
+    def request(self, observation_id, *, object_id, model_sha256, algorithm="foundationpose"):
         with self._lock:
             obs = self._current(observation_id)
             if obs["mask"] is None:
@@ -131,7 +131,8 @@ class ObservationStore:
             obs["result"] = None
             request = {"type": "register", "version": 1, "request_id": uuid.uuid4().hex,
                        "observation_id": observation_id, "object_id": object_id,
-                       "model_sha256": model_sha256, "rgb": obs["rgb"], "depth_m": obs["depth_m"],
+                       "model_sha256": model_sha256, "algorithm": algorithm,
+                       "rgb": obs["rgb"], "depth_m": obs["depth_m"],
                        "mask": obs["mask"], "K": obs["K"],
                        "capture_timestamp_ns": str(obs["timestamp_ns"]), "capture_clock": "ros",
                        "camera_frame": obs["camera_frame"], "instance_id": obs.get("selected_instance_id"),
@@ -146,6 +147,8 @@ class ObservationStore:
             for key in ("request_id", "observation_id", "object_id", "model_sha256"):
                 if result.get(key) != request[key]:
                     raise ValueError(f"result {key} mismatch")
+            if result.get("algorithm", "foundationpose") != request.get("algorithm", "foundationpose"):
+                raise ValueError("result algorithm mismatch")
             if result.get("type") != "result":
                 raise ValueError("result is not a successful registration")
             rigid(result.get("T_camera_object"))
