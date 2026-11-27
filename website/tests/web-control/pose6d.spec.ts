@@ -583,23 +583,43 @@ test("suction choices display backend analytic IK and TCP values without new req
   const infer = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
   const pose = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]];
   const states = [
-    { checked: true, reachable: true, valid_solution_count: 8, reason: null },
-    { checked: true, reachable: false, valid_solution_count: 0, reason: "JOINT_LIMIT" },
-    { checked: false, reachable: null, valid_solution_count: null, reason: "SERVICE_TIMEOUT" },
+    {
+      pregrasp_ik: { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+      analytic_ik: { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+    },
+    {
+      pregrasp_ik: { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+      analytic_ik: { checked: true, reachable: false, valid_solution_count: 0, reason: "SDK_NO_SOLUTION" },
+    },
+    {
+      pregrasp_ik: { checked: true, reachable: false, valid_solution_count: 0, reason: "SDK_NO_SOLUTION" },
+      analytic_ik: { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+    },
+    {
+      pregrasp_ik: { checked: true, reachable: false, valid_solution_count: 0, reason: "SDK_NO_SOLUTION" },
+      analytic_ik: { checked: true, reachable: false, valid_solution_count: 0, reason: "SDK_NO_SOLUTION" },
+    },
+    {
+      pregrasp_ik: { checked: false, reachable: null, valid_solution_count: null, reason: "SDK_UNAVAILABLE" },
+      analytic_ik: { checked: true, reachable: true, valid_solution_count: 8, reason: null },
+    },
   ];
   await page.evaluate((event) => (window as any).poseSocket.emit(event), {
     type: "pose6d_result", request_id: infer.request_id, observation_id: "ik-review", result_id: "ik-result",
     T_camera_object: pose, mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
     cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
-    grasps: states.map((analytic_ik, index) => ({
+    grasps: states.map(({ pregrasp_ik, analytic_ik }, index) => ({
       grasp_id: `ik-${index}`, status: "reliable", radius_m: .007, workspace_valid: true,
-      T_camera_contact: pose, T_camera_suction_tcp: pose, analytic_ik,
+      T_camera_contact: pose, T_camera_suction_tcp: pose, pregrasp_ik, analytic_ik,
       // Display values are authoritative even if the scene transform differs.
       tcp_targets: { frame: "r/base_link", suction: { xyz_mm: [987.6, 123.4, 567.8], rpy_deg: [10, 20, 30] } },
     })),
     screening: { status: "pass_screening", metrics: {} }, motion_ready: true,
   });
-  const labels = ["有解析 IK（8 解）", "无解析 IK（JOINT_LIMIT）", "解析 IK 未完成检查（SERVICE_TIMEOUT）"];
+  const labels = [
+    "有解", "最终无解", "pregrasp无解", "pregrasp和最终都无解",
+    "pregrasp IK 未完成检查（SDK_UNAVAILABLE）；最终有解",
+  ];
   const before = await page.evaluate(() => (window as any).poseSocket.sent.length);
   for (let index = 0; index < states.length; index++) {
     await expect(page.locator(`#grasp option[value="ik-${index}"]`)).toContainText(labels[index]);
@@ -680,8 +700,8 @@ test("automatic SAM instances show timings and send the selected instance to Fou
     timings: { yolo_inference_ms: 12.3, yolo_request_ms: 15.5, yolo_round_trip_ms: 19.9,
       sam_inference_ms_total: 45, sam_image_ms: 23, sam_predict_ms_total: 22, sam_round_trip_ms: 50 },
   });
-  await expect(page.locator("#vision-timings")).toContainText("YOLO 12.3 ms");
-  await expect(page.locator("#vision-timings")).toContainText("SAM 总计 45.0 ms");
+  await expect(page.locator("#vision-timings")).toContainText("YOLO 总计websocket往返 19.9 ms（docker推理 12.3 ms, ROS2服务 15.5 ms）");
+  await expect(page.locator("#vision-timings")).toContainText("SAM 总计websocket往返 50.0 ms（共享图像处理 23.0 + 所有实例解算 22.0 ms）");
   await expect(page.locator("#instances-overview")).toHaveAttribute("src", png);
   await expect(page.locator('#instance-list button[data-instance-id="obs-auto:7"]')).toContainText("#7 · eu");
   const viewerBounds = (await page.locator("#viewer").boundingBox())!;
