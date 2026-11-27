@@ -145,11 +145,33 @@ function draw(result: Message) {
 }
 function highlight() { const id = el<HTMLSelectElement>("grasp").value; el<HTMLInputElement>("review").checked = false; groups.forEach((g, i) => g.userData.ring.material.color.set(grasps[i].grasp_id === id ? 0xe96d42 : 0x2f7585)); showLayers(); updateTcpTarget(); update(); }
 function analyticIkLabel(grasp: Message) {
-  const ik = grasp.analytic_ik;
-  if (ik?.checked !== true) return `解析 IK 未完成检查${ik?.reason ? `（${ik.reason}）` : ""}`;
-  if (ik.reachable === true) return `有解析 IK（${ik.valid_solution_count} 解）`;
-  if (ik.reachable === false) return `无解析 IK${ik.reason ? `（${ik.reason}）` : ""}`;
-  return "解析 IK 未完成检查";
+  const finalIk = grasp.analytic_ik;
+  const pregraspIk = grasp.pregrasp_ik;
+  // Keep compatibility with reviews produced before pregrasp IK was added.
+  if (pregraspIk === undefined) {
+    if (finalIk?.checked !== true) return `解析 IK 未完成检查${finalIk?.reason ? `（${finalIk.reason}）` : ""}`;
+    if (finalIk.reachable === true) return `有解析 IK（${finalIk.valid_solution_count} 解）`;
+    if (finalIk.reachable === false) return `无解析 IK${finalIk.reason ? `（${finalIk.reason}）` : ""}`;
+    return "解析 IK 未完成检查";
+  }
+
+  const reachable = (ik: Message) => ik?.checked === true && typeof ik.reachable === "boolean"
+    ? ik.reachable : null;
+  const pregrasp = reachable(pregraspIk);
+  const final = reachable(finalIk);
+  const unknown = (label: string, ik: Message) =>
+    `${label} IK 未完成检查${ik?.reason ? `（${ik.reason}）` : ""}`;
+  if (pregrasp === true && final === true) return "有解";
+  if (pregrasp === false && final === false) return "pregrasp和最终都无解";
+  if (pregrasp === false && final === true) return "pregrasp无解";
+  if (pregrasp === true && final === false) return "最终无解";
+  if (pregrasp === null && final === null) {
+    return `${unknown("pregrasp", pregraspIk)}；${unknown("最终", finalIk)}`;
+  }
+  if (pregrasp === null) {
+    return `${unknown("pregrasp", pregraspIk)}；${final === false ? "最终无解" : "最终有解"}`;
+  }
+  return `${pregrasp === false ? "pregrasp无解" : "pregrasp有解"}；${unknown("最终", finalIk)}`;
 }
 function suctionCollisionLabel(grasp: Message) {
   const collision = grasp.suction_collision;
@@ -179,6 +201,7 @@ function graspOptions(candidates: Message[]) {
 let socket: WebSocket | undefined, observation = "", resultId = "", pending = "", mask = "", maskRevision = 0, requestTimer = 0;
 let instances: Message[] = [], selectedInstance = "";
 let modelChoicesKey = "", algorithmChoicesKey = "", maskPreview = "", maskPreviewCaption = "所选实例 / 解算结果";
+let visionTimingText = "", algorithmTimingText = "";
 let motionReady = false, motionState = "review", motionSession = "", motionPending = "", stopPending = "";
 let autoSuctionReady = false, prepareDistanceMm = 40, secondPrepareDistanceMm = 5, liftHeightMm = 50;
 let contactOffsetMm = 0;
@@ -187,6 +210,10 @@ let toolPowerAvailable = false, toolPowerVoltage: number | null = null;
 let toolPowerSetPending = "", toolPowerSetRequested: boolean | null = null;
 let toolPowerStatusPending = "", toolPowerError = "";
 const state = (text: string, error = false) => { el("state").textContent = text; el("state").dataset.error = String(error); };
+// 检测/分割与算法解算的计时分两段独立存储：视觉段在分割完成时刷新，算法段在每次解算结果到达时整体替换，避免多次解算累加。
+function renderTimings() {
+  el("vision-timings").textContent = [visionTimingText, algorithmTimingText].filter(Boolean).join("\n") || "等待采集";
+}
 function formatPose(pose: Message, frameName: string) {
   return `XYZ (${frameName})  ${pose.xyz_mm.map((value: number) => value.toFixed(1)).join(", ")} mm\nRPY (${frameName})  ${pose.rpy_deg.map((value: number) => value.toFixed(1)).join(", ")}°`;
 }
@@ -247,8 +274,8 @@ function showScorePreview(message: Message) {
   image.onerror = () => { image.hidden = true; status.textContent = "本次结果的最高分候选图暂不可用"; };
   image.src = `${root}/preview/score`;
 }
-function clearReview() { clearScorePreview(); el<HTMLAnchorElement>("history-result").hidden = true; clearScene(); groups = []; preparationGroups = []; tangentArrows = []; grasps = []; resultId = ""; motionReady = false; motionState = "review"; motionSession = ""; motionPending = ""; stopPending = ""; autoSuctionReady = false; const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(); select.disabled = true; el<HTMLInputElement>("review").checked = false; el<HTMLInputElement>("review").disabled = true; el("warning").textContent = "尚未解算"; el("pose-score").textContent = "尚未解算"; el("metrics").textContent = ""; el("motion").textContent = "运动未就绪"; el<HTMLInputElement>("distance").value = "—"; updateTcpTarget(); }
-function clearObservation() { maskPreview = ""; maskPreviewCaption = "所选实例 / 解算结果"; ++maskRevision; observation = ""; mask = ""; instances = []; selectedInstance = ""; frozenBaseCamera = null; updateFrames(); clearReview(); el<HTMLInputElement>("mask").value = ""; el("instance-list").replaceChildren(); el("vision-timings").textContent = "等待采集"; for (const id of ["rgb", "depth", "instances-overview", "overlay"]) el<HTMLImageElement>(id).removeAttribute("src"); el<HTMLAnchorElement>("download").hidden = true; el("observation").textContent = "尚未采集"; }
+function clearReview() { clearScorePreview(); el<HTMLAnchorElement>("history-result").hidden = true; clearScene(); groups = []; preparationGroups = []; tangentArrows = []; grasps = []; resultId = ""; motionReady = false; motionState = "review"; motionSession = ""; motionPending = ""; stopPending = ""; autoSuctionReady = false; const select = el<HTMLSelectElement>("grasp"); select.replaceChildren(); select.disabled = true; el<HTMLInputElement>("review").checked = false; el<HTMLInputElement>("review").disabled = true; el("warning").textContent = "尚未解算"; el("pose-score").textContent = "尚未解算"; el("metrics").textContent = ""; el("motion").textContent = "运动未就绪"; el<HTMLInputElement>("distance").value = "—"; algorithmTimingText = ""; renderTimings(); updateTcpTarget(); }
+function clearObservation() { maskPreview = ""; maskPreviewCaption = "所选实例 / 解算结果"; ++maskRevision; observation = ""; mask = ""; instances = []; selectedInstance = ""; frozenBaseCamera = null; updateFrames(); clearReview(); el<HTMLInputElement>("mask").value = ""; el("instance-list").replaceChildren(); visionTimingText = ""; algorithmTimingText = ""; renderTimings(); for (const id of ["rgb", "depth", "instances-overview", "overlay"]) el<HTMLImageElement>(id).removeAttribute("src"); el<HTMLAnchorElement>("download").hidden = true; el("observation").textContent = "尚未采集"; }
 function receiveModelChoices(message: Message) {
   if (!Array.isArray(message.pose6d_models)) return;
   const models = message.pose6d_models.filter((item: Message) => typeof item?.object_id === "string" && item.object_id);
@@ -368,11 +395,36 @@ function applyMotion(msg: Message) {
   }
   update();
 }
+// API2 status codes returned by the controller/SDK when a motion command such as
+// MOVEJ_P fails. Codes 1..-6 are the general transport/command codes; the -3x range
+// covers inverse-kinematics failures surfaced while the controller plans the move.
+// Authoritative list: https://develop.realman-robotics.com/robot/apierrorList2/
+const API2_ERROR_EXPLANATIONS: Record<number, string> = {
+  1: "控制器返回失败：下发参数有误或机械臂状态异常（未使能、存在故障等）",
+  [-1]: "数据发送失败：与控制器通信异常，请检查网络连接",
+  [-2]: "数据接收失败：控制器超时未返回，请检查网络或固件版本兼容性",
+  [-3]: "返回值解析失败：控制器返回的数据格式不正确或不完整",
+  [-4]: "到位设备校验失败：可能有其他设备正在并发下发运动指令",
+  [-5]: "阻塞模式超时未收到返回：超时时间过短或通信异常",
+  [-6]: "机械臂停止运动规划：外部发送了停止 / 急停指令",
+  [-32]: "计算逆解失败：目标位姿无法求出有效关节角（不可达或迭代不收敛）",
+  [-33]: "逆解位于奇异点：目标位姿处于机械臂奇异位形，无法稳定求解",
+  [-34]: "逆解超出软限位：求出的关节角超过机器人软限位范围",
+  [-39]: "输入数据错误：目标位姿数据无效，无法计算逆解",
+};
+function explainMotionFailure(msg: Message) {
+  const base = String(msg.message || "运动失败，请检查锁定状态");
+  const code = Number(msg.api2_status);
+  if (!Number.isFinite(code) || code === 0) return base;
+  const command = typeof msg.api2_command === "string" && msg.api2_command ? `${msg.api2_command} ` : "";
+  const reason = API2_ERROR_EXPLANATIONS[code] || "未知错误码，请查阅睿尔曼官方 API2 错误码表";
+  return `${command}失败（API2 错误码 ${code}）：${reason}。控制器原始信息：${base}`;
+}
 function onMotionEvent(msg: Message) {
   if (msg.type === "pose6d_error" && msg.motion) {
     if (msg.request_id === motionPending) motionPending = "";
     if (msg.request_id === stopPending || !msg.motion.busy) stopPending = "";
-    applyMotion(msg.motion); state(msg.message || "运动失败，请检查锁定状态", true); update(); return;
+    applyMotion(msg.motion); state(explainMotionFailure(msg), true); update(); return;
   }
   if (msg.type !== "pose6d_motion") return;
   applyMotion(msg);
@@ -419,9 +471,9 @@ function connect() {
     }
     if (msg.type === "pose6d_vision_progress" && msg.request_id === pending && msg.observation_id === observation) {
       state(msg.message || (msg.stage === "yolo" ? "YOLO 正在检测" : "SAM2 正在分割"));
-      if (msg.stage === "yolo") el("vision-timings").textContent = "YOLO 正在检测…";
+      if (msg.stage === "yolo") { visionTimingText = "YOLO 正在检测…"; renderTimings(); }
       else if (msg.stage === "sam2") {
-        el("vision-timings").textContent = `YOLO ${Number(msg.yolo_inference_ms || 0).toFixed(1)} ms · ${msg.detection_count} 个目标 · SAM2 正在分割…`;
+        visionTimingText = `YOLO ${Number(msg.yolo_inference_ms || 0).toFixed(1)} ms · ${msg.detection_count} 个目标 · SAM2 正在分割…`; renderTimings();
       }
       return;
     }
@@ -441,7 +493,8 @@ function connect() {
       mask = ""; selectedInstance = ""; el<HTMLImageElement>("instances-overview").src = msg.detection_overlay || "";
       el<HTMLImageElement>("overlay").removeAttribute("src"); el("overlay-caption").textContent = "所选实例 / 解算结果";
       const timing = msg.timings || {};
-      el("vision-timings").textContent = `YOLO ${Number(timing.yolo_inference_ms || 0).toFixed(1)} ms（服务 ${Number(timing.yolo_request_ms || 0).toFixed(1)} ms / 往返 ${Number(timing.yolo_round_trip_ms || 0).toFixed(1)} ms）；SAM 总计 ${Number(timing.sam_inference_ms_total || 0).toFixed(1)} ms（图像 ${Number(timing.sam_image_ms || 0).toFixed(1)} + 实例 ${Number(timing.sam_predict_ms_total || 0).toFixed(1)} ms，往返 ${Number(timing.sam_round_trip_ms || 0).toFixed(1)} ms）`;
+      visionTimingText = `YOLO 总计websocket往返 ${Number(timing.yolo_round_trip_ms || 0).toFixed(1)} ms（docker推理 ${Number(timing.yolo_inference_ms || 0).toFixed(1)} ms, ROS2服务 ${Number(timing.yolo_request_ms || 0).toFixed(1)} ms）\nSAM 总计websocket往返 ${Number(timing.sam_round_trip_ms || 0).toFixed(1)} ms（共享图像处理 ${Number(timing.sam_image_ms || 0).toFixed(1)} + 所有实例解算 ${Number(timing.sam_predict_ms_total || 0).toFixed(1)} ms）`;
+      renderTimings();
       const list = el("instance-list"); list.replaceChildren();
       if (!instances.length) { const empty = document.createElement("p"); empty.textContent = "YOLO 没有检测到目标"; list.append(empty); }
       for (const item of instances) {
@@ -468,7 +521,14 @@ function connect() {
         historyLink.textContent = msg.archive_status === "failed" ? "本次历史归档失败" : "查看本次历史";
       }
       showScorePreview(msg);
-      if (msg.mask_source === "sam2") el("vision-timings").textContent += ` · ${msg.algorithm_label || "FoundationPose"} 输入 ${msg.instance_id}`;
+      const algorithmTimings = msg.algorithm_timings || {};
+      if (Number.isFinite(Number(algorithmTimings.round_trip_ms))) {
+        const parts = [`docker推理 ${Number(algorithmTimings.inference_ms ?? algorithmTimings.round_trip_ms).toFixed(1)} ms`];
+        if (Number.isFinite(Number(algorithmTimings.registration_ms))) parts.push(`docker核心register推理 ${Number(algorithmTimings.registration_ms).toFixed(1)} ms`);
+        if (Number.isFinite(Number(algorithmTimings.score_vis_ms))) parts.push(`vis_score生成 ${Number(algorithmTimings.score_vis_ms).toFixed(1)} ms`);
+        algorithmTimingText = `${msg.algorithm_label || msg.algorithm || "算法"} 总计websocket往返 ${Number(algorithmTimings.round_trip_ms).toFixed(1)} ms (${parts.join(", ")})`;
+      } else algorithmTimingText = "";
+      renderTimings();
       if (msg.T_base_camera) frozenBaseCamera = matrix(msg.T_base_camera);
       receiveWorkspace(msg);
       const waypoints = msg.motion_waypoints || {};

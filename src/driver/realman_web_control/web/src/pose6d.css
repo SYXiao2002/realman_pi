@@ -10,7 +10,7 @@
 .pose-detections { padding: 10px 0 4px; border-bottom: 1px solid #cbd5d2; }
 .pose-detection-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
 .pose-detection-head h2 { margin: 0; font-size: 16px; }
-.pose-detection-head p { margin: 0; color: #4d5c59; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.pose-detection-head p { margin: 0; color: #4d5c59; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
 .pose-instance-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 0 12px; margin-top: 6px; }
 .pose-instance-list > p { margin: 8px 0; color: #4d5c59; font-size: 13px; }
 .pose-instance { min-width: 0; min-height: 42px; padding: 7px 4px; border: 0; border-bottom: 1px solid #d5ddda; border-radius: 0; background: transparent; color: #243331; text-align: left; font: inherit; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; cursor: pointer; }
