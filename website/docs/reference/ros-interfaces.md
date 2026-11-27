@@ -142,7 +142,6 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/pose6d_bridge/command` | `std_msgs/String`（JSON） | 页面请求采集、推理、准备位、有符号步进、停止、会话关闭与心跳；运动命令只接受观测/会话 ID、吸取方式和 step mm，不接受任意目标 pose。Web control 每秒及转发请求前发送内部 `clients` 在线连接快照（`client_ids`），供 bridge 清理断线归属；该命令不能通过浏览器协议提交 |
 | `/pose6d_bridge/events` | `std_msgs/String`（JSON） | 请求关联的采集、位姿/告警/点云/OBJ/吸盘结果、运动状态和错误；结果包含切向参考及 +40 mm 接触/TCP 准备位。另以 5 Hz 广播 `pose6d_frames`（BASE 下实时 TCP/相机位姿及可用状态），供网页转换到冻结采集相机系。采集、推理和遥测均含 `base_frame`、运动配置的 `workspace_m`（BASE 系 `[[min x,y,z], [max x,y,z]]`，米），供可开关工作区线框使用；事件上限为 8 MiB |
 | `/<arm>/get_current_pose` | `realman_msgs/GetCurrentPose` | 按当前配置工具读 BASE TCP，用于运动前/后的新鲜停稳读回 |
-| `/rm65b_analytic_ik/solve_all` | `realman_msgs/SolveAnalyticIk` | RM65-B 只读解析 IK。请求为行优先的 16 元素 `target_base_tcp`（机械臂自身 BASE→TCP）和 `flange_tcp`（法兰→工具 TCP），平移单位米；内部转换为 `Rz(yaw) Ry(pitch) Rx(roll)` 的 xyzrpy，调用 `solve_all()`。响应含 `success`（检查是否完成）、`reachable`、`valid_solution_count`、`reason`、按六关节一组展开的 `solutions_rad`（弧度）。`success=false` 应展示未知；完成但无解时 `success=true, reachable=false`。`pose6d_bridge` 对每个最终吸取 TCP 调用一次，并在 `grasps[].analytic_ik` 转发可解性、解数与原因，不执行运动或路径检查 |
 | `/<arm>/task_control` | `realman_msgs/TaskControl` | 在准备位及点动会话期间持有同一 per-arm 任务租约 |
 | `/<arm>/tool_power`、`tool_power_status` | `std_srvs/SetBool`、`std_srvs/Trigger` | 手动设置 24 V / 0 V 和只读查询；设置后回读确认，持有任务租约时拒绝无令牌写入 |
 | `/<arm>/tool_power_control` | `realman_msgs/SetToolPower` | `enabled` 加 `task_token`；驱动验证当前任务租约并回读输出。6D 自动动作开始前开 24 V，确认提升完成后关 0 V |
@@ -151,7 +150,7 @@ HTTP / WebSocket `:8765`，浏览器不直接访问 ROS。它调用上面的 Act
 | `/<arm>/coordinates/state`、`joint_states` | `std_msgs/String`、`sensor_msgs/JointState` | 校验活动 controller tool 与坐标状态，并验证新鲜、停稳的关节反馈 |
 | `127.0.0.1:8092` WebSocket | MessagePack | 独立 FoundationPose 单帧 `register()` 与几何筛查服务；容器无 ROS/机器人控制接口 |
 
-`grasps[].tcp_targets` 由 bridge 提供 `{frame, suction: {xyz_mm, rpy_deg}, prepare: {xyz_mm, rpy_deg}}`，用于 TCP 数值展示；缺少目标时对应项为 `null`。有采集手眼变换时使用 BASE，否则使用相机系。解析节点与 bridge 由 `ros2 launch pose6d_bridge pose6d_bridge.launch.py` 一起启动，模型参数来自 `config/ros/rm65b_analytic_ik.yaml`，可通过节点参数 `config_path` 指定其他文件。`REALMAN_CONFIG_ROOT` 生效时从其 `ros/` 子目录加载模型。
+`grasps[]` 含 `pregrasp_ik` 与最终吸取位 `analytic_ik` 两个只读状态；页面按两处的有解/无解组合标记候选。`grasps[].tcp_targets` 由 bridge 提供 `{frame, suction: {xyz_mm, rpy_deg}, prepare: {xyz_mm, rpy_deg}}`，用于 TCP 数值展示；缺少目标时对应项为 `null`。有采集手眼变换时使用 BASE，否则使用相机系。两处解析 IK 均由 `pose6d_bridge` 进程直接调用官方 SDK 的 `rm_algo_inverse_kinematics_all`，传 `NULL` 句柄，不连接控制器；SDK 分支数分别转发在对应字段，不产生 ROS 服务，也不执行运动或路径检查。
 
 `grasps[].suction_collision` 在解析 IK 确认可达后由 bridge 本地计算，不增加 ROS 服务。字段包括 `status`（`collision/clear/unknown/skipped`）、`reason`、`elapsed_ms`；有效检测还提供相对接触点的 `start_distance_m/end_distance_m`（当前 0.01/0.04）、实际圆柱 `length_m/diameter_m`（当前 0.03/0.01）、`collision_pixels`、`largest_cluster_pixels`、`roi_pixels` 和可见证据比例 `observed_fraction`。`collision` 在页面标记“吸取路径上有物体”；碰撞与未知状态都只展示，候选保留原 workspace 与人工复核规则，运动入口不增加拦截。包络覆盖相机系标注接触点外沿法向的 10–40 mm，两端包含，直径复用当前吸盘工具配置。检测不读取 Mask，目标自身也参与；不再提供旧的目标/环境分类计数。缺少深度、遮挡或走廊不在视野内时不能解释为无障碍。
 
