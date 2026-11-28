@@ -130,7 +130,8 @@ def test_infer_switches_models_on_one_eu_observation_without_losing_masks(tmp_pa
                        timestamp_ns=1, camera_frame="camera", object_id="eu_plug")
     mask = np.ones((8, 8), dtype=np.uint8)
     instance_id = f"{oid}:0"
-    store.set_instances(oid, {instance_id: {"status": "ok", "mask": mask}}, {"sam_image_ms": 1})
+    store.set_instances(oid, {instance_id: {"status": "ok", "mask": mask, "bbox": [0, 0, 8, 8]}},
+                        {"sam_image_ms": 1})
     if mask_source == "sam2":
         mask_fields = {"instance_id": instance_id}
     else:
@@ -168,6 +169,8 @@ def test_infer_switches_models_on_one_eu_observation_without_losing_masks(tmp_pa
         profile={"base_frame": "r/base_link"}, motion_config={}, observation_owner="owner",
     )
     bridge.cloud = lambda obs: PoseBridge.cloud(bridge, obs)
+    bridge.instance_preview = lambda command: PoseBridge.instance_preview(bridge, command)
+    bridge._pose_review_result = lambda *args, **kwargs: PoseBridge._pose_review_result(bridge, *args, **kwargs)
     for object_id in ("eu_plug", "eu_plug_1124", "eu_plug", "eu_plug_1124"):
         result = PoseBridge.infer(bridge, {"observation_id": oid, "object_id": object_id, **mask_fields})
         assert result["type"] == "pose6d_result"
@@ -188,6 +191,58 @@ def test_infer_switches_models_on_one_eu_observation_without_losing_masks(tmp_pa
     with pytest.raises(ValueError, match="unknown 6D OBJ"):
         PoseBridge.infer(bridge, {"observation_id": oid, "object_id": "unknown", **mask_fields})
     assert len(requests) == 4
+
+
+def test_batch_selection_builds_a_pose_review_from_the_cached_instance_result(tmp_path):
+    mesh = tmp_path / "object.obj"
+    mesh.write_text("v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n")
+    store = ObservationStore()
+    oid = store.freeze(rgb=np.zeros((8, 8, 3), np.uint8), depth_m=np.ones((8, 8), np.float32),
+                       K=np.eye(3), timestamp_ns=1, camera_frame="camera", object_id="eu_plug")
+    masks = {}
+    for index in range(2):
+        mask = np.zeros((8, 8), dtype=np.uint8)
+        mask[index * 3:index * 3 + 2, :2] = 1
+        masks[f"{oid}:{index}"] = {"status": "ok", "mask": mask,
+                                   "bbox": [0, index * 3, 2, index * 3 + 2]}
+    store.set_instances(oid, masks, {"sam_image_ms": 1})
+    generation, request = store.batch_request(oid, object_id="eu_plug", model_sha256="hash")
+    selected_id = f"{oid}:1"
+    pose = np.eye(4)
+    pose[:3, 3] = [.1, .2, .3]
+    store.accept_batch_result(generation, request, {
+        "type": "batch_result", "request_id": request["request_id"], "observation_id": oid,
+        "algorithm": "wapr", "results": [
+            {"instance_id": iid, "status": "ok", "request_id": f"history-{index}",
+             "pose_camera_object": (pose if index else np.eye(4)).tolist(), "score": .4 + index * .1,
+             "screening": {"status": "pass_screening", "metrics": {}},
+             "history_id": str(index + 1), "history_path": f"/6d_pose_history/{index + 1}/",
+             "archive_status": "complete", "score_preview_available": True}
+            for index, iid in enumerate(masks)
+        ], "timings": {"round_trip_ms": 30., "registration_ms": 20.},
+    })
+    bridge = SimpleNamespace(
+        store=store, models={"eu_plug": {"model_sha256": "hash", "annotation": None,
+                                         "mesh_path": mesh, "label": "EU plug"}},
+        algorithms={"wapr": {"label": "WAPR"}},
+        settings={"cloud_stride": 1, "suction": {"cup_diameter_m": .01}},
+        profile={"base_frame": "r/base_link"}, motion_config={}, observation_owner="owner",
+        cloud=lambda obs: PoseBridge.cloud(bridge, obs),
+        instance_preview=lambda command: PoseBridge.instance_preview(bridge, command),
+        _pose_review_result=lambda *args, **kwargs: PoseBridge._pose_review_result(bridge, *args, **kwargs),
+    )
+
+    result = PoseBridge.select_batch_result(
+        bridge, {"observation_id": oid, "instance_id": selected_id}, "owner")
+    assert result["type"] == "pose6d_result"
+    assert result["algorithm"] == "wapr"
+    assert result["instance_id"] == selected_id
+    assert result["result_id"] == "history-1"
+    assert result["history_id"] == "2"
+    assert result["score_preview_available"] is True
+    assert result["T_camera_object"][0][3] == pytest.approx(.1)
+    assert result["cloud"]["xyz_m"]
+    assert result["overlay"].startswith("data:image/png;base64,")
 
 
 def test_oversized_web_event_returns_correlated_error():
@@ -254,6 +309,7 @@ def test_infer_checks_each_suction_tcp_after_contact_offset(tmp_path, monkeypatc
         analytic_ik_port=port, ik_flange_tcp=flange_tcp,
         cloud=lambda _: {"xyz_m": [], "rgb": []}, motion=SimpleNamespace(load=lambda *_: (False, "review")),
     )
+    bridge._pose_review_result = lambda *args, **kwargs: PoseBridge._pose_review_result(bridge, *args, **kwargs)
     _, png = cv2.imencode(".png", np.ones((8, 8), np.uint8) * 255)
     result = PoseBridge.infer(bridge, {"observation_id": oid, "mask_png": base64.b64encode(png).decode()})
     assert len(calls) == 4

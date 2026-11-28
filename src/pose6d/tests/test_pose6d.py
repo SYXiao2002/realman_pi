@@ -203,6 +203,42 @@ def test_selected_sam_instance_is_the_exact_foundationpose_mask_and_is_observati
         store.select_instance(oid, "another-observation:0")
 
 
+def test_batch_result_can_be_selected_as_the_current_pose_review():
+    store = ObservationStore()
+    rgb = np.zeros((8, 8, 3), dtype=np.uint8)
+    depth = np.ones((8, 8), dtype=np.float32)
+    oid = store.freeze(rgb=rgb, depth_m=depth, K=np.eye(3), timestamp_ns=1, camera_frame="camera")
+    masks = {}
+    for index in range(2):
+        mask = np.zeros((8, 8), dtype=np.uint8)
+        mask[index * 3:index * 3 + 2, :2] = 1
+        masks[f"{oid}:{index}"] = {"status": "ok", "mask": mask}
+    store.set_instances(oid, masks, {})
+    generation, request = store.batch_request(oid, object_id="eu_plug", model_sha256="mesh")
+    results = []
+    for index, instance_id in enumerate(masks):
+        pose = np.eye(4)
+        pose[0, 3] = index * .1
+        results.append({"instance_id": instance_id, "status": "ok", "request_id": f"history-{index}",
+                        "pose_camera_object": pose.tolist(), "score": .4 + index * .1,
+                        "screening": {"status": "pass_screening", "metrics": {}},
+                        "history_id": str(index + 1), "history_path": f"/6d_pose_history/{index + 1}/",
+                        "archive_status": "complete"})
+    store.accept_batch_result(generation, request, {
+        "type": "batch_result", "request_id": request["request_id"], "observation_id": oid,
+        "algorithm": "wapr", "results": results, "timings": {"round_trip_ms": 20.},
+    })
+
+    obs, item, pose_result = store.select_batch_result(oid, f"{oid}:1")
+    assert obs["selected_instance_id"] == f"{oid}:1"
+    np.testing.assert_array_equal(obs["mask"], masks[f"{oid}:1"]["mask"])
+    assert item["history_id"] == "2"
+    assert pose_result["algorithm"] == "wapr"
+    assert pose_result["score_type"] == "wapr_score_6d"
+    assert pose_result["T_camera_object"][0][3] == pytest.approx(.1)
+    assert obs["result"] == pose_result
+
+
 def test_wapr_request_preserves_selected_instance_and_rejects_wrong_backend_result():
     store = ObservationStore()
     oid = store.freeze(rgb=np.zeros((4, 4, 3), np.uint8), depth_m=np.ones((4, 4), np.float32),

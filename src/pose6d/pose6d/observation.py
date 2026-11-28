@@ -50,7 +50,7 @@ class ObservationStore:
                                  "T_base_camera": transform, "captured_at": captured_at,
                                  "joint_positions_rad": joint_positions_rad,
                                  "object_id": object_id,
-                                 "mask": None, "result": None, "instances": {}, "vision": None,
+                                 "mask": None, "result": None, "instances": {}, "batch_results": {}, "vision": None,
                                  "selected_instance_id": None}
             return self._observation["observation_id"]
 
@@ -91,6 +91,7 @@ class ObservationStore:
             obs["mask"] = None
             obs["selected_instance_id"] = None
             obs["result"] = None
+            obs["batch_results"] = {}
 
     def select_instance(self, observation_id, instance_id):
         with self._lock:
@@ -127,6 +128,7 @@ class ObservationStore:
             self._generation += 1
             obs["mask"], obs["result"] = mask, None
             obs["selected_instance_id"] = None
+            obs["batch_results"] = {}
 
     def request(self, observation_id, *, object_id, model_sha256, algorithm="foundationpose"):
         with self._lock:
@@ -144,6 +146,94 @@ class ObservationStore:
                        "camera_frame": obs["camera_frame"], "instance_id": obs.get("selected_instance_id"),
                        "mask_source": "sam2" if obs.get("selected_instance_id") else "manual"}
             return self._generation, request
+
+    def batch_request(self, observation_id, *, object_id, model_sha256):
+        """Build a batch_register request from all successfully segmented instances."""
+        with self._lock:
+            obs = self._current(observation_id)
+            instances = []
+            for iid, item in obs.get("instances", {}).items():
+                if item.get("status") != "ok" or item.get("mask") is None:
+                    continue
+                instances.append({"instance_id": iid, "mask": item["mask"]})
+            if len(instances) < 2:
+                raise ValueError("batch inference requires at least 2 segmented instances")
+            self._generation += 1
+            obs["mask"] = None
+            obs["selected_instance_id"] = None
+            obs["result"] = None
+            obs["batch_results"] = {}
+            request = {"type": "batch_register", "version": 1, "request_id": uuid.uuid4().hex,
+                       "observation_id": observation_id, "object_id": object_id,
+                       "model_sha256": model_sha256,
+                       "rgb": obs["rgb"], "depth_m": obs["depth_m"], "K": obs["K"],
+                       "capture_timestamp_ns": str(obs["timestamp_ns"]), "capture_clock": "ros",
+                       "camera_frame": obs["camera_frame"],
+                       "instances": instances}
+            return self._generation, request
+
+    def accept_batch_result(self, generation, request, result):
+        with self._lock:
+            obs = self._current(request["observation_id"])
+            if generation != self._generation:
+                raise ValueError("observation or instances changed while batch inference was running")
+            if (result.get("type") != "batch_result" or result.get("request_id") != request["request_id"]
+                    or result.get("observation_id") != request["observation_id"]
+                    or result.get("algorithm") != "wapr"):
+                raise ValueError("WAPR batch result identity mismatch")
+            expected = {item["instance_id"] for item in request["instances"]}
+            items = result.get("results")
+            if not isinstance(items, list):
+                raise ValueError("WAPR batch result instances are invalid")
+            stored = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError("WAPR batch result instance is invalid")
+                instance_id = item.get("instance_id")
+                if instance_id not in expected or instance_id in stored:
+                    raise ValueError("WAPR batch result contains unknown or duplicate instances")
+                if item.get("status") not in ("ok", "failed"):
+                    raise ValueError("WAPR batch result status is invalid")
+                if not isinstance(item.get("request_id"), str) or not item["request_id"]:
+                    raise ValueError("WAPR batch instance request ID is missing")
+                if item.get("status") == "ok":
+                    rigid(item.get("pose_camera_object"))
+                    score = item.get("score")
+                    if type(score) not in (int, float) or not np.isfinite(score):
+                        raise ValueError("WAPR batch result score is invalid")
+                stored[instance_id] = {**item, "object_id": request["object_id"],
+                                       "model_sha256": request["model_sha256"],
+                                       "timings": dict(result.get("timings") or {})}
+            if set(stored) != expected:
+                raise ValueError("WAPR batch result omitted one or more instances")
+            obs["batch_results"] = stored
+
+    def select_batch_result(self, observation_id, instance_id):
+        with self._lock:
+            obs = self._current(observation_id)
+            item = obs.get("batch_results", {}).get(instance_id)
+            if item is None or item.get("status") != "ok":
+                raise ValueError("successful batch result is unavailable for this instance")
+            segmentation = obs.get("instances", {}).get(instance_id)
+            if segmentation is None or segmentation.get("status") != "ok" or segmentation.get("mask") is None:
+                raise ValueError("segmentation instance is unavailable")
+            mask = segmentation["mask"]
+            if int(np.count_nonzero((mask != 0) & (obs["depth_m"] >= .001))) < 4:
+                raise ValueError("selected batch instance contains insufficient valid depth")
+            self._generation += 1
+            obs["mask"] = mask
+            obs["selected_instance_id"] = instance_id
+            result = {"type": "result", "request_id": item["request_id"],
+                      "observation_id": observation_id, "object_id": item["object_id"],
+                      "model_sha256": item["model_sha256"], "algorithm": "wapr",
+                      "score_type": "wapr_score_6d", "T_camera_object": item["pose_camera_object"],
+                      "score": item["score"], "screening": dict(item.get("screening") or {}),
+                      "score_preview_available": item.get("score_preview_available", False),
+                      "timings": dict(item.get("timings") or {}),
+                      "history_id": item.get("history_id"), "history_path": item.get("history_path"),
+                      "archive_status": item.get("archive_status")}
+            obs["result"] = result
+            return dict(obs), dict(item), result
 
     def accept_result(self, generation, request, result):
         with self._lock:

@@ -198,7 +198,8 @@ class PoseBridge(Node):
         try:
             command = json.loads(message.data)
             if not isinstance(command, dict) or command.get("type") not in (
-                    "capture", "segment", "preview", "infer", "select_tool", "prepare", "jog",
+                    "capture", "segment", "preview", "infer", "batch_infer", "batch_select",
+                    "select_tool", "prepare", "jog",
                     "auto_suction", "stop", "close", "heartbeat", "disconnect", "clients"):
                 raise ValueError("unknown command")
             if command["type"] == "clients":
@@ -270,6 +271,10 @@ class PoseBridge(Node):
                     result = self.segment(command, client)
                 elif command["type"] == "preview":
                     result = self.instance_preview(command)
+                elif command["type"] == "batch_infer":
+                    result = self.batch_infer(command, client)
+                elif command["type"] == "batch_select":
+                    result = self.select_batch_result(command, client)
                 else:
                     result = self.infer(command, client)
             self.emit(client, request_id, result)
@@ -766,6 +771,12 @@ class PoseBridge(Node):
         if algorithm == "wapr" and result.get("score_type") != "wapr_score_6d":
             raise ValueError("WAPR backend returned an incompatible score")
         self.store.accept_result(generation, request, result)
+        return self._pose_review_result(oid, object_id, model, algorithm, result,
+                                        algorithm_round_trip_ms, client)
+
+    def _pose_review_result(self, oid, object_id, model, algorithm, result,
+                            algorithm_round_trip_ms, client=None):
+        algorithms = getattr(self, "algorithms", {"foundationpose": {"label": "FoundationPose"}})
         obs = self.store.get(oid)
         T_camera_object = np.asarray(result["T_camera_object"])
         points = self.cloud(obs)
@@ -825,10 +836,12 @@ class PoseBridge(Node):
                            "T_camera_prepare_contact": prepared.tolist(),
                            "T_camera_prepare_tcp": prepared_tcp.tolist() if prepared_tcp is not None else None,
                            **assessment})
-        screen = result["screening"]
+        screen = dict(result.get("screening") or {})
         overlay = screen.pop("overlay_png", None)
         result_id = result["request_id"]
-        obs["result"] = result
+        stored_result = dict(result)
+        stored_result["screening"] = screen
+        obs["result"] = stored_result
         if annotation is not None and model.get("suction_enabled", True):
             ready, motion_reason = self.motion.load(client or self.observation_owner or "", obs, grasps, result_id)
         else:
@@ -842,6 +855,10 @@ class PoseBridge(Node):
             algorithm_timings.update({key: value for key, value in service_timings.items()
                                       if key.endswith("_ms") and isinstance(value, (int, float))
                                       and not isinstance(value, bool)})
+        overlay_url = "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None
+        if overlay_url is None and obs.get("selected_instance_id"):
+            overlay_url = self.instance_preview({"observation_id": oid,
+                                                 "instance_id": obs["selected_instance_id"]})["preview"]
         return {"type": "pose6d_result", "observation_id": oid, "result_id": result_id,
                 "algorithm": algorithm, "algorithm_label": algorithms[algorithm].get("label", algorithm),
                 "instance_id": obs.get("selected_instance_id"),
@@ -864,10 +881,26 @@ class PoseBridge(Node):
                                      "lift_height_mm": lift_height * 1000,
                                      "home_joint_degrees": self.motion_config.get("home_joint_degrees"),
                                      "place_joint_degrees": place_joints},
-                "overlay": "data:image/png;base64," + base64.b64encode(overlay).decode("ascii") if overlay else None,
+                "overlay": overlay_url,
                 "cloud": points, "mesh_obj": model["mesh_path"].read_text(encoding="utf-8"),
                 "motion_ready": ready, "motion_reason": motion_reason,
                 "suction": self.settings["suction"]}
+
+    def select_batch_result(self, command, client=None):
+        oid = command["observation_id"]
+        _obs, item, result = self.store.select_batch_result(oid, command["instance_id"])
+        object_id = item["object_id"]
+        models = getattr(self, "models", None)
+        model = models.get(object_id) if isinstance(models, dict) else {
+            "model_sha256": getattr(self, "mesh_hash", ""),
+            "annotation": getattr(self, "annotation", None),
+            "mesh_path": getattr(self, "mesh_dir", Path(".")) / "TexturedMeshSimplified.obj",
+        }
+        if models is not None and model is None:
+            raise ValueError("unknown 6D OBJ model selection")
+        timings = item.get("timings") or {}
+        return self._pose_review_result(oid, object_id, model, "wapr", result,
+                                        float(timings.get("round_trip_ms", 0.0)), client)
 
     def cloud(self, obs):
         stride = int(self.settings["cloud_stride"])
@@ -885,6 +918,97 @@ class PoseBridge(Node):
             indices = np.linspace(0, len(xyz) - 1, 35000, dtype=np.int64)
             xyz, colors = xyz[indices], colors[indices]
         return {"xyz_m": np.round(xyz, 5).tolist(), "rgb": colors.tolist()}
+
+    def batch_infer(self, command, client=None):
+        """Run WAPR batch inference on all segmented instances of the same object."""
+        from websockets.sync.client import connect
+
+        oid = command["observation_id"]
+        obs = self.store.get(oid)
+        object_id = command.get("object_id") or obs.get("object_id") or getattr(self, "default_object_id", "")
+        models = getattr(self, "models", None)
+        model_entry = models.get(object_id) if isinstance(models, dict) else {
+            "model_sha256": getattr(self, "mesh_hash", ""),
+        }
+        if models is not None and model_entry is None:
+            raise ValueError("unknown 6D OBJ model selection")
+
+        generation, request = self.store.batch_request(
+            oid, object_id=object_id, model_sha256=model_entry["model_sha256"])
+        instance_count = len(request["instances"])
+
+        started = time.perf_counter()
+        with connect(self.settings["ws_uri"], open_timeout=self.settings["connect_timeout_sec"],
+                     max_size=MAX_MESSAGE_BYTES, compression=None) as ws:
+            hello = unpackb(ws.recv(timeout=self.settings["connect_timeout_sec"]))
+            advertised_algorithms = hello.get("algorithms")
+            if (hello.get("type") != "hello" or not hello.get("ready")
+                    or not isinstance(advertised_algorithms, list)
+                    or "wapr" not in advertised_algorithms):
+                raise ValueError("backend does not support WAPR batch inference")
+            registered_models = hello.get("models")
+            registered_hash = (registered_models.get(object_id, {}).get("model_sha256")
+                               if isinstance(registered_models, dict) else None)
+            if registered_hash != model_entry["model_sha256"]:
+                raise ValueError("backend model identity mismatch")
+            ws.send(packb(request))
+            result = unpackb(ws.recv(timeout=self.settings["inference_timeout_sec"]))
+        round_trip_ms = (time.perf_counter() - started) * 1000.0
+
+        if result.get("type") != "batch_result":
+            raise ValueError(result.get("message", "backend batch inference failed"))
+
+        timings = result.get("timings", {})
+        timings["round_trip_ms"] = round_trip_ms
+        timings["instance_count"] = instance_count
+        self.store.accept_batch_result(generation, request, result)
+
+        # Build per-instance output
+        results_out = []
+        for item in result.get("results", []):
+            entry = {"instance_id": item["instance_id"], "status": item["status"],
+                     "request_id": item.get("request_id"),
+                     "history_id": item.get("history_id"),
+                     "history_path": item.get("history_path"),
+                     "archive_status": item.get("archive_status")}
+            if item["status"] == "ok":
+                entry["score"] = item["score"]
+                entry["T_camera_object"] = item["pose_camera_object"]
+                entry["screening_status"] = (item.get("screening") or {}).get("status")
+            else:
+                entry["reason"] = item.get("reason", "unknown")
+            results_out.append(entry)
+
+        # Build overlay: colorize each instance mask with score annotation
+        overlay = cv2.cvtColor(obs["rgb"].copy(), cv2.COLOR_RGB2BGR)
+        for item in result.get("results", []):
+            iid = item["instance_id"]
+            if item["status"] != "ok":
+                continue
+            try:
+                inst = self.store.instance(oid, iid)
+            except ValueError:
+                continue
+            mask = inst.get("mask")
+            if mask is None:
+                continue
+            color = ((int(hashlib.sha256(iid.encode()).hexdigest()[:2], 16),
+                      int(hashlib.sha256(iid.encode()).hexdigest()[2:4], 16),
+                      int(hashlib.sha256(iid.encode()).hexdigest()[4:6], 16)))
+            layer = overlay.copy()
+            layer[mask != 0] = color
+            overlay = cv2.addWeighted(overlay, .7, layer, .3, 0)
+            # Annotate score at mask centroid
+            ys, xs = np.nonzero(mask)
+            if len(xs) and len(ys):
+                cx, cy = int(xs.mean()), int(ys.mean())
+                label = f"{item['score']:.3f}"
+                cv2.putText(overlay, label, (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, .6, (255, 255, 255), 2)
+
+        return {"type": "pose6d_batch_result", "observation_id": oid,
+                "object_id": object_id, "instance_count": instance_count,
+                "results": results_out, "timings": timings,
+                "overlay": image_url(overlay)}
 
 
 def main():
