@@ -80,6 +80,59 @@ test("WAPR is selectable for a frozen SAM instance and reports its own score typ
   await expect(page.locator("#prepare")).toBeDisabled();
 });
 
+test("selecting a WAPR batch row loads that instance into the 6D suction review", async ({ page }) => {
+  await page.goto("6d_pose.html");
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  await page.locator("#capture").click();
+  const capture = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate(({ request, png }) => (window as any).poseSocket.emit({
+    type: "pose6d_capture", request_id: request.request_id, observation_id: "obs-batch",
+    object_id: "eu_plug", rgb: png, depth: png, profile: "right_wrist",
+    width: 1, height: 1, camera_frame: "camera", calibration: "available",
+  }), { request: capture, png });
+  const segment = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  await page.evaluate(({ request }) => (window as any).poseSocket.emit({
+    type: "pose6d_instances", request_id: request.request_id, observation_id: "obs-batch", status: "ok",
+    timings: {}, detections: [0, 1].map((index) => ({ instance_id: `obs-batch:${index}`, detection_id: String(index),
+      class_name: "eu", confidence: .9, bbox: [0, 0, 1, 1], status: "ok", sam_score: .95,
+      sam_predict_ms: 1, valid_depth_pixels: 4, mask_pixels: 4 })),
+  }), { request: segment });
+
+  await page.locator("#batch-infer").click();
+  const batch = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(batch.type).toBe("pose6d_batch_infer");
+  await page.evaluate(({ request, png }) => (window as any).poseSocket.emit({
+    type: "pose6d_batch_result", request_id: request.request_id, observation_id: "obs-batch",
+    instance_count: 2, timings: { round_trip_ms: 20, registration_ms: 16 }, overlay: png,
+    results: [0, 1].map((index) => ({ instance_id: `obs-batch:${index}`, status: "ok", score: .4 + index * .1,
+      history_id: String(701 + index), history_path: `/6d_pose_history/${701 + index}/`, archive_status: "complete" })),
+  }), { request: batch, png });
+
+  await page.locator('#batch-results button[data-instance-id="obs-batch:0"]').click();
+  const select = await page.evaluate(() => (window as any).poseSocket.sent.at(-1));
+  expect(select).toMatchObject({ type: "pose6d_batch_select", observation_id: "obs-batch", instance_id: "obs-batch:0" });
+  await page.evaluate(({ request, png }) => (window as any).poseSocket.emit({
+    type: "pose6d_result", request_id: request.request_id, observation_id: "obs-batch", result_id: "batch-review-0",
+    algorithm: "wapr", algorithm_label: "WAPR", score: .4, score_type: "wapr_score_6d",
+    history_id: "701", history_path: "/6d_pose_history/701/", archive_status: "complete",
+    object_id: "eu_plug", suction_available: true,
+    T_camera_object: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]],
+    mesh_obj: "v 0 0 0\nv .01 0 0\nv 0 .01 0\nf 1 2 3\n",
+    grasps: [{ grasp_id: "top", status: "valid", vertical_down_angle_deg: 0, workspace_valid: true,
+      radius_m: .01, T_camera_contact: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, .2], [0, 0, 0, 1]],
+      contact_region: { radius_m: .01 }, analytic_ik: { checked: false },
+      suction_collision: { status: "clear" }, tcp_targets: { frame: "base", suction: { xyz_mm: [0, 0, 200], rpy_deg: [0, 0, 0] } } }],
+    screening: { status: "pass_screening", metrics: {} }, motion_ready: true, motion_reason: "review",
+    overlay: png, cloud: { xyz_m: [[0, 0, .2]], rgb: [[120, 150, 180]] },
+  }), { request: select, png });
+
+  await expect(page.locator("#overlay-caption")).toContainText("#0 · 解算结果");
+  await expect(page.locator("#pose-score")).toContainText("WAPR · wapr_score_6d: 0.4000");
+  await expect(page.locator("#grasp option")).toContainText("top");
+  await expect(page.locator("#history-result")).toHaveAttribute("href", "/6d_pose_history/701/");
+  await expect(page.locator('#batch-results button[data-instance-id="obs-batch:0"]')).toHaveAttribute("data-selected", "true");
+});
+
 test("controller TCP selection invalidates old pose review and reports readback", async ({ page }) => {
   await page.goto("6d_pose.html");
   await page.locator("#controller-tool").selectOption("tcpsuck");
