@@ -537,10 +537,18 @@ def _parse_pose6d(message: dict[str, Any]) -> dict[str, Any]:
         if "object_id" in message:
             allowed.add("object_id")
         result["object_id"] = _string(message.get("object_id", ""), "object_id", maximum=128, allow_empty=True)
-    elif kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer"):
+    elif kind in ("pose6d_segment", "pose6d_preview", "pose6d_infer", "pose6d_batch_infer",
+                  "pose6d_batch_select"):
         allowed |= {"observation_id"}
         result["observation_id"] = _string(message.get("observation_id"), "observation_id", maximum=128)
-        if kind == "pose6d_infer":
+        if kind == "pose6d_batch_infer":
+            if "object_id" in message:
+                allowed.add("object_id")
+                result["object_id"] = _string(message["object_id"], "object_id", maximum=128)
+        elif kind == "pose6d_batch_select":
+            allowed.add("instance_id")
+            result["instance_id"] = _string(message.get("instance_id"), "instance_id", maximum=160)
+        elif kind == "pose6d_infer":
             if "algorithm" in message:
                 allowed.add("algorithm")
                 algorithm = _string(message["algorithm"], "algorithm", maximum=32)
@@ -611,6 +619,8 @@ _ARMLESS_PARSERS = {
     "pose6d_segment": _parse_pose6d,
     "pose6d_preview": _parse_pose6d,
     "pose6d_infer": _parse_pose6d,
+    "pose6d_batch_infer": _parse_pose6d,
+    "pose6d_batch_select": _parse_pose6d,
     "pose6d_select_tool": _parse_pose6d,
     "pose6d_prepare": _parse_pose6d,
     "pose6d_jog": _parse_pose6d,

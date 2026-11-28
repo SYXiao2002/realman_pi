@@ -76,8 +76,10 @@ def test_snapshot_cache_rejects_invalid_and_oversized_events(web_node):
 def test_pose6d_live_frames_are_broadcast_but_results_stay_private(web_node):
     web_node._pose6d_event(String(data=json.dumps({"type": "pose6d_frames", "available": False})))
     web_node._pose6d_event(String(data=json.dumps({"type": "pose6d_result", "client_id": "owner", "result_id": "r"})))
+    web_node._pose6d_event(String(data=json.dumps({"type": "pose6d_batch_result", "client_id": "owner", "instance_count": 2})))
     assert web_node._server.events == [({"type": "pose6d_frames", "available": False}, None),
-                                       ({"type": "pose6d_result", "result_id": "r"}, "owner")]
+                                       ({"type": "pose6d_result", "result_id": "r"}, "owner"),
+                                       ({"type": "pose6d_batch_result", "instance_count": 2}, "owner")]
 
 
 def test_pose6d_socket_snapshot_recovers_web_restart_and_late_bridge_discovery(web_node):

@@ -31,6 +31,14 @@ def test_keyboard_state_rejects_unsafe_values(message):
         parse_message(json.dumps(message))
 
 
+def test_pose6d_batch_select_accepts_only_an_observation_and_instance():
+    message = {"type": "pose6d_batch_select", "request_id": "select-1",
+               "observation_id": "obs-1", "instance_id": "obs-1:0"}
+    assert parse_message(json.dumps(message)) == message
+    with pytest.raises(ProtocolError, match="unexpected pose6d command fields"):
+        parse_message(json.dumps({**message, "object_id": "eu_plug"}))
+
+
 def test_select_input_mode_is_global_and_validates_syntax_only():
     assert parse_message(
         '{"type":"select_input_mode","request_id":"mode-1","mode_id":"policy"}'
