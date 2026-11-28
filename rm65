@@ -195,6 +195,7 @@ down() {
 
 build() {
   local -a services=(realman_bringup_remote realman_web_control pose6d_yolo pose6d_sam2)
+  local build_pose6d=0
   local foundation_context="${POSE6D_REFERENCE_REPO:-$ROOT/../FoundationPose}"
   local wapr_context="${POSE6D_WAPR_REPO:-$ROOT/../WAPR}"
   if [[ -d "$foundation_context" ]]; then
@@ -204,7 +205,24 @@ build() {
     wapr_context="$(cd "$wapr_context" && pwd)"
   fi
   if (( $# > 0 )); then
-    services=("$@")
+    services=()
+    for service in "$@"; do
+      if [[ "$service" == "pose6d_server" ]]; then
+        build_pose6d=1
+      else
+        services+=("$service")
+      fi
+    done
+  else
+    build_pose6d=1
+  fi
+  if (( build_pose6d )); then
+    # The dedicated builder verifies/builds the CUDA dependency image first,
+    # then rebuilds the FoundationPose/WAPR server image.
+    run "$ROOT/scripts/build_pose6d.sh"
+  fi
+  if (( ${#services[@]} == 0 )); then
+    return 0
   fi
   # Compose's Bake backend may omit the grant for build.network: host.
   # Load the image into Docker even when the selected builder is containerized.
@@ -255,7 +273,7 @@ usage() {
 Usage: ./rm65 <command> [profile]
 
 Commands:
-  build [service ...] Rebuild selected images; default: production, Web, YOLO and SAM2.
+  build [service ...] Rebuild selected images; default includes production, Web, Pose6D (FoundationPose/WAPR), YOLO and SAM2.
   up [desktop|model|policy]  Start production runtime and pose6d GPU services; desktop adds RViz.
   down                Stop unified runtime and ROS 2 cameras.
   status              Show camera and Docker service state.

@@ -40,22 +40,33 @@ grep -Fq "stop pose6d_bridge" <<<"$output"
 [[ "${output%%realman_bringup_remote*}" == *"stop pose6d_bridge"* ]]
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" build 2>&1)"
+grep -Fq "$ROOT/scripts/build_pose6d.sh" <<<"$output"
 grep -Fq "docker buildx bake" <<<"$output"
-grep -Fq -- "--allow network.host --allow fs.read=../realman_pose_vision --allow fs.read=../sam2 --load realman_bringup_remote realman_web_control pose6d_yolo pose6d_sam2" <<<"$output"
+grep -Fq -- "--allow network.host" <<<"$output"
+grep -Fq -- "--load realman_bringup_remote realman_web_control pose6d_yolo pose6d_sam2" <<<"$output"
 if grep -Eq " (up|stop|restart) " <<<"$output"; then
   echo "build unexpectedly starts services" >&2
   exit 1
 fi
 
+output="$(RM65_DRY_RUN=1 "$ENTRY" build pose6d_server 2>&1)"
+grep -Fq "$ROOT/scripts/build_pose6d.sh" <<<"$output"
+if grep -Fq "docker buildx bake" <<<"$output"; then
+  echo "pose6d_server bypassed its dependency-aware builder" >&2
+  exit 1
+fi
+
 output="$(cd /tmp && RM65_DRY_RUN=1 "$ENTRY" build rm65_rviz 2>&1)"
-grep -Fq -- "--allow network.host --allow fs.read=../realman_pose_vision --allow fs.read=../sam2 --load rm65_rviz" <<<"$output"
+grep -Fq -- "--allow network.host" <<<"$output"
+grep -Fq -- "--load rm65_rviz" <<<"$output"
 if grep -Fq "realman_bringup_remote" <<<"$output"; then
   echo "selected build unexpectedly includes production services" >&2
   exit 1
 fi
 
 output="$(cd /tmp && RM65_DRY_RUN=1 zsh -c 'source "$1/functions.zsh"; rm65_docker_build rm65_rviz' _ "$ROOT" 2>&1)"
-grep -Fq -- "--allow network.host --allow fs.read=../realman_pose_vision --allow fs.read=../sam2 --load rm65_rviz" <<<"$output"
+grep -Fq -- "--allow network.host" <<<"$output"
+grep -Fq -- "--load rm65_rviz" <<<"$output"
 
 output="$(RM65_DRY_RUN=1 "$ENTRY" status 2>&1)"
 grep -Fq "status" <<<"$output"

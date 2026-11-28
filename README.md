@@ -29,7 +29,7 @@ ROS 2 Humble 控制平台，支持 RealMan RM65 多臂控制。当前生产只�
 在连接左右两台控制器的工控机上，从仓库根目录执行。地址和端口以 `config/ros/realman_driver.yaml` 为准；多臂 launch 只启动该文件中存在的驱动 section，当前省略中臂：
 
 ```bash
-./rm65 build          # 首次或代码更新后：重建驱动与 Web 控制镜像
+./rm65 build          # 首次或代码更新后：重建驱动、Web、FoundationPose/WAPR 与视觉服务镜像
 ./rm65 up             # ROS 2 彩色相机 + 左右双臂驱动 + Web 控制台（:8765）+ 数据录制/回放（:8770），默认无 RViz
 ./rm65 status         # 查看相机与服务状态
 ./rm65 logs
